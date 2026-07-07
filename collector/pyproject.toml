@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6",
     "apscheduler>=3.10,<4",
     "python-dotenv>=1",
+    "apify-client>=3.0.4",
 ]
 
 [project.scripts]
@@ -24,6 +25,7 @@ monitor = "kenya_monitor.cli:app"
 dev = [
     "ruff>=0.8",
     "pytest>=8",
+    "pytest-asyncio>=1.4.0",
 ]
 
 [build-system]

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 
-from kenya_monitor.collectors.base import Post
+import os
+from kenya_monitor.collectors.base import Collector, Post
 from kenya_monitor.collectors.x import Window, XCollector, build_api, sync_accounts
 from kenya_monitor.config import PlatformTargets, XAccount
 from kenya_monitor.pacing import human_pause
@@ -11,16 +12,25 @@ from kenya_monitor.storage import Storage
 log = logging.getLogger("kenya_monitor")
 
 
-async def build_x_collector(accounts: list[XAccount]) -> XCollector:
-    api = build_api()
-    added = await sync_accounts(api, accounts)
-    if added:
-        log.info("added %d new account(s) to pool", added)
-    return XCollector(api)
+async def build_x_collector(accounts: list[XAccount]) -> Collector:
+    backend = os.getenv("X_BACKEND", "twscrape").lower()
+    if backend == "apify":
+        from kenya_monitor.collectors.apify import ApifyXCollector
+        token = os.getenv("APIFY_TOKEN") or os.getenv("APIFY_API_TOKEN")
+        if not token:
+            raise RuntimeError("APIFY_TOKEN environment variable is required for Apify backend")
+        actor_id = os.getenv("APIFY_ACTOR_ID", "xquik/x-tweet-scraper")
+        return ApifyXCollector(token, actor_id=actor_id)
+    else:
+        api = build_api()
+        added = await sync_accounts(api, accounts)
+        if added:
+            log.info("added %d new account(s) to pool", added)
+        return XCollector(api)
 
 
 async def collect_x(
-    collector: XCollector,
+    collector: Collector,
     storage: Storage,
     targets: PlatformTargets,
     search_windows: list[Window],
@@ -79,7 +89,7 @@ async def collect_x(
 
 
 async def collect_backfill(
-    collector: XCollector,
+    collector: Collector,
     storage: Storage,
     targets: PlatformTargets,
     windows: list[Window],
@@ -115,7 +125,7 @@ async def collect_backfill(
 
 
 async def collect_metrics(
-    collector: XCollector,
+    collector: Collector,
     storage: Storage,
     since_days: int = 5,
     top_pct: float = 0.05,

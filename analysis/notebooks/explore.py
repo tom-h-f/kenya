@@ -136,7 +136,7 @@ def _(remote):
         """
         SELECT *
         FROM latest_posts p
-        WHERE contains(text, 'If the goal is simply to beat Ruto, they’ll settle for Gachagua')
+        WHERE contains(text, 'settle for Gachagua')
         """
     ).df()
 

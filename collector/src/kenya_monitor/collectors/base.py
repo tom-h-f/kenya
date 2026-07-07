@@ -92,8 +92,19 @@ class Collector(ABC):
 
     platform: str
 
+    def collected_authors(self) -> list[Author]:
+        """Return authors seen since the last drain, and clear."""
+        return []
+
     @abstractmethod
-    async def search(self, keyword: str, limit: int) -> AsyncIterator[Post]:
+    async def search(
+        self,
+        keyword: str,
+        limit: int,
+        since: str | None = None,
+        until: str | None = None,
+        min_faves: int | None = None,
+    ) -> AsyncIterator[Post]:
         """Yield posts matching a keyword/hashtag query."""
         raise NotImplementedError
         yield  # pragma: no cover  (marks this an async generator)
