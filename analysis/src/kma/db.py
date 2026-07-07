@@ -114,6 +114,54 @@ def latest_labels(con: duckdb.DuckDBPyConnection, platform: str = "*"):
     )
 
 
+def coordination_source(
+    kind: str = "edges",
+    platform: str = "*",
+    channel: str = "*",
+    method: str = "*",
+) -> str:
+    """A read_parquet(...) expression for persisted coordination artifacts."""
+    if kind == "edges":
+        glob = (
+            f"r2://{BUCKET}/coordination/platform={platform}/kind=edges"
+            f"/channel={channel}/method={method}/dt=*/run=*.parquet"
+        )
+    elif kind == "clusters":
+        glob = f"r2://{BUCKET}/coordination/platform={platform}/kind=clusters/dt=*/run=*.parquet"
+    else:
+        raise ValueError(f"unknown coordination kind {kind!r}")
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def latest_coordination_edges(
+    con: duckdb.DuckDBPyConnection,
+    platform: str = "x",
+    channel: str = "*",
+    method: str = "*",
+):
+    """Latest validated edge row per (src, dst, channel, method) run."""
+    return con.sql(
+        f"""
+        SELECT * FROM {coordination_source('edges', platform, channel, method)}
+        QUALIFY row_number() OVER (
+            PARTITION BY src, dst, channel, method ORDER BY computed_at DESC
+        ) = 1
+        """
+    )
+
+
+def latest_coordination_clusters(con: duckdb.DuckDBPyConnection, platform: str = "x"):
+    """Latest cluster membership row per (cluster_id, author_id)."""
+    return con.sql(
+        f"""
+        SELECT * FROM {coordination_source('clusters', platform)}
+        QUALIFY row_number() OVER (
+            PARTITION BY cluster_id, author_id ORDER BY computed_at DESC
+        ) = 1
+        """
+    )
+
+
 def connect_quack(name: str = "kenya") -> duckdb.DuckDBPyConnection:
     """Attach the tf1 DuckDB quack server. Queries run on tf1 against R2; no R2 creds
     are needed locally - only QUACK_HOST + QUACK_TOKEN (from the shared .env).
