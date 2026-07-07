@@ -1,11 +1,10 @@
 # Phase 3 - Coordination networks
 
-Status: not started. Planned in detail.
+Status: **done (Wave A)**. Wave B channels (co-hashtag, co-URL, co-mention) unlock
+as post-Phase-0 field coverage grows - track via `kma.coordination.coverage()`.
 
-> **Detailed research-grade plan: [`phase-3/`](phase-3/README.md)** (8 files:
-> traces, network construction, statistical validation, multiplex/communities,
-> characterization, evaluation, implementation). This file is the original
-> high-level summary; the `phase-3/` series supersedes it.
+> **Detailed plan: [`phase-3/`](phase-3/README.md)**. This file is the high-level
+> summary; the `phase-3/` series is the authoritative spec.
 
 The classic disinformation-campaign toolkit. Depends on Phase 0 (fuller capture +
 structured fields) and reuses Phase 2 embeddings.

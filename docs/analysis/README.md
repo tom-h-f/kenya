@@ -9,7 +9,7 @@ runs end-to-end against live R2.
 | [0](phase-0-collector-completeness.md) | Collector completeness (structured fields, full capture) | done |
 | [1](phase-1-authenticity.md) | Account authenticity / bot scoring | done |
 | [2](phase-2-semantic.md) | Semantic / narrative layer | done (topic tuning open) |
-| [3](phase-3/README.md) | Coordination networks (CIB) | detailed plan ready |
+| [3](phase-3/README.md) | Coordination networks (CIB) | done (Wave B pending data) |
 
 ## How the analysis works (context)
 

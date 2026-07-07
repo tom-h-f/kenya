@@ -22,6 +22,7 @@ notebooks run against this kernel (`ipykernel` is included).
 
 ```bash
 uv run marimo edit notebooks/explore.py
+uv run marimo edit notebooks/coordination.py
 ```
 
 ## Usage
