@@ -1,0 +1,30 @@
+# X (Twitter) accounts for the twscrape pool.
+#
+# Copy this file to config/accounts.yaml (gitignored) and fill in real values.
+#   cp config/accounts.example.yaml config/accounts.yaml
+#
+# twscrape logs in with each account and pools/rotates them across requests.
+# More accounts = more resilient to bans and higher throughput per run.
+#
+# Auth options per account:
+#   A) username + password + email + email_password  (twscrape does the full login,
+#      reading the email inbox for the confirmation code when X challenges it).
+#   B) cookies  (paste a logged-in session cookie string; skips password login and is
+#      less likely to trip a challenge). Provide cookies AND/OR password.
+#
+# Only `username` is strictly required if you supply `cookies`.
+
+accounts:
+  - username: burner_one
+    password: "change-me"
+    email: burner_one@example.com
+    email_password: "change-me"
+    cookies: ""            # optional: "auth_token=...; ct0=..."
+    proxy: ""             # optional: "http://user:pass@host:port"
+
+  - username: burner_two
+    password: "change-me"
+    email: burner_two@example.com
+    email_password: "change-me"
+    cookies: ""
+    proxy: ""

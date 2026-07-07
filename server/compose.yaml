@@ -1,0 +1,9 @@
+services:
+  duckdb-quack:
+    build: .
+    env_file: ../.env
+    # Publish ONLY on tf1's tailscale IP - reachable over the tailnet, never the
+    # public Hetzner IP. Auth is the quack token on top of tailnet device-auth.
+    ports:
+      - "100.93.107.4:9494:9494"
+    restart: unless-stopped

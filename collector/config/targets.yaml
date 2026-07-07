@@ -1,0 +1,92 @@
+# Collection targets for the 2027 Kenyan election monitor.
+# Handles verified against a live run (2026-07-04). Keywords tuned from a 1,255-tweet
+# sample: dropped AFCON-noisy "Kenya 2027", plus "Raila 2027" (Raila d. 15 Oct 2025)
+# and defunct "Azimio". Refine iteratively.
+
+x:
+  accounts:
+    # Principals / presidential-tier
+    - WilliamsRuto        # President William Ruto (incumbent, UDA/Kenya Kwanza)
+    - rigathi             # Rigathi Gachagua (DCP, "Wamunyoro", ex-DP)
+    - skmusyoka           # Kalonzo Musyoka (Wiper, United Opposition)
+    - MusaliaMudavadi     # Musalia Mudavadi (Prime CS)
+    - RealMatiangi        # Fred Matiang'i (active handle; FredMatiangi is dormant)
+    - MarthaKarua         # Martha Karua (PLP)
+    - dkmaraga            # David Maraga (former CJ, UGM)
+    - HonJBMuturi         # Justin Muturi (DP)
+    - HonWetangula        # Moses Wetang'ula (Ford Kenya, Speaker, pro-Ruto)
+    - edwinsifuna         # Edwin Sifuna (ODM SG, "Linda Mwananchi")
+    - Honcalebamisi       # Caleb Amisi (opposition MP)
+    - MigunaMiguna        # Miguna Miguna (declared candidate)
+    - OkiyaOmtatah        # Okiya Omtatah (Senator, activist)
+    - kipmurkomen         # Kipchumba Murkomen (Interior CS)
+    - OleItumbi           # Dennis Itumbi (Ruto digital strategist)
+    # Parties / coalitions
+    - TheODMparty         # ODM (post-Raila succession)
+    - UDAKenya            # UDA (ruling party)
+    - DCP_Democracy       # Democracy for the Citizens Party (Gachagua)
+    # Institutions
+    - IEBCKenya           # Electoral commission
+    - InteriorKE          # Ministry of Interior
+    - DCI_Kenya           # Directorate of Criminal Investigations
+    # Media
+    - NationAfrica
+    - StandardKenya
+    - citizentvkenya
+    - KTNNewsKE
+    - ntvkenya
+    # Commentariat / influencers
+    - gabrieloguda        # high-engagement political commentator
+    # Legacy (still active: mourning, ODM/Nyanza succession)
+    - RailaOdinga
+  keywords:
+    # Core election
+    - "#KenyaDecides2027"
+    - "Kenya election"
+    - "Kenyan election"
+    - "Ruto 2027"
+    - "IEBC"
+    # Slogans / movements
+    - "Wantam"
+    - "Tutam"
+    - "Kasongo"
+    - "#RutoMustGo"
+    - "Komboa Kenya"
+    - "Linda Mwananchi"
+    - "#SisiNdioSifuna"
+    - "#BaBuKwaSababu"
+    - "#JusticeForOurMashujaa"
+    # Candidates / figures
+    - "Gachagua"
+    - "Wamunyoro"
+    - "Kalonzo"
+    - "Sifuna"
+    - "Kindiki"
+    - "Murkomen"
+    - "Matiangi"
+    - "Martha Karua"
+    - "Ndindi Nyoro"
+    - "Wetangula"
+    # Parties / coalitions
+    - "Kenya Kwanza"
+    - "United Opposition"
+    - "broad based"
+    - "DCP"
+    # Protest / unrest
+    - "maandamano"
+    - "Finance Bill"
+    # Process / current events
+    - "Ol Kalou"
+    # Historical anchors (recur as rhetorical framing in 2027 discourse)
+    - "post-election violence"
+    - "Saba Saba"
+    - "handshake"
+    - "Bomas"
+
+youtube:
+  accounts: []
+  keywords: []
+
+reddit:
+  accounts: []
+  keywords: []

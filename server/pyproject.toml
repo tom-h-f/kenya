@@ -1,0 +1,9 @@
+[project]
+name = "kenya-monitor-server"
+version = "0.1.0"
+description = "DuckDB quack server exposing the R2 dataset over the tailnet."
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.5.3",
+    "python-dotenv>=1",
+]

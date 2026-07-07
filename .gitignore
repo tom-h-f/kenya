@@ -1,0 +1,21 @@
+# secrets + local env
+.env
+collector/config/accounts.yaml
+
+# python
+**/.venv/
+**/__pycache__/
+*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+
+# scraper state + local data
+collector/state/
+**/data/
+*.parquet
+
+# tooling
+.idea/            # DataSpell / JetBrains
+.wrangler/
+node_modules/
+**/.marimo/

@@ -1,0 +1,13 @@
+services:
+  monitor:
+    build: .
+    env_file: ../.env
+    command: ["run", "--limit", "20"]
+    mem_limit: 1g
+    volumes:
+      - ./config:/app/config:ro
+      - accounts:/app/state
+    restart: unless-stopped
+
+volumes:
+  accounts:

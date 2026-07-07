@@ -1,0 +1,31 @@
+[project]
+name = "kenya-monitor"
+version = "0.1.0"
+description = "Scrapes social media activity around the 2027 Kenyan election into R2 (Parquet)."
+readme = "README.md"
+authors = [
+    { name = "Tom French", email = "thomas.harry.french@icloud.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "twscrape>=0.13",
+    "duckdb>=1.1",
+    "pyarrow>=18",
+    "typer>=0.15",
+    "pyyaml>=6",
+    "apscheduler>=3.10,<4",
+    "python-dotenv>=1",
+]
+
+[project.scripts]
+monitor = "kenya_monitor.cli:app"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
