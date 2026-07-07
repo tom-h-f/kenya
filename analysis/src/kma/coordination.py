@@ -1,0 +1,1069 @@
+"""Coordination layer: detect and characterize coordinated behaviour (CIB).
+
+Pipeline (docs/analysis/phase-3): behavioural traces -> bipartite account x
+object projection -> statistical validation (SVN hypergeometric null +
+FDR/Bonferroni, percentile baseline, Monte-Carlo time-shuffle for timed
+channels) -> multiplex Leiden communities -> corroboration -> scorecards.
+
+    from kma.db import connect
+    from kma import coordination as co
+    con = connect()
+    edges = co.validated_edges(con, "co_retweet")
+    layers = co.build_layers(con, ["co_retweet", "text_sim"])
+    members, clusters = co.clusters(layers)
+    cards = co.scorecards(con, members, layers)
+
+Sampling caveat: twscrape capture is a sample, not a census - absence of a
+co-action is not evidence of absence. This bounds recall, not precision, and
+applies to every output of this module. Coordination alone is not malicious;
+scorecards are a triage tool for human review, never an auto-label.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import duckdb
+import numpy as np
+import pandas as pd
+
+from kma.db import BUCKET, embeddings_source, posts_source
+from kma.semantic import DIM, MODEL, _slug
+
+SAMPLING_CAVEAT = (
+    "Capture is a sample, not a census: absence of a co-action is not evidence "
+    "of absence. Recall is bounded; precision is not affected."
+)
+
+# channel -> (trace SQL object expression, wave). text_sim is built in Python
+# from embeddings. Wave B channels need post-Phase-0 rows (hashtags/urls/
+# mentions arrays); coverage() reports when they become usable.
+WAVE_A = ["co_retweet", "co_reply", "text_sim", "fast_co_share"]
+WAVE_B = ["co_hashtag", "co_url", "co_mention"]
+
+# Measured on live 18k corpus (2026-07-07); re-sweep when data grows.
+DEFAULT_TAU = 0.9
+DEFAULT_RESOLUTION = 0.05
+DEFAULT_DELTAS: dict[str, int] = {"fast_co_share": 300, "text_sim": 3600}
+
+_SIMPLE_TRACES = {
+    "co_retweet": "SELECT author_id, repost_of_id AS action_object, created_at"
+    " FROM lp WHERE repost_of_id IS NOT NULL",
+    "co_reply": "SELECT author_id, in_reply_to_id AS action_object, created_at"
+    " FROM lp WHERE in_reply_to_id IS NOT NULL",
+    "co_hashtag": "SELECT author_id, lower(unnest(hashtags)) AS action_object,"
+    " created_at FROM lp WHERE len(hashtags) > 0",
+    "co_mention": "SELECT author_id, lower(unnest(mentions)) AS action_object,"
+    " created_at FROM lp WHERE len(mentions) > 0",
+    # strip tracking params + trailing slash; shortener expansion is upstream
+    "co_url": """
+        SELECT author_id,
+               regexp_replace(regexp_replace(regexp_replace(
+                   lower(unnest(urls)),
+                   '[?&](utm_[^&#]*|fbclid=[^&#]*|gclid=[^&#]*)', '', 'g'),
+                   '\\?$', ''), '/+$', '') AS action_object,
+               created_at
+        FROM lp WHERE len(urls) > 0
+    """,
+}
+
+
+def _latest_posts_cte(platform: str) -> str:
+    return f"""
+        SELECT * FROM {posts_source(platform)}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+        ) = 1
+    """
+
+
+def content_clusters(
+    con: duckdb.DuckDBPyConnection,
+    platform: str = "x",
+    model: str = MODEL,
+    tau: float = 0.9,
+) -> pd.DataFrame:
+    """Near-duplicate content clusters: connected components of the cosine >= tau
+    graph over post embeddings. Returns (platform_post_id, cluster_id) for posts
+    in components of size >= 2; these are the text_sim action objects."""
+    from scipy.sparse.csgraph import connected_components
+    from sklearn.neighbors import radius_neighbors_graph
+
+    df = con.sql(
+        f"""
+        SELECT platform_post_id, embedding FROM {embeddings_source(platform, _slug(model))}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform_post_id ORDER BY embedded_at DESC
+        ) = 1
+        """
+    ).df()
+    if df.empty:
+        return pd.DataFrame(columns=["platform_post_id", "cluster_id"])
+    x = np.asarray(df["embedding"].tolist(), dtype="float32")
+    # embeddings are L2-normalised: cosine >= tau <=> euclidean <= sqrt(2 - 2 tau)
+    g = radius_neighbors_graph(x, radius=float(np.sqrt(2 - 2 * tau)), mode="connectivity")
+    _, labels = connected_components(g, directed=False)
+    df["cluster_id"] = labels
+    sizes = df["cluster_id"].value_counts()
+    df = df[df["cluster_id"].isin(sizes[sizes >= 2].index)]
+    return df[["platform_post_id", "cluster_id"]].reset_index(drop=True)
+
+
+def traces(
+    con: duckdb.DuckDBPyConnection,
+    channel: str,
+    platform: str = "x",
+    model: str = MODEL,
+    tau: float = 0.9,
+):
+    """Behavioural trace relation (author_id, action_object, created_at) for one
+    channel, deduped to one row per (author, object, time)."""
+    if channel in ("co_retweet", "fast_co_share"):
+        inner = _SIMPLE_TRACES["co_retweet"]
+    elif channel in _SIMPLE_TRACES:
+        inner = _SIMPLE_TRACES[channel]
+    elif channel == "text_sim":
+        cc = content_clusters(con, platform, model, tau)
+        con.register("_content_clusters", cc)
+        inner = """
+            SELECT lp.author_id, 'c' || _content_clusters.cluster_id AS action_object,
+                   lp.created_at
+            FROM lp JOIN _content_clusters USING (platform_post_id)
+        """
+    else:
+        raise ValueError(f"unknown channel {channel!r}")
+    return con.sql(
+        f"WITH lp AS ({_latest_posts_cte(platform)}) SELECT DISTINCT * FROM ({inner})"
+    )
+
+
+def coverage(con: duckdb.DuckDBPyConnection, platform: str = "x") -> pd.DataFrame:
+    """Share of posts carrying each Wave B field - tracks when those channels
+    unlock as post-Phase-0 data accrues."""
+    return con.sql(
+        f"""
+        WITH lp AS ({_latest_posts_cte(platform)})
+        SELECT count(*) AS posts,
+               count(*) FILTER (len(hashtags) > 0) / count(*) AS hashtag_share,
+               count(*) FILTER (len(urls) > 0) / count(*) AS url_share,
+               count(*) FILTER (len(mentions) > 0) / count(*) AS mention_share
+        FROM lp
+        """
+    ).df()
+
+
+def _register_traces(con, channel, platform, model, tau) -> str:
+    name = f"_tr_{channel}"
+    con.register(name, traces(con, channel, platform, model, tau).df())
+    return name
+
+
+def projected_edges(
+    con: duckdb.DuckDBPyConnection,
+    channel: str,
+    platform: str = "x",
+    delta: int | None = None,
+    min_repetition: int = 2,
+    weighting: str = "count",
+    model: str = MODEL,
+    tau: float = 0.9,
+    trace_table: str | None = None,
+) -> pd.DataFrame:
+    """Account-account projection of one channel's bipartite graph, via a DuckDB
+    self-join on action_object (never materialises the account x account matrix).
+
+    weight = shared distinct objects (untimed) or co-action events within
+    `delta` seconds (timed). weighting="tfidf" adds a `weight_tfidf` column
+    (Pacheco: rare shared objects weigh more than popular ones).
+    `trace_table` overrides the trace source (used by the evaluation harness).
+    """
+    t = trace_table or _register_traces(con, channel, platform, model, tau)
+    timed = f"AND abs(epoch(a.created_at) - epoch(b.created_at)) <= {int(delta)}" if delta else ""
+    metric = "count(*)" if delta else "count(DISTINCT a.action_object)"
+    edges = con.sql(
+        f"""
+        SELECT a.author_id AS src, b.author_id AS dst,
+               {metric} AS weight,
+               count(DISTINCT a.action_object) AS n_objects_shared,
+               count(*) AS n_coactions,
+               min(abs(epoch(a.created_at) - epoch(b.created_at))) AS min_gap
+        FROM {t} a JOIN {t} b
+          ON a.action_object = b.action_object
+         AND a.author_id < b.author_id
+         {timed}
+        GROUP BY 1, 2
+        HAVING {metric} >= {int(min_repetition)}
+        """
+    ).df()
+    if weighting == "tfidf" and not edges.empty:
+        tfidf = con.sql(
+            f"""
+            WITH t AS (SELECT DISTINCT author_id, action_object FROM {t}),
+            obj AS (SELECT action_object, count(*) AS df FROM t GROUP BY 1),
+            n AS (SELECT count(DISTINCT author_id) AS a FROM t),
+            v AS (
+                SELECT t.author_id, t.action_object, ln((SELECT a FROM n) / obj.df) AS w
+                FROM t JOIN obj USING (action_object)
+            ),
+            norms AS (SELECT author_id, sqrt(sum(w * w)) AS nrm FROM v GROUP BY 1)
+            SELECT a.author_id AS src, b.author_id AS dst,
+                   sum(a.w * b.w) / (any_value(na.nrm) * any_value(nb.nrm)) AS weight_tfidf
+            FROM v a
+            JOIN v b ON a.action_object = b.action_object AND a.author_id < b.author_id
+            JOIN norms na ON na.author_id = a.author_id
+            JOIN norms nb ON nb.author_id = b.author_id
+            GROUP BY 1, 2
+            """
+        ).df()
+        edges = edges.merge(tfidf, on=["src", "dst"], how="left")
+    return edges
+
+
+def activity(
+    con: duckdb.DuckDBPyConnection,
+    channel: str,
+    platform: str = "x",
+    model: str = MODEL,
+    tau: float = 0.9,
+    trace_table: str | None = None,
+) -> tuple[pd.DataFrame, int]:
+    """Per-account distinct-object degree and the channel's total distinct
+    object count M - the inputs of the hypergeometric null (03)."""
+    t = trace_table or _register_traces(con, channel, platform, model, tau)
+    degrees = con.sql(
+        f"SELECT author_id, count(DISTINCT action_object) AS n_objects FROM {t} GROUP BY 1"
+    ).df()
+    m = con.sql(f"SELECT count(DISTINCT action_object) FROM {t}").fetchone()[0]
+    return degrees, int(m)
+
+
+# --- statistical validation (03) -----------------------------------------
+
+
+def validate_svn(
+    edges: pd.DataFrame,
+    degrees: pd.DataFrame,
+    n_objects: int,
+    method: str = "fdr_bh",
+    alpha: float = 0.01,
+) -> pd.DataFrame:
+    """Statistically Validated Network (Tumminello 2011): hypergeometric p-value
+    per pair + multiple-testing correction over the pairs actually tested.
+
+    Pass `edges` computed with min_repetition=1 so n_tests covers every pair
+    sharing >= 1 object (standard SVN practice); the correction is otherwise
+    too lenient. method in {"fdr_bh", "bonferroni"}.
+    """
+    from scipy.stats import hypergeom
+    from statsmodels.stats.multitest import multipletests
+
+    out = edges.copy()
+    if out.empty:
+        out["p_value"], out["validated"] = [], []
+        return out
+    deg = degrees.set_index("author_id")["n_objects"]
+    n_a = deg.reindex(out["src"]).to_numpy()
+    n_b = deg.reindex(out["dst"]).to_numpy()
+    x = out["n_objects_shared"].to_numpy()
+    out["p_value"] = hypergeom.sf(x - 1, n_objects, n_a, n_b)
+    if method == "bonferroni":
+        out["validated"] = out["p_value"] < alpha / len(out)
+    elif method == "fdr_bh":
+        out["validated"] = multipletests(out["p_value"], alpha=alpha, method="fdr_bh")[0]
+    else:
+        raise ValueError(f"unknown method {method!r}")
+    return out
+
+
+def _object_groups(tr: pd.DataFrame):
+    obj_codes = tr["action_object"].astype("category").cat.codes.to_numpy()
+    order = np.argsort(obj_codes, kind="stable")
+    bounds = np.flatnonzero(np.diff(obj_codes[order])) + 1
+    return [g for g in np.split(order, bounds) if len(g) >= 2]
+
+
+def _codelta_counts(groups, authors: np.ndarray, times: np.ndarray, delta: int) -> dict:
+    counts: dict[tuple, int] = {}
+    for g in groups:
+        t = times[g]
+        srt = g[np.argsort(t, kind="stable")]
+        ts = times[srt]
+        j = 0
+        for i in range(len(srt)):
+            while ts[i] - ts[j] > delta:
+                j += 1
+            for k in range(j, i):
+                a, b = authors[srt[k]], authors[srt[i]]
+                if a == b:
+                    continue
+                key = (a, b) if a < b else (b, a)
+                counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def validate_montecarlo(
+    con: duckdb.DuckDBPyConnection,
+    channel: str,
+    delta: int,
+    n_iter: int = 500,
+    alpha: float = 0.01,
+    min_repetition: int = 2,
+    method: str = "fdr_bh",
+    seed: int = 0,
+    platform: str = "x",
+    model: str = MODEL,
+    tau: float = 0.9,
+    trace_table: str | None = None,
+) -> pd.DataFrame:
+    """Time-shuffle Monte-Carlo null for timed channels (fast co-share,
+    synchronised text_sim): permute created_at within each account, recompute
+    co-within-delta counts, empirical one-sided p per pair, then the same
+    multiple-testing correction as validate_svn."""
+    from statsmodels.stats.multitest import multipletests
+
+    t = trace_table or _register_traces(con, channel, platform, model, tau)
+    tr = con.sql(f"SELECT author_id, action_object, created_at FROM {t}").df()
+    if tr.empty:
+        return pd.DataFrame(
+            columns=["src", "dst", "weight", "min_gap", "p_value", "validated"]
+        )
+    authors = tr["author_id"].to_numpy()
+    times = (tr["created_at"].astype("int64") // 10**9).to_numpy()
+    groups = _object_groups(tr)
+    obs = _codelta_counts(groups, authors, times, delta)
+    tested = {p: c for p, c in obs.items() if c >= min_repetition}
+    if not tested:
+        return pd.DataFrame(
+            columns=["src", "dst", "weight", "min_gap", "p_value", "validated"]
+        )
+    author_groups = pd.Series(np.arange(len(tr))).groupby(authors).apply(np.asarray)
+    rng = np.random.default_rng(seed)
+    exceed = dict.fromkeys(tested, 0)
+    shuffled = times.copy()
+    for _ in range(n_iter):
+        for idx in author_groups:
+            shuffled[idx] = rng.permutation(times[idx])
+        null = _codelta_counts(groups, authors, shuffled, delta)
+        for p, c in tested.items():
+            if null.get(p, 0) >= c:
+                exceed[p] += 1
+    pairs = list(tested)
+    out = pd.DataFrame(
+        {
+            "src": [p[0] for p in pairs],
+            "dst": [p[1] for p in pairs],
+            "weight": [tested[p] for p in pairs],
+            "p_value": [(1 + exceed[p]) / (1 + n_iter) for p in pairs],
+        }
+    )
+    gaps = (
+        con.sql(
+            f"""
+            SELECT a.author_id AS src, b.author_id AS dst,
+                   min(abs(epoch(a.created_at) - epoch(b.created_at))) AS min_gap
+            FROM {t} a JOIN {t} b
+              ON a.action_object = b.action_object AND a.author_id < b.author_id
+            GROUP BY 1, 2
+            """
+        ).df()
+    )
+    out = out.merge(gaps, on=["src", "dst"], how="left")
+    if method == "bonferroni":
+        out["validated"] = out["p_value"] < alpha / len(out)
+    else:
+        out["validated"] = multipletests(out["p_value"], alpha=alpha, method="fdr_bh")[0]
+    return out
+
+
+def percentile_filter(edges: pd.DataFrame, q: float = 0.995) -> pd.DataFrame:
+    """CooRnet-style baseline: keep edges at/above the q weight quantile. No
+    null model - cannot separate surprising from popular; comparison only."""
+    if edges.empty:
+        return edges.assign(validated=pd.Series(dtype=bool))
+    cut = edges["weight"].quantile(q)
+    return edges[edges["weight"] >= cut].assign(validated=True).reset_index(drop=True)
+
+
+def validated_edges(
+    con: duckdb.DuckDBPyConnection,
+    channel: str,
+    platform: str = "x",
+    delta: int | None = None,
+    min_repetition: int = 2,
+    alpha: float = 0.01,
+    q: float = 0.995,
+    model: str = MODEL,
+    tau: float = 0.9,
+    n_iter: int = 500,
+    trace_table: str | None = None,
+) -> pd.DataFrame:
+    """One channel end to end: projection + all three edge filters. Returns the
+    tested edges with `p_value`, `sig_bonferroni`, `sig_fdr`, `sig_percentile`.
+    Untimed channels use the hypergeometric SVN; pass `delta` for the
+    Monte-Carlo time-shuffle null instead."""
+    t = trace_table or _register_traces(con, channel, platform, model, tau)
+    if delta is not None:
+        mc = lambda m: validate_montecarlo(  # noqa: E731
+            con, channel, delta, n_iter=n_iter, alpha=alpha,
+            min_repetition=min_repetition, method=m, trace_table=t,
+        )
+        out = mc("fdr_bh").rename(columns={"validated": "sig_fdr"})
+        out["sig_bonferroni"] = mc("bonferroni")["validated"]
+    else:
+        edges = projected_edges(
+            con, channel, platform, min_repetition=1, weighting="tfidf", trace_table=t
+        )
+        degrees, m = activity(con, channel, platform, trace_table=t)
+        out = validate_svn(edges, degrees, m, "fdr_bh", alpha).rename(
+            columns={"validated": "sig_fdr"}
+        )
+        out["sig_bonferroni"] = validate_svn(edges, degrees, m, "bonferroni", alpha)[
+            "validated"
+        ]
+        out = out[out["weight"] >= min_repetition].reset_index(drop=True)
+    pct = percentile_filter(out, q)
+    keys = set(zip(pct["src"], pct["dst"])) if not pct.empty else set()
+    out["sig_percentile"] = [k in keys for k in zip(out["src"], out["dst"])]
+    return out
+
+
+def edge_report(edges: pd.DataFrame) -> pd.DataFrame:
+    """Edge counts + Jaccard overlaps of the three filters (03 reporting)."""
+    sets = {
+        m: set(zip(edges.loc[edges[f"sig_{m}"], "src"], edges.loc[edges[f"sig_{m}"], "dst"]))
+        for m in ("bonferroni", "fdr", "percentile")
+    }
+    rows = []
+    for m, s in sets.items():
+        rows.append({"method": m, "edges": len(s)})
+    for a, b in [("bonferroni", "fdr"), ("bonferroni", "percentile"), ("fdr", "percentile")]:
+        u = sets[a] | sets[b]
+        rows.append(
+            {"method": f"jaccard({a},{b})", "edges": len(sets[a] & sets[b]) / len(u) if u else 0}
+        )
+    return pd.DataFrame(rows)
+
+
+# --- multiplex + communities (04) -----------------------------------------
+
+
+def build_layers(
+    con: duckdb.DuckDBPyConnection,
+    channels: list[str] = WAVE_A,
+    platform: str = "x",
+    method: str = "fdr",
+    deltas: dict[str, int] | None = None,
+    **params,
+) -> dict[str, pd.DataFrame]:
+    """dict channel -> validated edge list (one multiplex layer per channel).
+    `method` picks the edge filter ("fdr", "bonferroni", "percentile");
+    `deltas` maps a channel to a co-action window for the timed variant."""
+    merged_deltas = {**DEFAULT_DELTAS, **(deltas or {})}
+    layers = {}
+    for ch in channels:
+        e = validated_edges(con, ch, platform, delta=merged_deltas.get(ch), **params)
+        layers[ch] = e[e[f"sig_{method}"]].reset_index(drop=True)
+    return layers
+
+
+def _igraph(edges: pd.DataFrame, weight_col: str = "weight"):
+    import igraph as ig
+
+    nodes = sorted(set(edges["src"]) | set(edges["dst"]))
+    idx = {n: i for i, n in enumerate(nodes)}
+    g = ig.Graph(
+        n=len(nodes),
+        edges=[(idx[s], idx[d]) for s, d in zip(edges["src"], edges["dst"])],
+    )
+    g.vs["name"] = nodes
+    g.es["weight"] = edges[weight_col].astype(float).tolist()
+    return g
+
+
+def communities(edges: pd.DataFrame, resolution: float = 0.05, seed: int = 0) -> pd.DataFrame:
+    """Leiden over CPM (well-connected communities, interpretable resolution =
+    intra-density threshold). Returns (author_id, cluster_id), singletons
+    dropped."""
+    import leidenalg as la
+
+    if edges.empty:
+        return pd.DataFrame(columns=["author_id", "cluster_id"])
+    g = _igraph(edges)
+    part = la.find_partition(
+        g,
+        la.CPMVertexPartition,
+        weights="weight",
+        resolution_parameter=resolution,
+        n_iterations=-1,
+        seed=seed,
+    )
+    df = pd.DataFrame({"author_id": g.vs["name"], "cluster_id": part.membership})
+    sizes = df["cluster_id"].value_counts()
+    return df[df["cluster_id"].isin(sizes[sizes >= 2].index)].reset_index(drop=True)
+
+
+def resolution_sweep(
+    edges: pd.DataFrame, gammas: tuple[float, ...] = (0.01, 0.02, 0.05, 0.1, 0.25, 0.5)
+) -> pd.DataFrame:
+    """Community count / size profile across CPM resolutions - robust clusters
+    persist across the sweep."""
+    rows = []
+    for g in gammas:
+        m = communities(edges, resolution=g)
+        sizes = m["cluster_id"].value_counts()
+        rows.append(
+            {
+                "gamma": g,
+                "clusters": int(m["cluster_id"].nunique()),
+                "accounts": len(m),
+                "largest": int(sizes.max()) if len(sizes) else 0,
+                "median_size": float(sizes.median()) if len(sizes) else 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def aggregate_layers(layers: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Sum max-normalised layer weights into one multiplex graph, tracking the
+    per-edge supporting channels."""
+    frames = []
+    for ch, e in layers.items():
+        if e.empty:
+            continue
+        f = e[["src", "dst", "weight", "min_gap"]].copy()
+        f["weight"] = f["weight"] / f["weight"].max()
+        f["channel"] = ch
+        frames.append(f)
+    if not frames:
+        return pd.DataFrame(columns=["src", "dst", "weight", "min_gap", "channels", "n_channels"])
+    allf = pd.concat(frames, ignore_index=True)
+    agg = allf.groupby(["src", "dst"], as_index=False).agg(
+        weight=("weight", "sum"),
+        min_gap=("min_gap", "min"),
+        channels=("channel", lambda s: sorted(set(s))),
+    )
+    agg["n_channels"] = agg["channels"].str.len()
+    return agg
+
+
+def corroborate(layers: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Per account pair: which validated layers support it. n_channels >= 2 is
+    the strongest evidence available short of ground truth."""
+    agg = aggregate_layers(layers)
+    return agg[["src", "dst", "channels", "n_channels", "min_gap"]]
+
+
+def clusters(
+    layers: dict[str, pd.DataFrame],
+    resolution: float = 0.05,
+    min_size: int = 3,
+    seed: int = 0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Leiden on the aggregated multiplex + per-cluster corroboration stats.
+
+    Returns (members, summary): members = (author_id, cluster_id); summary has
+    size, supporting channels, per-layer intra-cluster edge density, and the
+    share of internal pairs that are SVN-validated in >= 1 layer."""
+    agg = aggregate_layers(layers)
+    members = communities(agg, resolution=resolution, seed=seed)
+    sizes = members["cluster_id"].value_counts()
+    members = members[members["cluster_id"].isin(sizes[sizes >= min_size].index)]
+    rows = []
+    pair_channels = {
+        (r.src, r.dst): r.channels for r in agg.itertuples()
+    }
+    for cid, grp in members.groupby("cluster_id"):
+        nodes = set(grp["author_id"])
+        n = len(nodes)
+        possible = n * (n - 1) / 2
+        internal = {
+            p: chs for p, chs in pair_channels.items() if p[0] in nodes and p[1] in nodes
+        }
+        chans = sorted({c for chs in internal.values() for c in chs})
+        density = {
+            f"density_{ch}": sum(ch in chs for chs in internal.values()) / possible
+            for ch in layers
+        }
+        rows.append(
+            {
+                "cluster_id": cid,
+                "size": n,
+                "channels": chans,
+                "n_channels": len(chans),
+                "internal_edges": len(internal),
+                "internal_edge_share": len(internal) / possible,
+                **density,
+            }
+        )
+    summary = (
+        pd.DataFrame(rows).sort_values(
+            ["n_channels", "internal_edge_share", "size"], ascending=False, ignore_index=True
+        )
+        if rows
+        else pd.DataFrame(
+            columns=["cluster_id", "size", "channels", "n_channels", "internal_edges",
+                     "internal_edge_share"]
+        )
+    )
+    return members.reset_index(drop=True), summary
+
+
+# --- characterization (05) -------------------------------------------------
+
+# Transparent triage weights over percentile-ranked components; calibrated
+# against the 06 evaluation. Legitimate coordination scores non-zero - the
+# component breakdown, not the scalar, is what an analyst acts on.
+INAUTHENTICITY_WEIGHTS = {
+    "bot_likeness": 0.30,
+    "synchrony": 0.20,
+    "homogeneity": 0.20,
+    "concealment": 0.15,
+    "corroboration": 0.15,
+}
+
+
+def _burstiness_days(created: pd.Series, share: float = 0.5) -> float:
+    """Tightest window (days) holding `share` of member account creations."""
+    t = np.sort(created.dropna().astype("int64").to_numpy()) / 86_400e9
+    k = max(int(np.ceil(share * len(t))), 2)
+    if len(t) < k:
+        return float("nan")
+    return float((t[k - 1 :] - t[: len(t) - k + 1]).min())
+
+
+def _member_posts(con, platform: str) -> str:
+    con.execute(
+        f"CREATE OR REPLACE TEMP TABLE _member_posts AS {_latest_posts_cte(platform)}"
+    )
+    return "_member_posts"
+
+
+def scorecards(
+    con: duckdb.DuckDBPyConnection,
+    members: pd.DataFrame,
+    layers: dict[str, pd.DataFrame] | None = None,
+    platform: str = "x",
+    model: str = MODEL,
+    topics: pd.DataFrame | None = None,
+    max_posts_per_cluster: int = 300,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Per-cluster scorecard integrating Phase 1 (authenticity) + Phase 2
+    (narrative) + coordination-intrinsic + impact signals, ranked by a
+    transparent inauthenticity index (see INAUTHENTICITY_WEIGHTS).
+
+    `topics` = assign_topics() output, optional (adds topic entropy).
+    Not an auto-label: triage for human review."""
+    from kma.authenticity import authenticity_score
+
+    auth = authenticity_score(con, platform=platform)
+    auth = auth.set_index("platform_user_id")
+    p90 = auth["suspicion"].quantile(0.9)
+    rng = np.random.default_rng(seed)
+
+    lp = _member_posts(con, platform)
+    posts = con.sql(
+        f"""
+        SELECT author_id, platform_post_id,
+               like_count + reply_count + repost_count + quote_count AS engagement
+        FROM {lp}
+        """
+    ).df()
+    emb = con.sql(
+        f"""
+        SELECT platform_post_id, embedding
+        FROM {embeddings_source(platform, _slug(model))}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform_post_id ORDER BY embedded_at DESC
+        ) = 1
+        """
+    ).df()
+    emb = emb.merge(posts[["platform_post_id", "author_id"]], on="platform_post_id")
+
+    corroborated = corroborate(layers) if layers else None
+    topic_by_post = (
+        topics.set_index("platform_post_id")["topic"] if topics is not None else None
+    )
+
+    rows = []
+    for cid, grp in members.groupby("cluster_id"):
+        ids = grp["author_id"].tolist()
+        a = auth.reindex(ids).dropna(subset=["suspicion"])
+        mposts = posts[posts["author_id"].isin(ids)]
+        row = {
+            "cluster_id": cid,
+            "size": len(ids),
+            "n_posts": len(mposts),
+            # Phase 1
+            "suspicion_mean": a["suspicion"].mean(),
+            "suspicion_median": a["suspicion"].median(),
+            "share_suspicion_p90": (a["suspicion"] > p90).mean(),
+            "anomaly_rank_mean": a["anomaly_rank"].mean(),
+            "creation_burst_days": _burstiness_days(a["created_at"]),
+            "share_default_image": a["default_profile_image"].mean(),
+            "share_empty_bio": a["empty_bio"].mean(),
+            "handle_digit_ratio_mean": a["handle_digit_ratio"].mean(),
+            "shared_profile_image": 1 - a["profile_image_url"].nunique() / max(len(a), 1),
+            # impact
+            "followers_sum": a["followers_count"].sum(),
+            "engagement_sum": mposts["engagement"].sum(),
+            "engagement_per_follower": mposts["engagement"].sum()
+            / max(a["followers_count"].sum(), 1),
+        }
+        # Phase 2: narrative homogeneity via mean pairwise cosine of member posts
+        e = emb[emb["author_id"].isin(ids)]
+        if len(e) > max_posts_per_cluster:
+            e = e.sample(max_posts_per_cluster, random_state=rng.integers(2**31))
+        if len(e) >= 2:
+            v = np.asarray(e["embedding"].tolist(), dtype="float32")
+            sim = v @ v.T
+            row["near_dup_rate"] = float(
+                sim[np.triu_indices(len(v), 1)].mean()
+            )
+        else:
+            row["near_dup_rate"] = float("nan")
+        if topic_by_post is not None and len(mposts):
+            t = topic_by_post.reindex(mposts["platform_post_id"]).dropna()
+            t = t[t != -1]
+            if len(t):
+                p = t.value_counts(normalize=True).to_numpy()
+                row["topic_entropy"] = float(-(p * np.log(p)).sum())
+                row["dominant_topic"] = int(t.value_counts().idxmax())
+        # coordination-intrinsic
+        if corroborated is not None and not corroborated.empty:
+            mask = corroborated["src"].isin(ids) & corroborated["dst"].isin(ids)
+            intra = corroborated[mask]
+            row["n_channels"] = (
+                len({c for chs in intra["channels"] for c in chs}) if len(intra) else 0
+            )
+            row["median_min_gap_s"] = intra["min_gap"].median() if len(intra) else float("nan")
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+
+    def rank(s: pd.Series, invert: bool = False) -> pd.Series:
+        r = s.rank(pct=True)
+        return (1 - r) if invert else r
+
+    components = {
+        "bot_likeness": rank(df["suspicion_mean"]),
+        "synchrony": rank(df.get("median_min_gap_s", pd.Series(np.nan, index=df.index)),
+                          invert=True),
+        "homogeneity": rank(df["near_dup_rate"]),
+        "concealment": rank(
+            df[["share_default_image", "share_empty_bio", "handle_digit_ratio_mean",
+                "shared_profile_image"]].mean(axis=1)
+            + rank(df["creation_burst_days"], invert=True).fillna(0) * 0
+        ),
+        "corroboration": rank(df.get("n_channels", pd.Series(0, index=df.index))),
+    }
+    for name, comp in components.items():
+        df[f"ix_{name}"] = comp.fillna(0.0)
+    df["inauthenticity_index"] = sum(
+        w * df[f"ix_{k}"] for k, w in INAUTHENTICITY_WEIGHTS.items()
+    )
+    return df.sort_values("inauthenticity_index", ascending=False, ignore_index=True)
+
+
+def member_table(
+    con: duckdb.DuckDBPyConnection,
+    members: pd.DataFrame,
+    platform: str = "x",
+    topics: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Member-level view: each clustered account's authenticity + activity, for
+    drill-down from a scorecard."""
+    from kma.authenticity import authenticity_score
+
+    auth = authenticity_score(con, platform=platform)
+    out = members.merge(
+        auth, left_on="author_id", right_on="platform_user_id", how="left"
+    )
+    cols = [
+        "cluster_id", "author_id", "handle", "account_age_days", "followers_count",
+        "following_count", "n_posts", "duplicate_text_ratio", "suspicion", "anomaly_rank",
+    ]
+    if topics is not None:
+        dom = (
+            topics[topics["topic"] != -1]
+            .groupby("author_handle")["topic"]
+            .agg(lambda s: s.value_counts().idxmax())
+            .rename("dominant_topic")
+        )
+        out = out.merge(dom, left_on="handle", right_index=True, how="left")
+        cols.append("dominant_topic")
+    return out[cols].sort_values(["cluster_id", "suspicion"], ascending=[True, False])
+
+
+# --- persistence (07) -------------------------------------------------------
+
+
+def persist_edges(
+    con: duckdb.DuckDBPyConnection,
+    edges: pd.DataFrame,
+    channel: str,
+    method: str,
+    platform: str = "x",
+) -> str:
+    """Write one validated edge list as a Parquet run under the coordination/
+    prefix. method in {svn_fdr, svn_bonf, pct, mc_fdr, mc_bonf}."""
+    now = datetime.now(timezone.utc)
+    cols = [c for c in ("src", "dst", "weight", "n_objects_shared", "n_coactions",
+                        "min_gap", "weight_tfidf", "p_value") if c in edges.columns]
+    buf = edges[cols].copy()
+    buf["computed_at"] = now
+    key = (
+        f"coordination/platform={platform}/kind=edges/channel={channel}"
+        f"/method={method}/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
+    )
+    con.register("_coord_buf", buf)
+    try:
+        con.execute(
+            f"COPY _coord_buf TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)"
+        )
+    finally:
+        con.unregister("_coord_buf")
+    return key
+
+
+def persist_clusters(
+    con: duckdb.DuckDBPyConnection,
+    members: pd.DataFrame,
+    summary: pd.DataFrame,
+    platform: str = "x",
+) -> str:
+    """Write cluster membership (one row per member, cluster stats repeated) as
+    a Parquet run under the coordination/ prefix."""
+    now = datetime.now(timezone.utc)
+    buf = members.merge(
+        summary[["cluster_id", "size", "channels", "n_channels", "internal_edge_share"]],
+        on="cluster_id",
+    )
+    buf["computed_at"] = now
+    key = (
+        f"coordination/platform={platform}/kind=clusters"
+        f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
+    )
+    con.register("_coord_buf", buf)
+    try:
+        con.execute(
+            f"COPY _coord_buf TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)"
+        )
+    finally:
+        con.unregister("_coord_buf")
+    return key
+
+
+# --- evaluation (06) --------------------------------------------------------
+
+
+def inject_synthetic(
+    con: duckdb.DuckDBPyConnection,
+    channel: str,
+    k: int = 20,
+    n_seed_objects: int = 10,
+    window: int = 60,
+    platform: str = "x",
+    seed: int = 0,
+    model: str = MODEL,
+    tau: float = 0.9,
+) -> tuple[str, list[str]]:
+    """Plant a known coordinated cluster: `k` synthetic accounts co-acting on
+    `n_seed_objects` real objects within `window` seconds. Registers the
+    augmented trace table (in-memory only, never persisted) and returns its
+    name + the synthetic author ids, for evaluate_recovery."""
+    rng = np.random.default_rng(seed)
+    tr = traces(con, channel, platform, model, tau).df()
+    objs = tr["action_object"].drop_duplicates()
+    seeds = objs.sample(min(n_seed_objects, len(objs)), random_state=rng.integers(2**31))
+    t0 = tr["created_at"].sample(len(seeds), random_state=rng.integers(2**31)).to_numpy()
+    syn_ids = [f"synthetic_{seed}_{i:04d}" for i in range(k)]
+    rows = [
+        {
+            "author_id": s,
+            "action_object": o,
+            "created_at": pd.Timestamp(base) + pd.Timedelta(seconds=float(rng.uniform(0, window))),
+        }
+        for s in syn_ids
+        for o, base in zip(seeds, t0)
+    ]
+    aug = pd.concat([tr, pd.DataFrame(rows)], ignore_index=True)
+    name = f"_tr_injected_{channel}"
+    con.register(name, aug)
+    return name, syn_ids
+
+
+def evaluate_recovery(members: pd.DataFrame, synthetic_ids: list[str]) -> dict:
+    """Precision/recall/F1 of the injected accounts in the detected clusters,
+    plus the survey's weighted precision (penalises fragmenting the injected
+    group across clusters)."""
+    syn = set(synthetic_ids)
+    if members.empty:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0, "weighted_precision": 0.0,
+                "best_cluster": None}
+    by_cluster = members.groupby("cluster_id")["author_id"].agg(set)
+    hits = by_cluster.apply(lambda s: len(s & syn))
+    best = hits.idxmax()
+    best_members = by_cluster[best]
+    tp = len(best_members & syn)
+    precision = tp / len(best_members)
+    recall = tp / len(syn)
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+    positive = hits[hits > 0]
+    weighted_precision = (
+        float(
+            sum(h / len(by_cluster[c]) * h for c, h in positive.items()) / positive.sum()
+        )
+        if positive.sum()
+        else 0.0
+    )
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "weighted_precision": weighted_precision,
+        "best_cluster": best,
+    }
+
+
+def shuffled_traces(
+    con: duckdb.DuckDBPyConnection,
+    channel: str,
+    mode: str = "object",
+    platform: str = "x",
+    seed: int = 0,
+    model: str = MODEL,
+    tau: float = 0.9,
+) -> str:
+    """Null input for the false-positive control. mode="object" permutes
+    action_object across rows (degree-preserving; the null for untimed SVN
+    channels, where time-shuffling changes nothing). mode="time" permutes
+    created_at within each account (the null for timed channels). Registers
+    and returns the shuffled trace table name."""
+    rng = np.random.default_rng(seed)
+    tr = traces(con, channel, platform, model, tau).df()
+    if mode == "object":
+        tr["action_object"] = rng.permutation(tr["action_object"].to_numpy())
+    elif mode == "time":
+        tr["created_at"] = tr.groupby("author_id")["created_at"].transform(
+            lambda s: s.sample(frac=1, random_state=rng.integers(2**31)).to_numpy()
+        )
+    else:
+        raise ValueError(f"unknown mode {mode!r}")
+    name = f"_tr_shuffled_{channel}"
+    con.register(name, tr)
+    return name
+
+
+def null_baseline(
+    con: duckdb.DuckDBPyConnection,
+    channel: str,
+    platform: str = "x",
+    delta: int | None = None,
+    seed: int = 0,
+    **params,
+) -> pd.DataFrame:
+    """Run the edge pipeline on real vs shuffled traces. The shuffled Bonferroni
+    edge count must be ~0 - a non-empty result signals a bug or an inadequate
+    null (06.2)."""
+    mode = "time" if delta is not None else "object"
+    real = validated_edges(con, channel, platform, delta=delta, **params)
+    shuf = validated_edges(
+        con, channel, platform, delta=delta,
+        trace_table=shuffled_traces(con, channel, mode, platform, seed), **params,
+    )
+    return pd.DataFrame(
+        [
+            {"input": "real", "tested_pairs": len(real),
+             "bonferroni": int(real["sig_bonferroni"].sum()),
+             "fdr": int(real["sig_fdr"].sum())},
+            {"input": f"shuffled({mode})", "tested_pairs": len(shuf),
+             "bonferroni": int(shuf["sig_bonferroni"].sum()),
+             "fdr": int(shuf["sig_fdr"].sum())},
+        ]
+    )
+
+
+def internal_validation(
+    con: duckdb.DuckDBPyConnection,
+    members: pd.DataFrame,
+    platform: str = "x",
+    model: str = MODEL,
+    n_perm: int = 1000,
+    min_size: int = 3,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Falsification test (06.3): detected clusters must beat random same-size
+    account groups on Phase 1 suspicion and Phase 2 narrative homogeneity.
+    Permutation p-values + effect sizes per cluster; if clusters are
+    indistinguishable from random groups the detection is meaningless."""
+    from kma.authenticity import authenticity_score
+
+    rng = np.random.default_rng(seed)
+    auth = authenticity_score(con, platform=platform).set_index("platform_user_id")
+    lp = _member_posts(con, platform)
+    emb = con.sql(
+        f"""
+        SELECT e.platform_post_id, p.author_id, e.embedding
+        FROM (
+            SELECT * FROM {embeddings_source(platform, _slug(model))}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY embedded_at DESC
+            ) = 1
+        ) e JOIN {lp} p USING (platform_post_id)
+        """
+    ).df()
+    universe = auth.index.to_numpy()
+    by_author = {a: g.index.to_numpy() for a, g in emb.groupby("author_id")}
+    vecs = np.asarray(emb["embedding"].tolist(), dtype="float32")
+
+    def homogeneity(ids, cap: int = 200) -> float:
+        rows = np.concatenate([by_author.get(i, np.empty(0, dtype=int)) for i in ids]) \
+            if ids else np.empty(0, dtype=int)
+        if len(rows) < 2:
+            return np.nan
+        if len(rows) > cap:
+            rows = rng.choice(rows, cap, replace=False)
+        v = vecs[rows]
+        return float((v @ v.T)[np.triu_indices(len(v), 1)].mean())
+
+    rows = []
+    for cid, grp in members.groupby("cluster_id"):
+        ids = grp["author_id"].tolist()
+        if len(ids) < min_size:
+            continue
+        obs_susp = auth["suspicion"].reindex(ids).mean()
+        obs_hom = homogeneity(ids)
+        null_susp = np.empty(n_perm)
+        null_hom = np.empty(n_perm)
+        for i in range(n_perm):
+            sample = rng.choice(universe, len(ids), replace=False)
+            null_susp[i] = auth["suspicion"].reindex(sample).mean()
+            null_hom[i] = homogeneity(list(sample))
+        p_susp = (1 + (null_susp >= obs_susp).sum()) / (1 + n_perm)
+        ok = ~np.isnan(null_hom)
+        p_hom = (
+            (1 + (null_hom[ok] >= obs_hom).sum()) / (1 + ok.sum())
+            if ok.any() and not np.isnan(obs_hom)
+            else np.nan
+        )
+        rows.append(
+            {
+                "cluster_id": cid,
+                "size": len(ids),
+                "suspicion_obs": obs_susp,
+                "suspicion_null_mean": null_susp.mean(),
+                "suspicion_effect": (obs_susp - null_susp.mean())
+                / max(null_susp.std(), 1e-9),
+                "p_suspicion": p_susp,
+                "homogeneity_obs": obs_hom,
+                "homogeneity_null_mean": float(null_hom[ok].mean()) if ok.any() else np.nan,
+                "homogeneity_effect": (obs_hom - null_hom[ok].mean())
+                / max(null_hom[ok].std(), 1e-9)
+                if ok.any() and not np.isnan(obs_hom)
+                else np.nan,
+                "p_homogeneity": p_hom,
+            }
+        )
+    return pd.DataFrame(rows).sort_values("cluster_id", ignore_index=True)
