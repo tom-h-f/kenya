@@ -1,0 +1,179 @@
+{
+  "version": "1",
+  "metadata": {
+    "marimo_version": "0.23.13",
+    "script_metadata_hash": null
+  },
+  "cells": [
+    {
+      "id": "Hbol",
+      "code_hash": "7e7073c87c864d90f3b2febc3180ad8d",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<pre class='text-xs'>&lt;_duckdb.DuckDBPyConnection object at 0x1216b33b0&gt;</pre>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "MJUe",
+      "code_hash": "3624e27381347b8f876b73b55c4ae752",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h1 id=\"coordination-networks-cib-triage\">Coordination networks (CIB triage)</h1>\n<span class=\"paragraph\">Detect account clusters acting in concert across behavioural channels,\nvalidated against null models and corroborated across layers.</span>\n<span class=\"paragraph\"><strong>Sampling caveat:</strong> Capture is a sample, not a census: absence of a co-action is not evidence of absence. Recall is bounded; precision is not affected.</span>\n<span class=\"paragraph\">Coordination alone is not malicious - the scorecard ranks clusters for\nhuman review using Phase 1 authenticity + Phase 2 narrative signals.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "vblA",
+      "code_hash": "6e22d930740b37c2ec41029c7606a891",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<div style='display: flex;flex: 1;flex-direction: column;justify-content: flex-start;align-items: normal;flex-wrap: nowrap;gap: 0.5rem'><span class=\"markdown prose dark:prose-invert contents\"><h3 id=\"data-coverage-20316-posts\">Data coverage (20,316 posts)</h3>\n<span class=\"paragraph\">Wave B channels unlock as structured fields accrue: hashtags\n<strong>2.9%</strong>, URLs <strong>2.8%</strong>,\nmentions <strong>7.6%</strong>.</span></span><marimo-ui-element object-id='vblA-0' random-id='738e6eb9-7cd4-3097-5267-4d2235305274'><marimo-table data-initial-value='[]' data-label='null' data-data='&quot;[{&#92;&quot;posts&#92;&quot;:20316,&#92;&quot;hashtag_share&#92;&quot;:0.02899192754479228,&#92;&quot;url_share&#92;&quot;:0.02845048237842095,&#92;&quot;mention_share&#92;&quot;:0.07614687930695019}]&quot;' data-total-rows='1' data-total-columns='4' data-max-columns='50' data-banner-text='&quot;&quot;' data-pagination='false' data-page-size='10' data-field-types='[[&quot;posts&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;hashtag_share&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;url_share&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;mention_share&quot;,[&quot;number&quot;,&quot;float64&quot;]]]' data-show-filters='true' data-show-download='true' data-show-search='true' data-show-column-summaries='false' data-show-data-types='true' data-show-page-size-selector='false' data-show-column-explorer='true' data-show-chart-builder='true' data-row-headers='[]' data-hidden-columns='[]' data-has-stable-row-id='false' data-lazy='false' data-preload='false'></marimo-table></marimo-ui-element></div>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "bkHC",
+      "code_hash": "12fd6a70fbbfc5e9a96cb1afcebf5948",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": [
+        {
+          "type": "stream",
+          "name": "stdout",
+          "text": "co_retweet: tested=2 fdr=1 bonf=1\nco_reply: tested=5 fdr=5 bonf=2\ntext_sim: tested=57 fdr=41 bonf=8\n",
+          "mimetype": "text/plain"
+        }
+      ]
+    },
+    {
+      "id": "lEQa",
+      "code_hash": "762c8ddd333377258320fdef4f434ccf",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<div style='display: flex;flex: 1;flex-direction: column;justify-content: flex-start;align-items: normal;flex-wrap: nowrap;gap: 0.5rem'><span class=\"markdown prose dark:prose-invert contents\"><h3 id=\"edge-filter-overlap-co-retweet\">Edge-filter overlap (co-retweet)</h3></span><marimo-ui-element object-id='lEQa-0' random-id='6833b960-ef5a-0a8d-9b69-0480411df258'><marimo-table data-initial-value='[]' data-label='null' data-data='&quot;[{&#92;&quot;method&#92;&quot;:&#92;&quot;bonferroni&#92;&quot;,&#92;&quot;edges&#92;&quot;:1.0},{&#92;&quot;method&#92;&quot;:&#92;&quot;fdr&#92;&quot;,&#92;&quot;edges&#92;&quot;:1.0},{&#92;&quot;method&#92;&quot;:&#92;&quot;percentile&#92;&quot;,&#92;&quot;edges&#92;&quot;:2.0},{&#92;&quot;method&#92;&quot;:&#92;&quot;jaccard(bonferroni,fdr)&#92;&quot;,&#92;&quot;edges&#92;&quot;:1.0},{&#92;&quot;method&#92;&quot;:&#92;&quot;jaccard(bonferroni,percentile)&#92;&quot;,&#92;&quot;edges&#92;&quot;:0.5},{&#92;&quot;method&#92;&quot;:&#92;&quot;jaccard(fdr,percentile)&#92;&quot;,&#92;&quot;edges&#92;&quot;:0.5}]&quot;' data-total-rows='6' data-total-columns='2' data-max-columns='50' data-banner-text='&quot;&quot;' data-pagination='false' data-page-size='10' data-field-types='[[&quot;method&quot;,[&quot;string&quot;,&quot;str&quot;]],[&quot;edges&quot;,[&quot;number&quot;,&quot;float64&quot;]]]' data-show-filters='true' data-show-download='true' data-show-search='true' data-show-column-summaries='false' data-show-data-types='true' data-show-page-size-selector='true' data-show-column-explorer='true' data-show-chart-builder='true' data-row-headers='[]' data-hidden-columns='[]' data-has-stable-row-id='false' data-lazy='false' data-preload='false'></marimo-table></marimo-ui-element></div>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "PKri",
+      "code_hash": "e262553616b80099c6ffd0c2976b8dbc",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "Xref",
+      "code_hash": "03f57532448f8225ed1b9354f2dab53f",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<div style='display: flex;flex: 1;flex-direction: column;justify-content: flex-start;align-items: normal;flex-wrap: nowrap;gap: 0.5rem'><span class=\"markdown prose dark:prose-invert contents\"><h3 id=\"evaluation-null-baseline-synthetic-injection\">Evaluation: null baseline + synthetic injection</h3></span><span class=\"markdown prose dark:prose-invert contents\"><span class=\"paragraph\">Shuffled-object Bonferroni edges should be ~0. Synthetic cluster recovery on injected co-retweet traces:</span></span><marimo-ui-element object-id='Xref-0' random-id='05f4d442-21fb-a516-3f81-8e0e726f6cbe'><marimo-table data-initial-value='[]' data-label='null' data-data='&quot;[{&#92;&quot;input&#92;&quot;:&#92;&quot;real&#92;&quot;,&#92;&quot;tested_pairs&#92;&quot;:2,&#92;&quot;bonferroni&#92;&quot;:1,&#92;&quot;fdr&#92;&quot;:1},{&#92;&quot;input&#92;&quot;:&#92;&quot;shuffled(object)&#92;&quot;,&#92;&quot;tested_pairs&#92;&quot;:0,&#92;&quot;bonferroni&#92;&quot;:0,&#92;&quot;fdr&#92;&quot;:0}]&quot;' data-total-rows='2' data-total-columns='4' data-max-columns='50' data-banner-text='&quot;&quot;' data-pagination='false' data-page-size='10' data-field-types='[[&quot;input&quot;,[&quot;string&quot;,&quot;str&quot;]],[&quot;tested_pairs&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;bonferroni&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;fdr&quot;,[&quot;integer&quot;,&quot;int64&quot;]]]' data-show-filters='true' data-show-download='true' data-show-search='true' data-show-column-summaries='false' data-show-data-types='true' data-show-page-size-selector='false' data-show-column-explorer='true' data-show-chart-builder='true' data-row-headers='[]' data-hidden-columns='[]' data-has-stable-row-id='false' data-lazy='false' data-preload='false'></marimo-table></marimo-ui-element><marimo-json-output data-json-data='{&quot;precision&quot;:&quot;text/plain+float:1.0&quot;,&quot;recall&quot;:&quot;text/plain+float:1.0&quot;,&quot;f1&quot;:&quot;text/plain+float:1.0&quot;,&quot;weighted_precision&quot;:&quot;text/plain+float:1.0&quot;,&quot;best_cluster&quot;:&quot;text/plain:0&quot;}' data-value-types='&quot;python&quot;'></marimo-json-output></div>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "SFPL",
+      "code_hash": "288a7332940663b861f973df09214ab3",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "BYtC",
+      "code_hash": "af67003b629afd6d62cc9c0295c985d8",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<div style='display: flex;flex: 1;flex-direction: column;justify-content: flex-start;align-items: normal;flex-wrap: nowrap;gap: 0.5rem'><span class=\"markdown prose dark:prose-invert contents\"><h3 id=\"detected-clusters-co-retweet-text-sim-fdr-validated\">Detected clusters (co-retweet + text-sim, FDR-validated)</h3></span><marimo-ui-element object-id='BYtC-0' random-id='991d74fa-f8c2-d1a1-b795-83e70b62a230'><marimo-table data-initial-value='[]' data-label='null' data-data='&quot;[{&#92;&quot;cluster_id&#92;&quot;:0,&#92;&quot;size&#92;&quot;:2,&#92;&quot;channels&#92;&quot;:[&#92;&quot;co_retweet&#92;&quot;],&#92;&quot;n_channels&#92;&quot;:1,&#92;&quot;internal_edges&#92;&quot;:1,&#92;&quot;internal_edge_share&#92;&quot;:1.0,&#92;&quot;density_co_retweet&#92;&quot;:1.0,&#92;&quot;density_text_sim&#92;&quot;:0.0}]&quot;' data-total-rows='1' data-total-columns='8' data-max-columns='50' data-banner-text='&quot;&quot;' data-pagination='false' data-page-size='10' data-field-types='[[&quot;cluster_id&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;size&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;channels&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;n_channels&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;internal_edges&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;internal_edge_share&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;density_co_retweet&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;density_text_sim&quot;,[&quot;number&quot;,&quot;float64&quot;]]]' data-show-filters='true' data-show-download='true' data-show-search='true' data-show-column-summaries='false' data-show-data-types='true' data-show-page-size-selector='false' data-show-column-explorer='true' data-show-chart-builder='true' data-row-headers='[]' data-hidden-columns='[]' data-has-stable-row-id='false' data-lazy='false' data-preload='false'></marimo-table></marimo-ui-element><span class=\"markdown prose dark:prose-invert contents\"><h3 id=\"scorecards-ranked-by-inauthenticity-index\">Scorecards (ranked by inauthenticity index)</h3></span><marimo-ui-element object-id='BYtC-1' random-id='7a71346c-dcd3-6b9c-f4b8-7e238941d7a4'><marimo-table data-initial-value='[]' data-label='null' data-data='&quot;[{&#92;&quot;cluster_id&#92;&quot;:0,&#92;&quot;size&#92;&quot;:2,&#92;&quot;n_channels&#92;&quot;:1,&#92;&quot;suspicion_mean&#92;&quot;:0.1500232338144413,&#92;&quot;near_dup_rate&#92;&quot;:0.24895942211151123,&#92;&quot;dominant_topic&#92;&quot;:11,&#92;&quot;inauthenticity_index&#92;&quot;:0.8}]&quot;' data-total-rows='1' data-total-columns='7' data-max-columns='50' data-banner-text='&quot;&quot;' data-pagination='false' data-page-size='10' data-field-types='[[&quot;cluster_id&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;size&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;n_channels&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;suspicion_mean&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;near_dup_rate&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;dominant_topic&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;inauthenticity_index&quot;,[&quot;number&quot;,&quot;float64&quot;]]]' data-show-filters='true' data-show-download='true' data-show-search='true' data-show-column-summaries='false' data-show-data-types='true' data-show-page-size-selector='false' data-show-column-explorer='true' data-show-chart-builder='true' data-row-headers='[]' data-hidden-columns='[]' data-has-stable-row-id='false' data-lazy='false' data-preload='false'></marimo-table></marimo-ui-element><span class=\"markdown prose dark:prose-invert contents\"><h3 id=\"internal-validation-permutation-vs-random-groups\">Internal validation (permutation vs random groups)</h3></span><marimo-ui-element object-id='BYtC-2' random-id='e93726bb-d32f-42eb-322c-98207b2adb2d'><marimo-table data-initial-value='[]' data-label='null' data-data='&quot;[{&#92;&quot;cluster_id&#92;&quot;:0,&#92;&quot;size&#92;&quot;:2,&#92;&quot;suspicion_obs&#92;&quot;:0.1500232338144413,&#92;&quot;suspicion_null_mean&#92;&quot;:0.17929779645477414,&#92;&quot;suspicion_effect&#92;&quot;:-0.3840514991475798,&#92;&quot;p_suspicion&#92;&quot;:0.6417910447761194,&#92;&quot;homogeneity_obs&#92;&quot;:0.24073220789432526,&#92;&quot;homogeneity_null_mean&#92;&quot;:0.34039186532324067,&#92;&quot;homogeneity_effect&#92;&quot;:-0.644160775184697,&#92;&quot;p_homogeneity&#92;&quot;:0.7868020304568528}]&quot;' data-total-rows='1' data-total-columns='10' data-max-columns='50' data-banner-text='&quot;&quot;' data-pagination='false' data-page-size='10' data-field-types='[[&quot;cluster_id&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;size&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;suspicion_obs&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;suspicion_null_mean&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;suspicion_effect&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;p_suspicion&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;homogeneity_obs&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;homogeneity_null_mean&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;homogeneity_effect&quot;,[&quot;number&quot;,&quot;float64&quot;]],[&quot;p_homogeneity&quot;,[&quot;number&quot;,&quot;float64&quot;]]]' data-show-filters='true' data-show-download='true' data-show-search='true' data-show-column-summaries='false' data-show-data-types='true' data-show-page-size-selector='false' data-show-column-explorer='true' data-show-chart-builder='true' data-row-headers='[]' data-hidden-columns='[]' data-has-stable-row-id='false' data-lazy='false' data-preload='false'></marimo-table></marimo-ui-element></div>"
+          }
+        }
+      ],
+      "console": [
+        {
+          "type": "stream",
+          "name": "stderr",
+          "text": "/Users/tom/Code/Misc/kenya-monitor-2027/analysis/.venv/lib/python3.12/site-packages/umap/umap_.py:1952: UserWarning: n_jobs value 1 overridden to 1 by setting random_state. Use no seed for parallelism.\n  warn(\n/Users/tom/Code/Misc/kenya-monitor-2027/analysis/.venv/lib/python3.12/site-packages/sklearn/cluster/_hdbscan/hdbscan.py:722: FutureWarning: The default value of `copy` will change from False to True in 1.10. Explicitly set a value for `copy` to silence this warning.\n  warn(\n",
+          "mimetype": "text/plain"
+        }
+      ]
+    },
+    {
+      "id": "RGSE",
+      "code_hash": "9175cedf5375590cb4af4277d93233fa",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<marimo-ui-element object-id='RGSE-0' random-id='be593cc7-8882-8008-ea79-a38b3a87905c'><marimo-checkbox data-initial-value='false' data-label='&quot;&#92;u003cspan class=&#92;&quot;markdown prose dark:prose-invert contents&#92;&quot;&#92;u003e&#92;u003cspan class=&#92;&quot;paragraph&#92;&quot;&#92;u003ePersist this run to R2&#92;u003c/span&#92;u003e&#92;u003c/span&#92;u003e&quot;' data-disabled='false'></marimo-checkbox></marimo-ui-element>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "Kclp",
+      "code_hash": "38e00e1ef88d80b7dc70b0336d76b24e",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "emfo",
+      "code_hash": "3b7dcb0f3551e7d40a23a027a03cb5d0",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    }
+  ]
+}

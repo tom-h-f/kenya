@@ -61,3 +61,4 @@ Full plan: `~/.claude/plans/in-this-dir-i-swift-hollerith.md`.
 ## TODO
 
 Implement facebook scraping too: https://github.com/kevinzg/facebook-scraper
+Implement facebook ad tracking/scraping: https://apify.com/curious_coder/facebook-ads-library-scraper

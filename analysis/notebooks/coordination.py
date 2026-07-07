@@ -19,19 +19,17 @@ def _():
 
 @app.cell
 def _(co, mo):
-    mo.md(
-        f"""
-        # Coordination networks (CIB triage)
+    mo.md(f"""
+    # Coordination networks (CIB triage)
 
-        Detect account clusters acting in concert across behavioural channels,
-        validated against null models and corroborated across layers.
+    Detect account clusters acting in concert across behavioural channels,
+    validated against null models and corroborated across layers.
 
-        **Sampling caveat:** {co.SAMPLING_CAVEAT}
+    **Sampling caveat:** {co.SAMPLING_CAVEAT}
 
-        Coordination alone is not malicious - the scorecard ranks clusters for
-        human review using Phase 1 authenticity + Phase 2 narrative signals.
-        """
-    )
+    Coordination alone is not malicious - the scorecard ranks clusters for
+    human review using Phase 1 authenticity + Phase 2 narrative signals.
+    """)
     return
 
 
@@ -51,23 +49,23 @@ def _(co, con, mo):
         ),
         cov,
     ])
-    return (cov,)
+    return
 
 
 @app.cell
 def _(co, con):
     _channels = ["co_retweet", "co_reply", "text_sim"]
     edge_frames = {}
-    for ch in _channels:
-        _e = co.validated_edges(con, ch, min_repetition=2, tau=co.DEFAULT_TAU)
-        edge_frames[ch] = _e
+    for _ch in _channels:
+        _e = co.validated_edges(con, _ch, min_repetition=2, tau=co.DEFAULT_TAU)
+        edge_frames[_ch] = _e
         print(
-            f"{ch}: tested={len(_e)} "
+            f"{_ch}: tested={len(_e)} "
             f"fdr={int(_e['sig_fdr'].sum())} "
             f"bonf={int(_e['sig_bonferroni'].sum())}"
         )
     edge_report = co.edge_report(edge_frames["co_retweet"])
-    return _channels, edge_frames, edge_report
+    return (edge_report,)
 
 
 @app.cell
@@ -88,7 +86,7 @@ def _(co, con):
     layers_inj = co.build_layers(con, ["co_retweet"], trace_table=tr_inj, min_repetition=2)
     members_inj, _ = co.clusters(layers_inj, min_size=3, resolution=co.DEFAULT_RESOLUTION)
     recovery = co.evaluate_recovery(members_inj, syn_ids)
-    return layers_inj, members_inj, null_rt, recovery, syn_ids, tr_inj
+    return null_rt, recovery
 
 
 @app.cell
@@ -143,11 +141,11 @@ def _(assign_topics, co, con, layers, members, mo, summary):
         mo.md("### Internal validation (permutation vs random groups)") if iv is not None else mo.md(""),
         iv if iv is not None and len(iv) else mo.md(""),
     ])
-    return cards, iv, topics
+    return
 
 
 @app.cell
-def _(co, con, layers, members, mo, summary):
+def _(mo):
     persist = mo.ui.checkbox(label="Persist this run to R2", value=False)
     persist
     return (persist,)

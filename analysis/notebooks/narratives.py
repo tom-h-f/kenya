@@ -79,7 +79,7 @@ def _(con, mo):
     mo.vstack([
         mo.md("### Sentiment by region"),
         slice_sentiment(con, "region", min_posts=3).df(),
-        mo.md(f"### Sentiment by community (EXPERIMENTAL)\n> {TRIBE_DISCLAIMER}"),
+        mo.md(f"### Sentiment by community"),
         slice_sentiment(con, "community", min_posts=3).df(),
     ])
     return
