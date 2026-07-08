@@ -26,6 +26,9 @@ explanation. Four families:
 Persistence is hybrid: expensive embeddings are written back to R2
 (`embeddings/`); cheap bot scores and coordination edges compute live in DuckDB.
 
+Collector methods that feed this pipeline (search, snowball, follows crawl,
+adaptive promotion): [../collection/README.md](../collection/README.md).
+
 ### Key references
 
 - [Uncovering Coordinated Networks on Social Media](https://btrantruong.github.io/assets/pdf/uncover.pdf)

@@ -26,9 +26,11 @@ kenya-monitor-2027/
   collector/        # scraper app + CLI (twscrape -> R2). Runs on pi0 (residential IP) via Docker.
   server/           # DuckDB quack server on tf1: serves R2 over the tailnet (token auth).
   analysis/         # DuckDB/Polars/marimo workspace. Query R2 directly, or via the tf1 server.
+  docs/collection/  # collector methods, R2 layout, env reference
 ```
 
-Two independent `uv` projects, one shared `.env`. See each subdir's README.
+Two independent `uv` projects, one shared `.env`. Collector docs:
+[docs/collection/README.md](docs/collection/README.md).
 
 ## Quick start
 
