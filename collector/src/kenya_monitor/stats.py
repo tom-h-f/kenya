@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import duckdb
 
@@ -59,6 +59,50 @@ def _safe_scalar(con: duckdb.DuckDBPyConnection, sql: str, default: int | str | 
         return default
 
 
+def _coerce_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    if isinstance(value, str):
+        text = value.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _safe_collected_range(
+    con: duckdb.DuckDBPyConnection, view: str
+) -> tuple[datetime | None, datetime | None]:
+    row = _safe_rows(
+        con,
+        f"SELECT min(epoch_ms(collected_at)), max(epoch_ms(collected_at)) FROM {view}",
+    )
+    if not row:
+        return None, None
+    return _coerce_datetime(row[0][0]), _coerce_datetime(row[0][1])
+
+
+def _merge_range(
+    earliest: datetime | None,
+    latest: datetime | None,
+    candidate: tuple[datetime | None, datetime | None],
+) -> tuple[datetime | None, datetime | None]:
+    cand_earliest, cand_latest = candidate
+    if cand_earliest is not None:
+        earliest = cand_earliest if earliest is None else min(earliest, cand_earliest)
+    if cand_latest is not None:
+        latest = cand_latest if latest is None else max(latest, cand_latest)
+    return earliest, latest
+
+
 def _safe_rows(con: duckdb.DuckDBPyConnection, sql: str) -> list[tuple]:
     try:
         return con.sql(sql).fetchall()
@@ -66,28 +110,11 @@ def _safe_rows(con: duckdb.DuckDBPyConnection, sql: str) -> list[tuple]:
         return []
 
 
-def _posts_latest_cte(posts: str) -> str:
-    return f"""
-        latest_posts AS (
-            SELECT platform_post_id, type, collected_at
-            FROM {posts}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        )
-    """
-
-
-def _authors_latest_cte(authors: str) -> str:
-    return f"""
-        latest_authors AS (
-            SELECT platform_user_id
-            FROM {authors}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform_user_id ORDER BY collected_at DESC
-            ) = 1
-        )
-    """
+def _optional_count(con: duckdb.DuckDBPyConnection, view: str, label: str) -> tuple[int, str | None]:
+    try:
+        return int(con.sql(f"SELECT count(*) FROM {view}").fetchone()[0]), None
+    except duckdb.Error:
+        return 0, label
 
 
 def gather_stats(
@@ -99,125 +126,86 @@ def gather_stats(
     con = storage.con
     posts = storage.posts_view(platform=platform)
     authors = storage.authors_view(platform=platform)
-    metrics = storage.metrics_view(platform=platform)
-    engagements = storage.engagements_view(platform=platform)
-    follows = storage.follows_view(platform=platform)
+    recent_filter = f"collected_at > now() - INTERVAL {int(recent_hours)} HOUR"
 
-    missing: list[str] = []
-    for label, view in (
-        ("posts", posts),
-        ("authors", authors),
-        ("metrics", metrics),
-        ("engagements", engagements),
-        ("follows", follows),
-    ):
-        if _safe_scalar(con, f"SELECT count(*) FROM {view}", default=None) is None:
-            missing.append(label)
-
-    posts_by_type = _safe_rows(
+    post_rows = _safe_rows(
         con,
         f"""
-        SELECT type, count(*) AS raw_rows
-        FROM {posts}
-        GROUP BY 1
-        ORDER BY raw_rows DESC
+        WITH base AS (
+            SELECT platform_post_id,
+                   type AS target_type,
+                   collected_at,
+                   dt
+            FROM {posts}
+        ),
+        latest AS (
+            SELECT platform_post_id, target_type
+            FROM base
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY collected_at DESC
+            ) = 1
+        ),
+        by_type_raw AS (
+            SELECT target_type, count(*) AS raw_rows FROM base GROUP BY 1
+        ),
+        by_type_unique AS (
+            SELECT target_type, count(*) AS unique_rows FROM latest GROUP BY 1
+        )
+        SELECT r.target_type, r.raw_rows, coalesce(u.unique_rows, 0)
+        FROM by_type_raw r
+        LEFT JOIN by_type_unique u USING (target_type)
+        ORDER BY r.raw_rows DESC
         """,
     )
-    unique_by_type = {
-        row[0]: row[1]
-        for row in _safe_rows(
-            con,
-            f"""
-            WITH {_posts_latest_cte(posts)}
-            SELECT type, count(*) FROM latest_posts GROUP BY 1
-            """,
-        )
-    }
-    post_types = [
-        TypeCount(name=typ, raw_rows=raw, unique=unique_by_type.get(typ))
-        for typ, raw in posts_by_type
-    ]
-
     posts_raw_total = int(_safe_scalar(con, f"SELECT count(*) FROM {posts}", 0))
     posts_unique_total = int(
         _safe_scalar(
             con,
-            f"WITH {_posts_latest_cte(posts)} SELECT count(*) FROM latest_posts",
-            0,
-        )
-    )
-    authors_raw_total = int(_safe_scalar(con, f"SELECT count(*) FROM {authors}", 0))
-    authors_unique_total = int(
-        _safe_scalar(
-            con,
-            f"WITH {_authors_latest_cte(authors)} SELECT count(*) FROM latest_authors",
-            0,
-        )
-    )
-    metrics_rows = int(_safe_scalar(con, f"SELECT count(*) FROM {metrics}", 0))
-    engagements_rows = int(_safe_scalar(con, f"SELECT count(*) FROM {engagements}", 0))
-    follow_edges = int(_safe_scalar(con, f"SELECT count(*) FROM {follows}", 0))
-
-    earliest = _safe_scalar(
-        con,
-        f"""
-        SELECT min(collected_at) FROM (
-            SELECT collected_at FROM {posts}
-            UNION ALL SELECT collected_at FROM {authors}
-            UNION ALL SELECT collected_at FROM {metrics}
-            UNION ALL SELECT collected_at FROM {engagements}
-            UNION ALL SELECT collected_at FROM {follows}
-        )
-        """,
-        default=None,
-    )
-    latest = _safe_scalar(
-        con,
-        f"""
-        SELECT max(collected_at) FROM (
-            SELECT collected_at FROM {posts}
-            UNION ALL SELECT collected_at FROM {authors}
-            UNION ALL SELECT collected_at FROM {metrics}
-            UNION ALL SELECT collected_at FROM {engagements}
-            UNION ALL SELECT collected_at FROM {follows}
-        )
-        """,
-        default=None,
-    )
-
-    recent_filter = f"collected_at > now() - INTERVAL {int(recent_hours)} HOUR"
-    recent_runs = int(
-        _safe_scalar(
-            con,
-            f"SELECT count(DISTINCT run) FROM {posts} WHERE {recent_filter}",
-            0,
-        )
-    )
-    recent_posts_raw = int(
-        _safe_scalar(con, f"SELECT count(*) FROM {posts} WHERE {recent_filter}", 0)
-    )
-    recent_posts_unique = int(
-        _safe_scalar(
-            con,
             f"""
-            WITH recent AS (
-                SELECT platform_post_id
-                FROM {posts}
-                WHERE {recent_filter}
+            SELECT count(*) FROM (
+                SELECT platform_post_id FROM {posts}
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform_post_id ORDER BY collected_at DESC
+                ) = 1
             )
-            SELECT count(DISTINCT platform_post_id) FROM recent
             """,
             0,
         )
     )
-    recent_authors_raw = int(
-        _safe_scalar(con, f"SELECT count(*) FROM {authors} WHERE {recent_filter}", 0)
+    earliest, latest = _safe_collected_range(con, posts)
+    post_types = [
+        TypeCount(name=str(typ), raw_rows=int(raw), unique=int(unique))
+        for typ, raw, unique in post_rows
+    ]
+
+    recent_rows = _safe_rows(
+        con,
+        f"""
+        SELECT
+            count(*),
+            count(DISTINCT platform_post_id),
+            count(DISTINCT date_trunc('minute', collected_at))
+        FROM {posts}
+        WHERE {recent_filter}
+        """,
     )
-    recent_metrics_rows = int(
-        _safe_scalar(con, f"SELECT count(*) FROM {metrics} WHERE {recent_filter}", 0)
+    recent_posts_raw, recent_posts_unique, recent_runs = (
+        (int(x) for x in recent_rows[0]) if recent_rows else (0, 0, 0)
     )
-    recent_engagements_rows = int(
-        _safe_scalar(con, f"SELECT count(*) FROM {engagements} WHERE {recent_filter}", 0)
+
+    author_rows = _safe_rows(
+        con,
+        f"""
+        WITH base AS (SELECT platform_user_id, collected_at FROM {authors})
+        SELECT
+            count(*),
+            count(DISTINCT platform_user_id),
+            (SELECT count(*) FROM base WHERE {recent_filter})
+        FROM base
+        """,
+    )
+    authors_raw_total, authors_unique_total, recent_authors_raw = (
+        (int(x) for x in author_rows[0]) if author_rows else (0, 0, 0)
     )
 
     daily = [
@@ -225,32 +213,67 @@ def gather_stats(
         for dt, runs, raw, unique in _safe_rows(
             con,
             f"""
-            WITH daily_raw AS (
-                SELECT dt, count(DISTINCT run) AS runs, count(*) AS raw_posts
-                FROM {posts}
-                WHERE dt >= (current_date - INTERVAL {int(daily_days) - 1} DAY)::VARCHAR
-                GROUP BY 1
-            ),
-            daily_unique AS (
-                SELECT dt, count(DISTINCT platform_post_id) AS unique_posts
-                FROM {posts}
-                WHERE dt >= (current_date - INTERVAL {int(daily_days) - 1} DAY)::VARCHAR
-                GROUP BY 1
-            )
-            SELECT r.dt, r.runs, r.raw_posts, coalesce(u.unique_posts, 0)
-            FROM daily_raw r
-            LEFT JOIN daily_unique u USING (dt)
-            ORDER BY r.dt DESC
+            SELECT dt,
+                   count(DISTINCT date_trunc('minute', collected_at)) AS runs,
+                   count(*) AS raw_posts,
+                   count(DISTINCT platform_post_id) AS unique_posts
+            FROM {posts}
+            WHERE dt >= current_date - INTERVAL {int(daily_days) - 1} DAY
+            GROUP BY 1
+            ORDER BY 1 DESC
             """,
         )
     ]
+
+    missing: list[str] = []
+    metrics_rows, miss = _optional_count(con, storage.metrics_view(platform=platform), "metrics")
+    if miss:
+        missing.append(miss)
+        recent_metrics_rows = 0
+    else:
+        recent_metrics_rows = int(
+            _safe_scalar(
+                con,
+                f"SELECT count(*) FROM {storage.metrics_view(platform=platform)} WHERE {recent_filter}",
+                0,
+            )
+        )
+        earliest, latest = _merge_range(
+            earliest,
+            latest,
+            _safe_collected_range(con, storage.metrics_view(platform=platform)),
+        )
+
+    engagements_rows, miss = _optional_count(
+        con, storage.engagements_view(platform=platform), "engagements"
+    )
+    if miss:
+        missing.append(miss)
+        recent_engagements_rows = 0
+    else:
+        recent_engagements_rows = int(
+            _safe_scalar(
+                con,
+                f"SELECT count(*) FROM {storage.engagements_view(platform=platform)} WHERE {recent_filter}",
+                0,
+            )
+        )
+        earliest, latest = _merge_range(
+            earliest,
+            latest,
+            _safe_collected_range(con, storage.engagements_view(platform=platform)),
+        )
+
+    follow_edges, miss = _optional_count(con, storage.follows_view(platform=platform), "follows")
+    if miss:
+        missing.append(miss)
 
     return CollectionStats(
         platform=platform,
         recent_hours=recent_hours,
         daily_days=daily_days,
         generated_at=datetime.now(timezone.utc),
-        posts=post_types,
+        posts=sorted(post_types, key=lambda t: t.raw_rows, reverse=True),
         posts_raw_total=posts_raw_total,
         posts_unique_total=posts_unique_total,
         authors_raw_total=authors_raw_total,
@@ -258,8 +281,8 @@ def gather_stats(
         metrics_rows=metrics_rows,
         engagements_rows=engagements_rows,
         follow_edges=follow_edges,
-        earliest_collected=earliest if isinstance(earliest, datetime) else None,
-        latest_collected=latest if isinstance(latest, datetime) else None,
+        earliest_collected=earliest,
+        latest_collected=latest,
         recent_runs=recent_runs,
         recent_posts_raw=recent_posts_raw,
         recent_posts_unique=recent_posts_unique,

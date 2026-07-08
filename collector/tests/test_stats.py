@@ -63,13 +63,20 @@ def test_gather_stats_counts_and_recent():
     yesterday = NOW - timedelta(days=1)
     storage = _storage_with_posts(
         [
-            {"platform_post_id": "p1", "type": "search", "run": "r1"},
-            {"platform_post_id": "p1", "type": "search", "run": "r2"},
-            {"platform_post_id": "p2", "type": "timeline", "run": "r2"},
+            {"platform_post_id": "p1", "type": "search", "collected_at": NOW},
+            {
+                "platform_post_id": "p1",
+                "type": "search",
+                "collected_at": NOW - timedelta(minutes=5),
+            },
+            {
+                "platform_post_id": "p2",
+                "type": "timeline",
+                "collected_at": NOW - timedelta(minutes=10),
+            },
             {
                 "platform_post_id": "old",
                 "type": "search",
-                "run": "old",
                 "collected_at": yesterday,
                 "dt": yesterday.date().isoformat(),
             },
@@ -79,7 +86,10 @@ def test_gather_stats_counts_and_recent():
     assert stats.posts_raw_total == 4
     assert stats.posts_unique_total == 3
     assert stats.recent_posts_raw == 3
-    assert stats.recent_runs == 2
+    assert stats.recent_runs == 3
+    assert stats.earliest_collected is not None
+    assert stats.latest_collected is not None
+    assert stats.earliest_collected <= stats.latest_collected
     assert any(t.name == "search" and t.raw_rows == 3 for t in stats.posts)
 
 
@@ -89,3 +99,5 @@ def test_format_stats_renders_sections():
     assert "TOTAL" in text
     assert "RECENT" in text
     assert "posts (raw rows)" in text
+    assert "collected between:" in text
+    assert "- .. -" not in text
