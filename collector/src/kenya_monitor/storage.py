@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import duckdb
 import pyarrow as pa
 
-from kenya_monitor.collectors.base import Author, MetricSnapshot, Post
+from kenya_monitor.collectors.base import Author, Engagement, FollowEdge, MetricSnapshot, Post
 from kenya_monitor.config import R2Config
 
 POST_SCHEMA = pa.schema(
@@ -76,6 +76,26 @@ AUTHOR_SCHEMA = pa.schema(
         ("blue", pa.bool_()),
         ("created_at", pa.timestamp("us", tz="UTC")),
         ("profile_image_url", pa.string()),
+        ("collected_at", pa.timestamp("us", tz="UTC")),
+    ]
+)
+
+
+ENGAGEMENT_SCHEMA = pa.schema(
+    [
+        ("platform", pa.string()),
+        ("platform_post_id", pa.string()),
+        ("platform_user_id", pa.string()),
+        ("kind", pa.string()),
+        ("collected_at", pa.timestamp("us", tz="UTC")),
+    ]
+)
+
+FOLLOW_SCHEMA = pa.schema(
+    [
+        ("platform", pa.string()),
+        ("follower_id", pa.string()),
+        ("followed_id", pa.string()),
         ("collected_at", pa.timestamp("us", tz="UTC")),
     ]
 )
@@ -155,6 +175,26 @@ class Storage:
         self._copy_table(table, key)
         return key
 
+    def write_engagements(
+        self, engagements: Sequence[Engagement], now: datetime | None = None
+    ) -> str | None:
+        if not engagements:
+            return None
+        platform = engagements[0].platform
+        table = pa.Table.from_pylist([e.as_row() for e in engagements], schema=ENGAGEMENT_SCHEMA)
+        key = f"engagements/platform={platform}/dt={_dt_partition(now)}/run={run_id(now)}.parquet"
+        self._copy_table(table, key)
+        return key
+
+    def write_follows(self, edges: Sequence[FollowEdge], now: datetime | None = None) -> str | None:
+        if not edges:
+            return None
+        platform = edges[0].platform
+        table = pa.Table.from_pylist([e.as_row() for e in edges], schema=FOLLOW_SCHEMA)
+        key = f"follows/platform={platform}/dt={_dt_partition(now)}/run={run_id(now)}.parquet"
+        self._copy_table(table, key)
+        return key
+
     def healthcheck(self) -> int:
         """Round-trip a probe under a fixed key outside posts/ (overwritten each call)."""
         table = pa.table({"ok": [1], "at": [datetime.now(timezone.utc)]})
@@ -172,4 +212,21 @@ class Storage:
 
     def authors_view(self, platform: str = "*") -> str:
         glob = self._uri(f"authors/platform={platform}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+    def engagements_view(self, platform: str = "*") -> str:
+        glob = self._uri(f"engagements/platform={platform}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+    def metrics_view(self, platform: str = "*") -> str:
+        glob = self._uri(f"metrics/platform={platform}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+    def follows_view(self, platform: str = "*") -> str:
+        glob = self._uri(f"follows/platform={platform}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+    def clusters_view(self, platform: str = "*") -> str:
+        """Persisted coordination clusters (written by the analysis side)."""
+        glob = self._uri(f"coordination/platform={platform}/kind=clusters/dt=*/run=*.parquet")
         return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"

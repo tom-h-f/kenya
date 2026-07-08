@@ -36,6 +36,19 @@ def query(sql: str) -> None:
 
 
 @app.command()
+def stats(
+    platform: str = typer.Option("x", help="platform prefix to summarise"),
+    hours: int = typer.Option(24, help="recent activity window in hours"),
+    days: int = typer.Option(7, help="daily breakdown window in days"),
+) -> None:
+    """Summarise total and recent data collected in R2."""
+    from kenya_monitor.stats import format_stats, gather_stats
+
+    summary = gather_stats(_storage(), platform=platform, recent_hours=hours, daily_days=days)
+    typer.echo(format_stats(summary))
+
+
+@app.command()
 def targets() -> None:
     """Print the configured collection targets."""
     for platform, t in load_targets().items():

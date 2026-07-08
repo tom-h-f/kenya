@@ -34,6 +34,7 @@ No database. Dedup + engagement-over-time are reconstructed in DuckDB at read ti
 ## Commands
 
 - `monitor check` - round-trip a probe record through R2 (auth + write/read check).
+- `monitor stats` - total and recent collection volume from R2.
 - `monitor targets` - list configured accounts/keywords.
 - `monitor query "SELECT ... FROM {posts} ..."` - DuckDB SQL over R2 (`{posts}` expands
   to the posts glob).
