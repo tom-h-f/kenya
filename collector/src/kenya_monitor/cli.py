@@ -252,7 +252,7 @@ def follows(
     from kenya_monitor.scheduler import run_follows_once
 
     counts = asyncio.run(
-        run_follows_once(handles=list(handle) or None, limit=limit or FOLLOW_FETCH_LIMIT)
+        run_follows_once(handles=handle, limit=limit or FOLLOW_FETCH_LIMIT)
     )
     typer.echo(f"follows: {counts}")
 
