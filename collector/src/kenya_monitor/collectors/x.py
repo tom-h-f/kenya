@@ -16,7 +16,7 @@ from kenya_monitor.collectors.base import (
     MetricSnapshot,
     Post,
 )
-from kenya_monitor.accounts import sync_accounts  # re-export for callers
+from kenya_monitor.accounts import configure_pool, sync_accounts  # re-export for callers
 from kenya_monitor.config import APP_ROOT
 from kenya_monitor.pacing import human_pause
 
@@ -67,7 +67,9 @@ def full_window(now: datetime | None = None) -> list[Window]:
 
 def build_api(db_path: Path = DEFAULT_DB_PATH) -> API:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    return API(str(db_path))
+    api = API(str(db_path))
+    configure_pool(api.pool)
+    return api
 
 
 def build_query(
