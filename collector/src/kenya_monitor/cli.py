@@ -246,13 +246,22 @@ def adapt(
 def follows(
     handle: list[str] = typer.Option(None, "--handle", help="explicit handles (else flagged clusters)"),
     limit: int = typer.Option(None, help="max edges per direction per account (default from env)"),
+    max_accounts: int = typer.Option(None, help="cap accounts per run (default from env)"),
+    top_suspicious: int = typer.Option(
+        None, "--top-suspicious", help="fetch follows for top-N suspicion-ranked accounts"
+    ),
 ) -> None:
     """Fetch follower/following edges for flagged-cluster members."""
-    from kenya_monitor.config import FOLLOW_FETCH_LIMIT
+    from kenya_monitor.config import FOLLOW_FETCH_LIMIT, FOLLOW_MAX_ACCOUNTS
     from kenya_monitor.scheduler import run_follows_once
 
     counts = asyncio.run(
-        run_follows_once(handles=handle, limit=limit or FOLLOW_FETCH_LIMIT)
+        run_follows_once(
+            handles=handle,
+            limit=limit or FOLLOW_FETCH_LIMIT,
+            max_accounts=max_accounts or (top_suspicious or FOLLOW_MAX_ACCOUNTS),
+            top_suspicious=top_suspicious,
+        )
     )
     typer.echo(f"follows: {counts}")
 

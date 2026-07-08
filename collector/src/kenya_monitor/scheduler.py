@@ -113,19 +113,32 @@ async def run_follows_once(
     handles: list[str] | None = None,
     limit: int = FOLLOW_FETCH_LIMIT,
     max_accounts: int = FOLLOW_MAX_ACCOUNTS,
+    top_suspicious: int | None = None,
 ) -> dict[str, int]:
-    """Follower/following edges for flagged-cluster members (or explicit handles)."""
+    """Follower/following edges for explicit handles, flagged-cluster members,
+    or the top-N most suspicious accounts in R2."""
+    from kenya_monitor.suspicion import top_suspicious_handles
+
     storage = Storage(R2Config.from_env())
-    if handles is None:
+    if top_suspicious:
+        handles = top_suspicious_handles(
+            storage.con,
+            storage.authors_view(platform="x"),
+            storage.posts_view(platform="x"),
+            n=top_suspicious,
+        )
+        log.info("follows: selected %d suspicious accounts (requested top %d)", len(handles), top_suspicious)
+    elif handles is None:
         handles = adaptive.cluster_accounts(
             storage.con, storage.clusters_view(platform="x"), storage.authors_view(platform="x")
         )
     handles = handles[:max_accounts]
     if not handles:
-        log.info("follows: no flagged accounts to fetch")
+        log.info("follows: no accounts to fetch")
         return {"follow_edges": 0}
     collector = await build_x_collector(load_accounts())
     counts = await collect_follows(collector, storage, handles, limit)
+    counts["accounts"] = len(handles)
     log.info("follows run complete: %s", counts)
     return counts
 
