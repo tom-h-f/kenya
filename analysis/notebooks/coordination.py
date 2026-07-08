@@ -7,14 +7,18 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import marimo as mo
+    import networkx as nx
+    import numpy as np
 
     from kma import coordination as co
+    from kma import viz
     from kma.db import connect
     from kma.semantic import assign_topics
 
+    viz.use_theme()
     con = connect()
     con.execute("SET enable_progress_bar=false")
-    return assign_topics, co, con, mo
+    return assign_topics, co, con, mo, np, nx, viz
 
 
 @app.cell
@@ -35,45 +39,89 @@ def _(co, mo):
 
 @app.cell
 def _(co, con, mo):
-    cov = co.coverage(con)
-    _row = cov.iloc[0]
+    _row = co.coverage(con).iloc[0]
     mo.vstack([
         mo.md(
-            f"""
-            ### Data coverage ({int(_row['posts']):,} posts)
-
-            Wave B channels unlock as structured fields accrue: hashtags
-            **{_row['hashtag_share']:.1%}**, URLs **{_row['url_share']:.1%}**,
-            mentions **{_row['mention_share']:.1%}**.
-            """
+            "### Data coverage\nWave B channels (co-hashtag / co-URL / co-mention) "
+            "unlock as the share of posts carrying structured fields grows."
         ),
-        cov,
+        mo.hstack(
+            [
+                mo.stat(value=f"{int(_row['posts']):,}", label="Posts", bordered=True),
+                mo.stat(value=f"{_row['hashtag_share']:.1%}", label="With hashtags", bordered=True),
+                mo.stat(value=f"{_row['url_share']:.1%}", label="With URLs", bordered=True),
+                mo.stat(value=f"{_row['mention_share']:.1%}", label="With mentions", bordered=True),
+            ],
+            widths="equal",
+        ),
     ])
     return
 
 
 @app.cell
 def _(co, con):
-    _channels = ["co_retweet", "co_reply", "text_sim"]
-    edge_frames = {}
-    for _ch in _channels:
-        _e = co.validated_edges(con, _ch, min_repetition=2, tau=co.DEFAULT_TAU)
-        edge_frames[_ch] = _e
-        print(
-            f"{_ch}: tested={len(_e)} "
-            f"fdr={int(_e['sig_fdr'].sum())} "
-            f"bonf={int(_e['sig_bonferroni'].sum())}"
-        )
-    edge_report = co.edge_report(edge_frames["co_retweet"])
-    return (edge_report,)
+    edge_frames = {
+        _ch: co.validated_edges(con, _ch, min_repetition=2, tau=co.DEFAULT_TAU)
+        for _ch in ["co_retweet", "co_reply", "text_sim"]
+    }
+    return (edge_frames,)
 
 
 @app.cell
-def _(edge_report, mo):
+def _(co, edge_frames, mo, viz):
+    _channels = list(edge_frames)
+    _fig, _ax = viz.new_fig(9, 3.6)
+    _fig.subplots_adjust(left=0.13)
+    viz.grouped_hbars(
+        _ax,
+        _channels,
+        [
+            ("tested pairs", [len(edge_frames[c]) for c in _channels], viz.ORDINAL_3[0]),
+            ("FDR-validated", [int(edge_frames[c]["sig_fdr"].sum()) for c in _channels], viz.ORDINAL_3[1]),
+            ("Bonferroni", [int(edge_frames[c]["sig_bonferroni"].sum()) for c in _channels], viz.ORDINAL_3[2]),
+        ],
+        legend_loc="lower right",
+    )
+    _ax.set_title("Edges surviving each filter, loose to strict, per channel")
+    _ax.set_xlabel("account pairs")
     mo.vstack([
-        mo.md("### Edge-filter overlap (co-retweet)"),
-        edge_report,
+        _fig,
+        mo.md("**Edge-filter overlap, co-retweet** (Jaccard of surviving edge sets)"),
+        co.edge_report(edge_frames["co_retweet"]),
     ])
+    return
+
+
+@app.cell
+def _(edge_frames, mo, np, viz):
+    import pandas as _pd
+
+    _rows = [
+        _e.assign(channel=_c) for _c, _e in edge_frames.items()
+        if len(_e) and "p_value" in _e.columns
+    ]
+    if _rows:
+        _all = _pd.concat(_rows, ignore_index=True)
+        _all["nlp"] = -np.log10(_all["p_value"].clip(lower=1e-300))
+        _fig, _ax = viz.new_fig(9, 4.6)
+        _slots = {"co_retweet": viz.BLUE, "co_reply": viz.AQUA, "text_sim": viz.YELLOW}
+        for _c, _g in _all.groupby("channel"):
+            _sig = _g[_g["sig_fdr"]]
+            _ns = _g[~_g["sig_fdr"]]
+            _ax.scatter(_sig["weight"], _sig["nlp"], s=42, color=_slots[_c],
+                        edgecolors=viz.SURFACE, linewidths=0.8, zorder=3)
+            _ax.scatter(_ns["weight"], _ns["nlp"], s=42, facecolors="none",
+                        edgecolors=_slots[_c], linewidths=1.4, zorder=2)
+        viz.legend_swatches(
+            _ax, [(_c, _col) for _c, _col in _slots.items()], loc="upper left"
+        )
+        _ax.set_title("Pair significance vs shared actions - filled marks survive FDR")
+        _ax.set_xlabel("weight (shared objects / co-actions)")
+        _ax.set_ylabel("-log10 p-value")
+        _out = _fig
+    else:
+        _out = mo.md("_No tested pairs yet on the current sample._")
+    _out
     return
 
 
@@ -90,15 +138,33 @@ def _(co, con):
 
 
 @app.cell
-def _(mo, null_rt, recovery):
+def _(mo, null_rt, recovery, viz):
+    _fig, _ax = viz.new_fig(8, 2.8)
+    _fig.subplots_adjust(left=0.13)
+    viz.grouped_hbars(
+        _ax,
+        ["Bonferroni", "FDR"],
+        [
+            ("real traces", [null_rt.loc[0, "bonferroni"], null_rt.loc[0, "fdr"]], viz.BLUE),
+            ("shuffled null", [null_rt.loc[1, "bonferroni"], null_rt.loc[1, "fdr"]], viz.DEEMPH),
+        ],
+        legend_loc="lower right",
+    )
+    _ax.set_title("False-positive control - shuffled input must give ~0 validated edges")
+    _ax.set_xlabel("validated edges")
     mo.vstack([
         mo.md("### Evaluation: null baseline + synthetic injection"),
-        mo.md(
-            "Shuffled-object Bonferroni edges should be ~0. "
-            "Synthetic cluster recovery on injected co-retweet traces:"
+        _fig,
+        mo.md("Recovery of a planted 15-account cluster (co-retweet, 8 seed tweets, 60s window):"),
+        mo.hstack(
+            [
+                mo.stat(value=f"{recovery['precision']:.2f}", label="Precision", bordered=True),
+                mo.stat(value=f"{recovery['recall']:.2f}", label="Recall", bordered=True),
+                mo.stat(value=f"{recovery['f1']:.2f}", label="F1", bordered=True),
+                mo.stat(value=f"{recovery['weighted_precision']:.2f}", label="Weighted precision", bordered=True),
+            ],
+            widths="equal",
         ),
-        null_rt,
-        recovery,
     ])
     return
 
@@ -118,29 +184,168 @@ def _(co, con):
 
 
 @app.cell
-def _(assign_topics, co, con, layers, members, mo, summary):
+def _(co, layers):
+    aggregated = co.aggregate_layers(layers)
+    sweep = co.resolution_sweep(aggregated) if len(aggregated) else None
+    return aggregated, sweep
+
+
+@app.cell
+def _(mo, sweep, viz):
+    if sweep is not None and len(sweep):
+        _fig, _ax = viz.new_fig(8, 3.4)
+        _ax.plot(sweep["gamma"], sweep["clusters"], color=viz.BLUE, marker="o",
+                 markersize=5.5, markeredgecolor=viz.SURFACE, markeredgewidth=1.2)
+        _ax.plot(sweep["gamma"], sweep["largest"], color=viz.AQUA, marker="o",
+                 markersize=5.5, markeredgecolor=viz.SURFACE, markeredgewidth=1.2)
+        viz.legend_swatches(
+            _ax, [("clusters found", viz.BLUE), ("largest cluster size", viz.AQUA)],
+            loc="upper right",
+        )
+        _ax.set_xscale("log")
+        _ax.set_title("Leiden resolution sweep - robust clusters persist across gamma")
+        _ax.set_xlabel("CPM resolution (gamma, log)")
+        _ax.set_ylabel("count")
+        _out = _fig
+    else:
+        _out = mo.md("_No aggregated multiplex edges yet - sweep skipped._")
+    _out
+    return
+
+
+@app.cell
+def _(aggregated, mo, nx, viz):
+    if len(aggregated):
+        _g = nx.Graph()
+        for _r in aggregated.itertuples():
+            _g.add_edge(_r.src, _r.dst, weight=_r.weight, n_channels=_r.n_channels)
+        _pos = nx.spring_layout(_g, seed=0, weight="weight")
+        _fig, _ax = viz.new_fig(7.5, 6)
+        for (_u, _v), _d in ((e, _g.edges[e]) for e in _g.edges):
+            _multi = _d["n_channels"] >= 2
+            _ax.plot(
+                [_pos[_u][0], _pos[_v][0]], [_pos[_u][1], _pos[_v][1]],
+                color=viz.VIOLET if _multi else viz.DEEMPH,
+                linewidth=2.4 if _multi else 1.4, zorder=2,
+            )
+        _deg = dict(_g.degree)
+        _ax.scatter(
+            [_pos[n][0] for n in _g], [_pos[n][1] for n in _g],
+            s=[60 + 30 * _deg[n] for n in _g], color=viz.BLUE,
+            edgecolors=viz.SURFACE, linewidths=1.4, zorder=3,
+        )
+        viz.legend_swatches(
+            _ax,
+            [("edge in >= 2 channels", viz.VIOLET), ("single-channel edge", viz.DEEMPH),
+             ("account (size = degree)", viz.BLUE)],
+            loc="upper right",
+        )
+        _ax.set_title("Validated multiplex graph - cross-channel edges are the strong evidence")
+        _ax.set_axis_off()
+        _out = _fig
+    else:
+        _out = mo.md("_No validated edges to draw yet - the multiplex graph is empty on the current sample._")
+    _out
+    return
+
+
+@app.cell
+def _(assign_topics, co, con, layers, members, summary):
     topics = assign_topics(con, min_cluster_size=60)
+    cluster_names = co.cluster_names(con, members, summary) if len(members) else None
     cards = co.scorecards(con, members, layers, topics=topics) if len(members) else None
     iv = (
         co.internal_validation(con, members, n_perm=200, min_size=2)
         if len(members)
         else None
     )
+    return cards, cluster_names, iv, topics
+
+
+@app.cell
+def _(cards, cluster_names, co, mo, summary):
+    _summary = (
+        co.with_cluster_names(summary, cluster_names, drop_id=True)
+        if cluster_names is not None and len(summary)
+        else summary
+    )
+    _card_cols = [
+        "name", "size", "n_channels", "suspicion_mean", "near_dup_rate",
+        "dominant_topic", "inauthenticity_index",
+    ]
+    _cards = (
+        co.with_cluster_names(cards, cluster_names, drop_id=True)
+        if cards is not None and cluster_names is not None and len(cards)
+        else cards
+    )
     mo.vstack([
         mo.md("### Detected clusters (co-retweet + text-sim, FDR-validated)"),
-        summary if len(summary) else mo.md("_No clusters >= min_size on current sample._"),
-        mo.md("### Scorecards (ranked by inauthenticity index)") if cards is not None else mo.md(""),
-        cards.sort_values("inauthenticity_index", ascending=False)[
-            [
-                "cluster_id", "size", "n_channels", "suspicion_mean", "near_dup_rate",
-                "dominant_topic", "inauthenticity_index",
-            ]
-        ].head(15)
-        if cards is not None and len(cards)
-        else mo.md(""),
-        mo.md("### Internal validation (permutation vs random groups)") if iv is not None else mo.md(""),
-        iv if iv is not None and len(iv) else mo.md(""),
+        _summary if len(summary) else mo.md("_No clusters >= min_size on current sample._"),
+        mo.md("### Scorecards, ranked by inauthenticity index") if cards is not None else mo.md(""),
+        _cards[_card_cols].head(15)
+        if _cards is not None and len(_cards) and "dominant_topic" in _cards.columns
+        else (_cards.head(15) if _cards is not None and len(_cards) else mo.md("")),
     ])
+    return
+
+
+@app.cell
+def _(cards, cluster_names, co, mo, np, viz):
+    if cards is not None and len(cards) and cluster_names is not None:
+        _c = co.with_cluster_names(
+            cards.sort_values("inauthenticity_index", ascending=False).head(12),
+            cluster_names,
+        )
+        _labels = _c["label"].tolist()
+        _fig, _ax = viz.new_fig(9, max(2.4, 0.5 * len(_c)))
+        _fig.subplots_adjust(left=0.18)
+        _ys = np.arange(len(_c))[::-1]
+        _left = np.zeros(len(_c))
+        for _k, _color in zip(co.INAUTHENTICITY_WEIGHTS, viz.CATEGORICAL):
+            _w = co.INAUTHENTICITY_WEIGHTS[_k] * _c[f"ix_{_k}"].to_numpy()
+            _ax.barh(_ys, _w, left=_left, height=0.55, color=_color, linewidth=0)
+            _left = _left + _w
+        for _y, _v in zip(_ys, _left):
+            _ax.text(_v + 0.012, _y, f"{_v:.2f}", va="center", fontsize=9, color=viz.INK_2)
+        _ax.set_yticks(_ys, _labels)
+        _ax.set_xlim(0, max(1.0, _left.max() * 1.12))
+        _ax.set_ylim(-0.6, len(_c) - 0.4)
+        _ax.grid(axis="y", visible=False)
+        viz.legend_swatches(
+            _ax,
+            list(zip(co.INAUTHENTICITY_WEIGHTS, viz.CATEGORICAL)),
+            loc="lower right",
+        )
+        _ax.set_title("Inauthenticity index by cluster - weighted component contributions")
+        _ax.set_xlabel("index (weighted sum of percentile-ranked components)")
+        _out = _fig
+    else:
+        _out = mo.md("_No clusters to score yet on the current sample._")
+    _out
+    return
+
+
+@app.cell
+def _(cluster_names, co, iv, mo, viz):
+    if iv is not None and len(iv) and cluster_names is not None:
+        _iv = co.with_cluster_names(iv, cluster_names)
+        _fig, _ax = viz.new_fig(9, max(2.6, 0.55 * len(_iv)))
+        _fig.subplots_adjust(left=0.16)
+        viz.grouped_hbars(
+            _ax,
+            _iv["label"].tolist(),
+            [
+                ("suspicion", _iv["suspicion_effect"], viz.BLUE),
+                ("narrative homogeneity", _iv["homogeneity_effect"], viz.AQUA),
+            ],
+            legend_loc="lower right",
+        )
+        _ax.set_title("Detected clusters vs random same-size groups - permutation effect size")
+        _ax.set_xlabel("effect size, (observed - null mean) / null std")
+        _out = _fig
+    else:
+        _out = mo.md("_No internal-validation results yet on the current sample._")
+    _out
     return
 
 
@@ -152,34 +357,88 @@ def _(mo):
 
 
 @app.cell
-def _(co, con, layers, members, mo, persist, summary):
+def _(cluster_names, co, con, layers, members, mo, persist, summary):
     if persist.value and len(members):
-        keys = []
-        for ch, edges in layers.items():
-            for method, col in [
+        _keys = []
+        for _ch, _edges in layers.items():
+            for _method, _col in [
                 ("svn_fdr", "sig_fdr"),
                 ("svn_bonf", "sig_bonferroni"),
                 ("pct", "sig_percentile"),
             ]:
-                subset = edges[edges[col]]
-                if len(subset):
-                    keys.append(co.persist_edges(con, subset, ch, method))
-        keys.append(co.persist_clusters(con, members, summary))
-        mo.md("Persisted:\n\n" + "\n".join(f"- `{k}`" for k in keys))
+                _subset = _edges[_edges[_col]]
+                if len(_subset):
+                    _keys.append(co.persist_edges(con, _subset, _ch, _method))
+        _summary = (
+            summary.merge(cluster_names, on="cluster_id", how="left")
+            if cluster_names is not None
+            else summary
+        )
+        _keys.append(co.persist_clusters(con, members, _summary))
+        _out = mo.md("Persisted:\n\n" + "\n".join(f"- `{k}`" for k in _keys))
     elif persist.value:
-        mo.md("_Nothing to persist (no clusters detected)._")
+        _out = mo.md("_Nothing to persist (no clusters detected)._")
+    else:
+        _out = mo.md("")
+    _out
     return
 
 
 @app.cell
-def _(co, con, members, mo):
-    if len(members):
-        _top = members["cluster_id"].value_counts().idxmax()
-        drill = co.member_table(con, members[members["cluster_id"] == _top])
+def _(cluster_names, co, con, members):
+    if len(members) and cluster_names is not None:
+        top_cluster = members["cluster_id"].value_counts().idxmax()
+        top_label = cluster_names.loc[
+            cluster_names["cluster_id"] == top_cluster, "label"
+        ].iloc[0]
+        drill = co.with_cluster_names(
+            co.member_table(con, members[members["cluster_id"] == top_cluster]),
+            cluster_names,
+            drop_id=True,
+        )
+    else:
+        top_cluster, top_label, drill = None, None, None
+    return drill, top_cluster, top_label
+
+
+@app.cell
+def _(drill, mo, top_label):
+    (
         mo.vstack([
-            mo.md(f"### Member drill-down: largest cluster `{_top}`"),
+            mo.md(f"### Member drill-down: {top_label}"),
             drill,
         ])
+        if drill is not None
+        else mo.md("")
+    )
+    return
+
+
+@app.cell
+def _(drill, mo, viz):
+    if drill is not None and len(drill):
+        _fig, _ax = viz.new_fig(8, 4.6)
+        _sc = _ax.scatter(
+            drill["account_age_days"], drill["followers_count"].clip(lower=1),
+            c=drill["suspicion"], cmap=viz.SEQ_CMAP, vmin=0, vmax=1,
+            s=60, edgecolors=viz.SURFACE, linewidths=1.0,
+        )
+        for _, _r in drill.head(10).iterrows():
+            _ax.annotate(
+                _r["handle"], (_r["account_age_days"], max(_r["followers_count"], 1)),
+                xytext=(7, 4), textcoords="offset points", fontsize=8, color=viz.INK_2,
+            )
+        _ax.set_yscale("log")
+        _cb = _fig.colorbar(_sc, ax=_ax, pad=0.01)
+        _cb.set_label("suspicion", color=viz.INK_2, fontsize=9)
+        _cb.outline.set_visible(False)
+        _ax.set_title("Cluster members - age vs followers, shaded by suspicion")
+        _ax.set_xlabel("account age (days)")
+        _ax.set_ylabel("followers")
+        _out = _fig
+    else:
+        _out = mo.md("_No member cluster to drill into on the current sample._")
+    _out
     return
 
 

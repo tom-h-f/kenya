@@ -27,7 +27,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from kma.db import BUCKET, embeddings_source, posts_source
+from kma.db import BUCKET, embeddings_source, engagements_source, posts_source
 from kma.semantic import DIM, MODEL, _slug
 
 SAMPLING_CAVEAT = (
@@ -109,16 +109,52 @@ def content_clusters(
     return df[["platform_post_id", "cluster_id"]].reset_index(drop=True)
 
 
+def _engagement_traces(con: duckdb.DuckDBPyConnection, platform: str) -> str | None:
+    """Snowballed retweeter incidence as trace rows (untimed - the platform does
+    not expose retweet times, so created_at is NULL and timed variants skip
+    these rows automatically). None when no engagement data exists yet."""
+    src = engagements_source(platform)
+    try:
+        con.sql(f"SELECT 1 FROM {src} LIMIT 1").fetchall()
+    except duckdb.Error:
+        return None
+    return f"""
+        SELECT platform_user_id AS author_id,
+               platform_post_id AS action_object,
+               CAST(NULL AS TIMESTAMPTZ) AS created_at
+        FROM (
+            SELECT * FROM {src}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform, platform_post_id, platform_user_id, kind
+                ORDER BY collected_at DESC
+            ) = 1
+        )
+        WHERE kind = 'retweet'
+    """
+
+
 def traces(
     con: duckdb.DuckDBPyConnection,
     channel: str,
     platform: str = "x",
     model: str = MODEL,
     tau: float = 0.9,
+    include_engagements: bool = True,
 ):
     """Behavioural trace relation (author_id, action_object, created_at) for one
-    channel, deduped to one row per (author, object, time)."""
-    if channel in ("co_retweet", "fast_co_share"):
+    channel, deduped to one row per (author, object, time).
+
+    co_retweet unions the snowballed retweeter lists (engagements/) with
+    post-derived retweets: censused objects then test real incidence under the
+    hypergeometric null instead of sampling luck. Timed channels (fast_co_share)
+    stay post-only - engagement rows carry no event time."""
+    if channel == "co_retweet":
+        inner = _SIMPLE_TRACES["co_retweet"]
+        if include_engagements:
+            eng = _engagement_traces(con, platform)
+            if eng is not None:
+                inner = f"{inner} UNION ALL {eng}"
+    elif channel == "fast_co_share":
         inner = _SIMPLE_TRACES["co_retweet"]
     elif channel in _SIMPLE_TRACES:
         inner = _SIMPLE_TRACES[channel]
@@ -322,7 +358,9 @@ def validate_montecarlo(
     from statsmodels.stats.multitest import multipletests
 
     t = trace_table or _register_traces(con, channel, platform, model, tau)
-    tr = con.sql(f"SELECT author_id, action_object, created_at FROM {t}").df()
+    tr = con.sql(
+        f"SELECT author_id, action_object, created_at FROM {t} WHERE created_at IS NOT NULL"
+    ).df()
     if tr.empty:
         return pd.DataFrame(
             columns=["src", "dst", "weight", "min_gap", "p_value", "validated"]
@@ -606,6 +644,147 @@ def clusters(
         )
     )
     return members.reset_index(drop=True), summary
+
+
+# --- cluster display names --------------------------------------------------
+
+_CHANNEL_FALLBACK: dict[str, str] = {
+    "co_retweet": "retweet ring",
+    "co_reply": "reply ring",
+    "text_sim": "duplicate text",
+    "fast_co_share": "fast sharing",
+    "co_hashtag": "shared hashtags",
+    "co_url": "shared links",
+    "co_mention": "shared mentions",
+}
+
+
+def _channel_fallback(channels) -> str:
+    chans = list(channels or [])
+    if len(chans) >= 2:
+        return "multi-signal"
+    if not chans:
+        return "cluster"
+    return _CHANNEL_FALLBACK.get(chans[0], chans[0].replace("co_", ""))
+
+
+def _ctfidf_top_terms(docs: list[str], top_terms: int = 8) -> list[list[str]]:
+    """Distinctive terms per document via c-TF-IDF (same recipe as topic_summary)."""
+    from sklearn.feature_extraction.text import CountVectorizer
+
+    from kma.semantic import STOPWORDS, _CLEAN
+
+    if not docs:
+        return []
+    cleaned = [_CLEAN.sub(" ", doc.lower()) for doc in docs]
+    cv = CountVectorizer(stop_words=STOPWORDS, min_df=1, token_pattern=r"[a-z]{3,}")
+    try:
+        counts = cv.fit_transform(cleaned).toarray()
+    except ValueError:
+        return [[] for _ in docs]
+    words_per_class = np.maximum(counts.sum(axis=1, keepdims=True), 1)
+    tf = counts / words_per_class
+    idf = np.log(1 + words_per_class.mean() / np.maximum(counts.sum(axis=0), 1))
+    ctfidf = tf * idf
+    vocab = cv.get_feature_names_out()
+    return [
+        [vocab[j] for j in np.argsort(ctfidf[i])[::-1][:top_terms]]
+        for i in range(len(docs))
+    ]
+
+
+def _short_name(terms: list[str], max_words: int) -> str:
+    words = [t for t in terms if t and len(t) >= 3][:max_words]
+    return " ".join(words)
+
+
+def _dedupe_names(names: list[str], term_lists: list[list[str]], max_words: int) -> list[str]:
+    used: set[str] = set()
+    out: list[str] = []
+    for name, terms in zip(names, term_lists):
+        candidate = name
+        n = max_words + 1
+        while candidate in used and n <= len(terms):
+            candidate = _short_name(terms, n)
+            n += 1
+        if candidate in used:
+            candidate = f"{candidate} alt"
+        used.add(candidate)
+        out.append(candidate)
+    return out
+
+
+def cluster_names(
+    con: duckdb.DuckDBPyConnection,
+    members: pd.DataFrame,
+    summary: pd.DataFrame | None = None,
+    platform: str = "x",
+    max_words: int = 3,
+    posts_view: str | None = None,
+) -> pd.DataFrame:
+    """Short human-readable names (1-3 words) for coordination clusters.
+
+    Names come from c-TF-IDF terms over member posts; clusters with too little
+    text fall back to a channel descriptor from `summary`. Returns
+    (cluster_id, name, label) where label is ``name (n=size)`` for charts."""
+    cols = ["cluster_id", "name", "label"]
+    if members.empty:
+        return pd.DataFrame(columns=cols)
+    sizes = members.groupby("cluster_id")["author_id"].size()
+    summary_by_id = (
+        summary.set_index("cluster_id") if summary is not None and len(summary) else None
+    )
+    con.register("_coord_members", members[["cluster_id", "author_id"]])
+    try:
+        posts = posts_view or f"({ _latest_posts_cte(platform) })"
+        texts = con.sql(
+            f"""
+            SELECT m.cluster_id, p.text
+            FROM _coord_members m
+            JOIN {posts} p ON p.author_id = m.author_id
+            WHERE p.text IS NOT NULL AND length(trim(p.text)) > 0
+            """
+        ).df()
+    finally:
+        con.unregister("_coord_members")
+
+    cluster_ids = sorted(members["cluster_id"].unique())
+    docs = [
+        " ".join(texts.loc[texts["cluster_id"] == cid, "text"].tolist())
+        for cid in cluster_ids
+    ]
+    term_lists = _ctfidf_top_terms(docs)
+    raw_names = []
+    for cid, terms in zip(cluster_ids, term_lists):
+        name = _short_name(terms, max_words)
+        if not name and summary_by_id is not None and cid in summary_by_id.index:
+            name = _channel_fallback(summary_by_id.loc[cid, "channels"])
+        if not name:
+            name = "cluster"
+        raw_names.append(name)
+    names = _dedupe_names(raw_names, term_lists, max_words)
+    rows = [
+        {
+            "cluster_id": cid,
+            "name": name,
+            "label": f"{name} (n={int(sizes[cid])})",
+        }
+        for cid, name in zip(cluster_ids, names)
+    ]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def with_cluster_names(
+    df: pd.DataFrame,
+    names: pd.DataFrame,
+    *,
+    drop_id: bool = False,
+) -> pd.DataFrame:
+    """Attach name + label columns; optionally drop cluster_id for display tables."""
+    out = df.merge(names[["cluster_id", "name", "label"]], on="cluster_id", how="left")
+    if drop_id:
+        out = out.drop(columns=["cluster_id"])
+    return out
 
 
 # --- characterization (05) -------------------------------------------------

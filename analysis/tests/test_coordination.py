@@ -107,3 +107,78 @@ def test_aggregate_layers_and_corroborate():
     assert agg.loc[0, "n_channels"] == 2
     corr = co.corroborate(layers)
     assert corr.loc[0, "n_channels"] == 2
+
+
+def test_cluster_names_from_member_text():
+    import duckdb
+
+    members = pd.DataFrame(
+        {
+            "author_id": ["a1", "a2", "b1", "b2"],
+            "cluster_id": [0, 0, 1, 1],
+        }
+    )
+    summary = pd.DataFrame(
+        {
+            "cluster_id": [0, 1],
+            "size": [2, 2],
+            "channels": [["co_retweet"], ["text_sim"]],
+            "n_channels": [1, 1],
+        }
+    )
+    posts = pd.DataFrame(
+        {
+            "author_id": ["a1", "a2", "b1", "b2"],
+            "text": [
+                "IEBC cannot be trusted in Kenya elections",
+                "IEBC rigging claims spread online",
+                "World Cup football match highlights",
+                "FIFA football world cup final",
+            ],
+        }
+    )
+    con = duckdb.connect()
+    con.register("_posts", posts)
+
+    names = co.cluster_names(con, members, summary, posts_view="_posts")
+    assert len(names) == 2
+    assert "name" in names.columns
+    assert "label" in names.columns
+    assert all(names["name"].str.split().str.len() <= 3)
+    assert "iebc" in names.loc[names["cluster_id"] == 0, "name"].iloc[0].lower()
+    assert "label" in names.columns
+    assert "(n=2)" in names["label"].iloc[0]
+
+
+def test_cluster_names_channel_fallback():
+    import duckdb
+
+    members = pd.DataFrame({"author_id": ["a1"], "cluster_id": [3]})
+    summary = pd.DataFrame(
+        {
+            "cluster_id": [3],
+            "size": [1],
+            "channels": [["co_retweet", "text_sim"]],
+            "n_channels": [2],
+        }
+    )
+    posts = pd.DataFrame({"author_id": ["a1"], "text": [""]})
+    con = duckdb.connect()
+    con.register("_posts", posts)
+
+    names = co.cluster_names(con, members, summary, posts_view="_posts")
+    assert names.loc[0, "name"] == "multi-signal"
+
+
+def test_with_cluster_names_adds_display_columns():
+    df = pd.DataFrame({"cluster_id": [0, 1], "size": [5, 3]})
+    names = pd.DataFrame(
+        {
+            "cluster_id": [0, 1],
+            "name": ["iebc rigging", "world cup"],
+            "label": ["iebc rigging (n=5)", "world cup (n=3)"],
+        }
+    )
+    out = co.with_cluster_names(df, names)
+    assert list(out["name"]) == ["iebc rigging", "world cup"]
+    assert list(out["label"]) == ["iebc rigging (n=5)", "world cup (n=3)"]
