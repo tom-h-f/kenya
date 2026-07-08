@@ -14,6 +14,7 @@ log = logging.getLogger("kenya_monitor")
 
 # twscrape picks the next account with: ORDER BY <this> LIMIT 1
 from kenya_monitor.config import TWS_ACCOUNT_ORDER
+from kenya_monitor.pacing import install_per_account_pacing
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class SyncResult:
 def configure_pool(pool: AccountsPool) -> None:
     """Least-recently-used rotation by default; override with TWS_ACCOUNT_ORDER."""
     pool._order_by = TWS_ACCOUNT_ORDER
+    install_per_account_pacing(pool)
 
 
 async def active_count(pool: AccountsPool) -> int:

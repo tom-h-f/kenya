@@ -29,7 +29,6 @@ from kenya_monitor.config import (
     PlatformTargets,
     XAccount,
 )
-from kenya_monitor.pacing import human_pause, set_pool_size
 from kenya_monitor.storage import Storage
 
 log = logging.getLogger("kenya_monitor")
@@ -54,7 +53,6 @@ async def build_x_collector(accounts: list[XAccount], api: API | None = None) ->
                 result.added,
                 result.updated,
             )
-        set_pool_size(result.active)
         return XCollector(api)
 
 
@@ -66,9 +64,7 @@ async def _search_keyword(
     window_limit: int,
 ) -> list[Post]:
     kw_posts: list[Post] = []
-    for i, (since, until) in enumerate(search_windows):
-        if i:
-            await human_pause()
+    for since, until in search_windows:
         kw_posts.extend(
             [
                 p
@@ -129,9 +125,7 @@ async def collect_x(
 
     if accounts and targets.accounts:
         timeline_posts: list[Post] = []
-        for i, handle in enumerate(targets.accounts):
-            if i:
-                await human_pause()
+        for handle in targets.accounts:
             got = [p async for p in collector.timeline(handle, limit=timeline_limit)]
             log.info("timeline @%s -> %d posts", handle, len(got))
             timeline_posts.extend(got)
@@ -160,13 +154,9 @@ async def collect_backfill(
     """One-time deep sweep to even out historical coverage: for each keyword, pull engaged
     posts from every window, writing per keyword (resumable if interrupted)."""
     total = 0
-    req = 0
     for kw in targets.keywords:
         kw_posts: list[Post] = []
         for since, until in windows:
-            if req:
-                await human_pause()
-            req += 1
             kw_posts.extend(
                 [
                     p
@@ -314,9 +304,7 @@ async def collect_snowball(
 
     due_rt = _due(retweeted, state, refresh_hours)
     engagements: list[Engagement] = []
-    for i, oid in enumerate(due_rt):
-        if i:
-            await human_pause()
+    for oid in due_rt:
         got = [e async for e in collector.retweeters(oid, limit=retweeters_limit)]
         log.info("retweeters of %s -> %d", oid, len(got))
         engagements.extend(got)
@@ -328,9 +316,7 @@ async def collect_snowball(
 
     due_conv = _due(conversations, state, refresh_hours)
     reply_posts: list[Post] = []
-    for i, cid in enumerate(due_conv):
-        if i:
-            await human_pause()
+    for cid in due_conv:
         got = [p async for p in collector.replies(cid, limit=replies_limit)]
         log.info("replies under %s -> %d", cid, len(got))
         reply_posts.extend(got)
@@ -368,9 +354,7 @@ async def collect_follows(
     """Follower/following edges for flagged accounts only (never the general
     population) -> follows/ prefix."""
     edges: list[FollowEdge] = []
-    for i, handle in enumerate(handles):
-        if i:
-            await human_pause()
+    for handle in handles:
         got = [e async for e in collector.follows(handle, limit=limit)]
         log.info("follows @%s -> %d edges", handle, len(got))
         edges.extend(got)

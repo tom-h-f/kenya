@@ -18,7 +18,6 @@ from kenya_monitor.collectors.base import (
 )
 from kenya_monitor.accounts import configure_pool, sync_accounts  # re-export for callers
 from kenya_monitor.config import APP_ROOT
-from kenya_monitor.pacing import human_pause
 
 DEFAULT_DB_PATH = Path(os.getenv("TWS_ACCOUNTS_DB", APP_ROOT / "state" / "accounts.db"))
 
@@ -179,9 +178,7 @@ class XCollector(Collector):
     async def hydrate(self, post_ids: list[str]) -> AsyncIterator[Post]:
         """Fetch referenced posts by id; no age cutoff - an old original is
         still the object its retweets point at."""
-        for i, pid in enumerate(post_ids):
-            if i:
-                await human_pause()
+        for pid in post_ids:
             tw = await self.api.tweet_details(int(pid))
             if tw is not None:
                 yield self._to_post(tw)
@@ -194,15 +191,12 @@ class XCollector(Collector):
         async for u in self.api.followers(user.id, limit=limit):
             self._authors[str(u.id)] = self._to_author(u)
             yield FollowEdge(platform=self.platform, follower_id=str(u.id), followed_id=uid)
-        await human_pause()
         async for u in self.api.following(user.id, limit=limit):
             self._authors[str(u.id)] = self._to_author(u)
             yield FollowEdge(platform=self.platform, follower_id=uid, followed_id=str(u.id))
 
     async def refresh_metrics(self, post_ids: list[str]) -> AsyncIterator[MetricSnapshot]:
-        for i, pid in enumerate(post_ids):
-            if i:
-                await human_pause()
+        for pid in post_ids:
             tw = await self.api.tweet_details(int(pid))
             if tw is None:
                 continue

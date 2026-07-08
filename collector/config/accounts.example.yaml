@@ -6,7 +6,8 @@
 # twscrape logs in with each account and pools/rotates them across requests.
 # More accounts = more resilient to bans and higher throughput per run.
 # The scheduler picks least-recently-used accounts (TWS_ACCOUNT_ORDER), runs
-# COLLECT_CONCURRENCY keyword workers in parallel, and maintains the pool every
+# COLLECT_CONCURRENCY keyword workers in parallel, paces REQUEST_DELAY_MIN/MAX
+# per scraping account (not globally), and maintains the pool every
 # ACCOUNT_SYNC_HOURS (sync yaml, relogin failures, reset stale locks).
 #
 #   monitor accounts sync   # refresh proxy/cookie changes from yaml
