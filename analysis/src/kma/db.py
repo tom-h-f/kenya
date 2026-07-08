@@ -114,6 +114,42 @@ def latest_labels(con: duckdb.DuckDBPyConnection, platform: str = "*"):
     )
 
 
+def engagements_source(platform: str = "*") -> str:
+    glob = f"r2://{BUCKET}/engagements/platform={platform}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def latest_engagements(con: duckdb.DuckDBPyConnection, platform: str = "*"):
+    """One row per (post, user, kind) engagement edge (latest snapshot). Incidence
+    only - the platform does not expose when a retweet happened."""
+    return con.sql(
+        f"""
+        SELECT * FROM {engagements_source(platform)}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform, platform_post_id, platform_user_id, kind
+            ORDER BY collected_at DESC
+        ) = 1
+        """
+    )
+
+
+def follows_source(platform: str = "*") -> str:
+    glob = f"r2://{BUCKET}/follows/platform={platform}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def latest_follows(con: duckdb.DuckDBPyConnection, platform: str = "*"):
+    """One row per (follower, followed) edge (latest snapshot)."""
+    return con.sql(
+        f"""
+        SELECT * FROM {follows_source(platform)}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform, follower_id, followed_id ORDER BY collected_at DESC
+        ) = 1
+        """
+    )
+
+
 def coordination_source(
     kind: str = "edges",
     platform: str = "*",

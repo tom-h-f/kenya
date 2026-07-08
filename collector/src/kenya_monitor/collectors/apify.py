@@ -82,6 +82,8 @@ class ApifyXCollector(Collector):
         since: str | None = None,
         until: str | None = None,
         min_faves: int | None = None,
+        product: str | None = None,  # actor already requests Latest; param for interface parity
+        include_retweets: bool = False,
     ) -> AsyncIterator[Post]:
         parts = [keyword]
         if min_faves:
@@ -91,6 +93,8 @@ class ApifyXCollector(Collector):
             parts.append(f"since:{since}")
         if until:
             parts.append(f"until:{until}")
+        if include_retweets:
+            parts.append("include:nativeretweets")
         query = " ".join(parts)
 
         # For xquik searchTerms is supported, but also twitterContent can be used.

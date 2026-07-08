@@ -66,6 +66,32 @@ class MetricSnapshot:
 
 
 @dataclass
+class Engagement:
+    """One account's engagement with one post (incidence, no event timestamp -
+    the platform does not expose when a retweet happened, only who)."""
+
+    platform: str
+    platform_post_id: str
+    platform_user_id: str
+    kind: str = "retweet"
+    collected_at: datetime = field(default_factory=_now)
+
+    def as_row(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class FollowEdge:
+    platform: str
+    follower_id: str
+    followed_id: str
+    collected_at: datetime = field(default_factory=_now)
+
+    def as_row(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class Author:
     platform: str
     platform_user_id: str
@@ -104,8 +130,12 @@ class Collector(ABC):
         since: str | None = None,
         until: str | None = None,
         min_faves: int | None = None,
+        product: str | None = None,
+        include_retweets: bool = False,
     ) -> AsyncIterator[Post]:
-        """Yield posts matching a keyword/hashtag query."""
+        """Yield posts matching a keyword/hashtag query. `product` picks the
+        result ordering where supported ("Latest" = chronological, no ranking
+        bias); `include_retweets` asks for native retweets too."""
         raise NotImplementedError
         yield  # pragma: no cover  (marks this an async generator)
 
@@ -119,4 +149,27 @@ class Collector(ABC):
     async def refresh_metrics(self, post_ids: list[str]) -> AsyncIterator[MetricSnapshot]:
         """Yield fresh engagement snapshots for already-collected posts."""
         raise NotImplementedError
+        yield  # pragma: no cover
+
+    # Snowball surface - optional; platforms without these endpoints inherit
+    # the empty defaults and the runner skips the corresponding steps.
+
+    async def retweeters(self, post_id: str, limit: int) -> AsyncIterator[Engagement]:
+        """Yield the accounts that reposted `post_id` (incidence only)."""
+        return
+        yield  # pragma: no cover
+
+    async def replies(self, post_id: str, limit: int) -> AsyncIterator[Post]:
+        """Yield the reply thread under `post_id`."""
+        return
+        yield  # pragma: no cover
+
+    async def hydrate(self, post_ids: list[str]) -> AsyncIterator[Post]:
+        """Yield full posts for ids referenced but not yet collected."""
+        return
+        yield  # pragma: no cover
+
+    async def follows(self, handle: str, limit: int) -> AsyncIterator[FollowEdge]:
+        """Yield follower + following edges for one account."""
+        return
         yield  # pragma: no cover
