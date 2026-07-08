@@ -54,13 +54,21 @@ incidence a **census for the chosen objects** - the hypergeometric null in
   re-confirmed for `DYNAMIC_EXPIRY_DAYS` are dropped. All promotions logged
   with their source ("hashtag-burst", "coordination-cluster").
 
-## 4. Burst-triggered sweeps
+## 4. Always-on collection (2026-07-08)
 
-Scheduler checks hourly post volume (last complete hour vs prior-48h
-mean/std). z >= `BURST_ZSCORE` with at least `BURST_MIN_POSTS` posts triggers
-an immediate recent-window sweep + snowball pass instead of waiting for the
-next 3-5h slot. Fast co-share evidence lives at second resolution during
-bursts; fixed cadence misses it.
+`monitor run` is a continuous worker: cycles of posts -> snowball -> metrics ->
+follow crawl run back to back, forever. There is no wall-clock gap between
+cycles - the throttle is the per-account pacing plus twscrape's rate-limit
+rotation (it waits when the whole pool is limited). A short randomized
+cooldown (`CYCLE_COOLDOWN_MIN_S`..`CYCLE_COOLDOWN_MAX_S`, default 60-300s)
+keeps the cadence organic between cycles.
+
+Burst detection (hourly volume z >= `BURST_ZSCORE` with at least
+`BURST_MIN_POSTS` posts vs the prior-48h baseline) skips the cooldown so the
+next cycle starts immediately - fast co-share evidence lives at second
+resolution during bursts. Backfill windows join the first cycle of each UTC
+day; account-pool maintenance (yaml sync, relogin, lock reset) runs on its own
+`ACCOUNT_SYNC_HOURS` timer.
 
 ## 5. Follower edges (targeted)
 

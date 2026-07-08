@@ -28,10 +28,27 @@ dependencies = [
     "statsmodels>=0.14.6",
     "scipy>=1.18.0",
     "networkx>=3.6.1",
+    "plotly>=6.8.0",
+    "sqlglot>=30.12.0",
+    "torch>=2.2",  # direct so the CPU-wheel source below applies on Linux
 ]
+
+[project.scripts]
+kma-enrich = "kma.enrich:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
+
+# Linux has no GPU on our hosts (tf1/pi0): pull the CPU-only torch wheels, which
+# skip the ~5GB of CUDA/triton/nccl payload. macOS keeps the default PyPI torch
+# (MPS-capable) - the marker scopes this to Linux only.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [build-system]
 requires = ["uv_build>=0.11.21,<0.12.0"]

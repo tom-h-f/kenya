@@ -13,7 +13,6 @@ dependencies = [
     "pyarrow>=18",
     "typer>=0.15",
     "pyyaml>=6",
-    "apscheduler>=3.10,<4",
     "python-dotenv>=1",
     "apify-client>=3.0.4",
 ]

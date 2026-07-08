@@ -6,27 +6,20 @@ import os
 import random
 from datetime import datetime, timedelta, timezone
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.date import DateTrigger
-
 from kenya_monitor import adaptive
-from kenya_monitor.accounts import (
-    active_count,
-    metrics_cap,
-    posts_gap_hours,
-    sync_accounts,
-)
+from kenya_monitor.accounts import active_count, metrics_cap, sync_accounts
 from kenya_monitor.collectors.x import MAX_AGE_DAYS, backfill_windows, build_api, recent_windows
 from kenya_monitor.config import (
     ACCOUNT_SYNC_HOURS,
+    CYCLE_COOLDOWN_MAX_S,
+    CYCLE_COOLDOWN_MIN_S,
     FOLLOW_CRAWL_MAX_PER_RUN,
     FOLLOW_CRAWL_REFRESH_DAYS,
+    FOLLOW_CRAWL_TOP_SUSPICIOUS,
     FOLLOW_FETCH_LIMIT,
     FOLLOW_MAX_ACCOUNTS,
     METRICS_MAX_POSTS_FLOOR,
     METRICS_MAX_POSTS_PER_ACCOUNT,
-    POSTS_MAX_GAP_HOURS,
-    POSTS_MIN_GAP_HOURS,
     SEARCH_BACKFILL_WINDOW_DAYS,
     SEARCH_MIN_FAVES,
     SEARCH_RECENT_DAYS,
@@ -47,10 +40,6 @@ from kenya_monitor.runner import (
 from kenya_monitor.storage import Storage
 
 log = logging.getLogger("kenya_monitor")
-
-# Burst check cadence: cheap R2 aggregate, so every 30min is fine. One trigger
-# per hour bucket at most - a burst should cause one extra sweep, not a loop.
-BURST_CHECK_MINUTES = 30
 
 # Metrics pass defaults (cap computed from pool size at runtime).
 METRICS_SINCE_DAYS = 5
@@ -219,106 +208,69 @@ async def run_backfill_once(
     return counts
 
 
-def _gap_seconds(lo: float, hi: float) -> float:
-    return random.uniform(lo * 3600, hi * 3600)
-
-
-async def run_scheduler(limit: int) -> None:
-    """Continual collection: posts every 1.5-5h (scales with pool size), metrics near
-    each gap midpoint, pool maintenance on a timer. twscrape rotates accounts per
-    request; only one posts pass runs at a time."""
-    posts_lock = asyncio.Lock()
-    last_backfill: dict[str, object] = {"date": None}
-    scheduler = AsyncIOScheduler(timezone=timezone.utc)
-    scheduler.start()
-
-    async def _pool_size() -> int:
-        api = build_api()
-        return await active_count(api.pool)
-
-    async def maintain_accounts() -> None:
+async def _maintain_accounts_loop() -> None:
+    while True:
         try:
             api = build_api()
             await sync_accounts(api, load_accounts(), relogin_failed=True)
             await api.pool.reset_locks()
         except Exception:
             log.exception("account maintenance failed")
-        finally:
-            scheduler.add_job(
-                maintain_accounts,
-                DateTrigger(run_date=datetime.now(timezone.utc) + timedelta(hours=ACCOUNT_SYNC_HOURS)),
-                id="accounts", replace_existing=True,
-            )
+        await asyncio.sleep(ACCOUNT_SYNC_HOURS * 3600)
 
-    async def metrics_job() -> None:
-        try:
-            await run_metrics_once()
-        except Exception:
-            log.exception("metrics run failed")
 
-    async def posts_job() -> None:
-        try:
-            async with posts_lock:
+async def run_scheduler(limit: int) -> None:
+    """Always-on collection: cycles of posts -> snowball -> metrics -> follow
+    crawl run back to back, forever. The throttle is the per-account pacing +
+    twscrape's rate-limit rotation (it waits when the whole pool is limited),
+    not wall-clock gaps. A short randomized cooldown between cycles keeps the
+    cadence organic; a detected volume burst skips it. Backfill windows join
+    the first cycle of each UTC day; pool maintenance runs on its own timer."""
+    maintenance = asyncio.create_task(_maintain_accounts_loop())
+    last_backfill: dict[str, object] = {"date": None}
+    cycle = 0
+    try:
+        while True:
+            cycle += 1
+            started = datetime.now(timezone.utc)
+
+            async def _posts() -> None:
                 today = datetime.now(timezone.utc).date()
                 do_backfill = last_backfill["date"] != today
                 await run_once(limit, include_backfill=do_backfill)
                 if do_backfill:
                     last_backfill["date"] = today
-                await run_snowball_once()
-        except Exception:
-            log.exception("posts run failed")
-        finally:
-            now = datetime.now(timezone.utc)
-            n_active = await _pool_size()
-            lo, hi = posts_gap_hours(n_active, POSTS_MIN_GAP_HOURS, POSTS_MAX_GAP_HOURS)
-            gap = _gap_seconds(lo, hi)
-            midpoint = gap * random.uniform(0.4, 0.6)
-            scheduler.add_job(
-                posts_job, DateTrigger(run_date=now + timedelta(seconds=gap)),
-                id="posts", replace_existing=True,
-            )
-            scheduler.add_job(
-                metrics_job, DateTrigger(run_date=now + timedelta(seconds=midpoint)),
-                id="metrics", replace_existing=True,
-            )
+
+            steps = [
+                ("posts", _posts),
+                ("snowball", run_snowball_once),
+                ("metrics", run_metrics_once),
+                (
+                    "follow_crawl",
+                    lambda: run_follow_crawl_once(top_suspicious=FOLLOW_CRAWL_TOP_SUSPICIOUS),
+                ),
+            ]
+            for name, step in steps:
+                try:
+                    await step()
+                except Exception:
+                    log.exception("cycle %d: %s step failed", cycle, name)
+
+            bursting, z = False, 0.0
+            try:
+                storage = Storage(R2Config.from_env())
+                bursting, z, _n = adaptive.detect_burst(
+                    storage.con, storage.posts_view(platform="x")
+                )
+            except Exception:
+                log.exception("burst check failed")
+            cooldown = 0.0 if bursting else random.uniform(CYCLE_COOLDOWN_MIN_S, CYCLE_COOLDOWN_MAX_S)
+            elapsed = (datetime.now(timezone.utc) - started).total_seconds()
             log.info(
-                "next posts in %.1fh, metrics in %.1fh (%d active accounts)",
-                gap / 3600, midpoint / 3600, n_active,
+                "cycle %d done in %.1fmin; %s next cycle in %.0fs (volume z=%.1f)",
+                cycle, elapsed / 60,
+                "burst -" if bursting else "cooldown,", cooldown, z,
             )
-
-    last_burst: dict[str, object] = {"hour": None}
-
-    async def burst_job() -> None:
-        try:
-            if posts_lock.locked():
-                return
-            storage = Storage(R2Config.from_env())
-            bursting, z, n = adaptive.detect_burst(storage.con, storage.posts_view(platform="x"))
-            hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-            if bursting and last_burst["hour"] != hour:
-                last_burst["hour"] = hour
-                log.info("burst detected (z=%.1f, %d posts/h): immediate sweep + snowball", z, n)
-                async with posts_lock:
-                    await run_once(limit, include_backfill=False)
-                    await run_snowball_once()
-        except Exception:
-            log.exception("burst check failed")
-        finally:
-            scheduler.add_job(
-                burst_job,
-                DateTrigger(run_date=datetime.now(timezone.utc) + timedelta(minutes=BURST_CHECK_MINUTES)),
-                id="burst", replace_existing=True,
-            )
-
-    scheduler.add_job(posts_job, DateTrigger(run_date=datetime.now(timezone.utc)), id="posts")
-    scheduler.add_job(
-        burst_job,
-        DateTrigger(run_date=datetime.now(timezone.utc) + timedelta(minutes=BURST_CHECK_MINUTES)),
-        id="burst",
-    )
-    scheduler.add_job(
-        maintain_accounts,
-        DateTrigger(run_date=datetime.now(timezone.utc) + timedelta(minutes=5)),
-        id="accounts",
-    )
-    await asyncio.Event().wait()
+            await asyncio.sleep(cooldown)
+    finally:
+        maintenance.cancel()

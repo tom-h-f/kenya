@@ -37,6 +37,33 @@ the sensitive view.
 object), not the full O(A^2), which keeps the correction from being needlessly
 brutal (standard SVN practice).
 
+### Update 2026-07-08 (falsified by the 06.2 shuffle check, then fixed)
+
+Once snowball censuses and RT-inclusive search landed, the uniform
+hypergeometric null failed its own falsification test: 163 Bonferroni / 5,265
+FDR edges on **shuffled** input. Two causes, two changes:
+
+1. **Degree-corrected null.** The uniform hypergeometric assumes accounts pick
+   objects uniformly; hub objects (hundreds of retweeters) make chance
+   co-occurrence far likelier than it predicts. `validate_svn` now defaults to
+   a configuration-model null (Chung-Lu/BiCM Poisson tail,
+   `lambda_ij = k_i k_j S / E^2` with `S = sum q_o^2`), conditioning on object
+   popularity as well as account activity. The uniform p is kept as
+   `p_uniform` for comparison; `validate_curveball` (exact degree-preserving
+   Monte-Carlo) is the cross-check.
+2. **Correction over reportable pairs.** n_tests is now the pairs with
+   `weight >= min_repetition`, not >= 1: hub objects flood the x=1 tier with
+   tens of thousands of chance pairs, sinking the BH threshold below any real
+   cluster's p. A single shared action was never reportable coordination, so
+   correcting over it only burned power.
+
+Post-fix: shuffled input 0 Bonferroni / 0 FDR; synthetic injection recovery
+F1 = 1.0. Known residual: the raw shared-count statistic loses power against
+hub-heavy incidence (a surprisal-weighted statistic over TF-IDF is the
+follow-up if needed); mega objects above `hub_cap` (default max(50, 5% of
+accounts)) are excluded from the statistical incidence entirely, per the 02
+scaling note.
+
 ### Time-constrained variant
 
 For fast co-share, the object set is the same but co-occurrence requires the

@@ -8,4 +8,8 @@ __pycache__/
 .ruff_cache/
 data/
 *.parquet
+# Runtime state lives in the named volume, never baked into the image - a fresh
+# volume seeds from the image layer, so a stale accounts.db / dynamic_targets.json
+# would otherwise leak in on first boot.
+state/
 accounts.db

@@ -20,7 +20,7 @@ uv run monitor accounts add
 
 | Command | What it does |
 |---------|--------------|
-| `monitor run` | Scheduled worker: search + timelines + snowball + metrics |
+| `monitor run` | Always-on worker: continuous cycles of posts + snowball + metrics + follow-crawl, throttled only by per-account pacing + twscrape rate limits |
 | `monitor run --once` | Single posts pass |
 | `monitor collect x --keywords` | One-off keyword search |
 | `monitor backfill` | Deep historical search sweep |

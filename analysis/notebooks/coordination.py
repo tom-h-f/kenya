@@ -7,18 +7,18 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import marimo as mo
-    import networkx as nx
     import numpy as np
 
     from kma import coordination as co
+    from kma import netviz
     from kma import viz
     from kma.db import connect
-    from kma.semantic import assign_topics, topic_summary, with_topic_names
+    from kma.semantic import assign_topics, topic_summary
 
     viz.use_theme()
     con = connect()
     con.execute("SET enable_progress_bar=false")
-    return assign_topics, co, con, mo, np, nx, topic_summary, viz
+    return assign_topics, co, con, mo, netviz, np, topic_summary, viz
 
 
 @app.cell
@@ -26,14 +26,43 @@ def _(co, mo):
     mo.md(f"""
     # Coordination networks (CIB triage)
 
-    Detect account clusters acting in concert across behavioural channels,
-    validated against null models and corroborated across layers.
+    Detecting **coordinated inauthentic behaviour**: groups of accounts acting
+    in concert to amplify a narrative, where the coordination is concealed.
+
+    **How the pipeline works, end to end:**
+
+    1. **Traces** - every shared action becomes a link. Two accounts that
+       retweet the same tweet, reply under the same post, or publish
+       near-duplicate text are *co-acting*. Each action type is one *channel*.
+    2. **Projection** - collapse those account x object links into an
+       account x account graph per channel: edge weight = how many objects the
+       pair both acted on.
+    3. **Statistical validation** - keep only pairs whose overlap is
+       *surprising* under a null model, not merely frequent. Sharing one viral
+       tweet is not coordination; sharing eight obscure ones is. Two nulls run:
+       the strict **Bonferroni** core and the sensitive **FDR** view.
+    4. **Communities** - Leiden clustering finds dense groups; a group dense in
+       **several independent channels** is far harder to explain as organic.
+    5. **Characterization** - score each cluster with Phase 1 (bot-likeness) and
+       Phase 2 (narrative) signals into a transparent triage index.
+    6. **Evaluation** - a shuffled-data control (must find ~nothing) and a
+       synthetic-injection test (must recover a planted cluster) prove the
+       detector works before any cluster is trusted.
 
     **Sampling caveat:** {co.SAMPLING_CAVEAT}
 
-    Coordination alone is not malicious - the scorecard ranks clusters for
-    human review using Phase 1 authenticity + Phase 2 narrative signals.
+    Coordination alone is **not** malicious - fan clubs and news outlets
+    coordinate legitimately. The scorecard is a triage tool for human review,
+    never an auto-label.
     """)
+    return
+
+
+@app.cell
+def _(co, mo):
+    mo.accordion({
+        "Channels & metric glossary (what every column means)": mo.md(co.glossary_md())
+    })
     return
 
 
@@ -55,6 +84,22 @@ def _(co, con, mo):
             widths="equal",
         ),
     ])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("""
+    ## 1. Edge validation, per channel
+
+    For each channel we test every account pair that shares at least
+    `min_repetition` objects and keep only the statistically surprising
+    ones. The bars below read left to right as **loose to strict**: all
+    tested pairs, then those surviving FDR (sensitive), then Bonferroni
+    (high-precision). The Jaccard table shows how much the SVN null and the
+    naive top-percentile baseline agree - large divergence means the
+    percentile filter is keeping popular-object noise the null rejects.
+    """)
     return
 
 
@@ -93,6 +138,22 @@ def _(co, edge_frames, mo, viz):
 
 
 @app.cell
+def _(mo):
+    mo.md("""
+    ### Why weight alone is not enough
+
+    Each dot is a candidate pair: **x** = how many objects they share,
+    **y** = how surprising that is (higher = smaller p-value). **Filled**
+    dots survive FDR, **hollow** ones do not. Note that high weight does not
+    guarantee significance - a pair can co-retweet many *popular* tweets and
+    still be unsurprising, because the degree-corrected null already expects
+    popular objects to be widely shared. Significance is the y-axis, not the
+    x-axis.
+    """)
+    return
+
+
+@app.cell
 def _(edge_frames, mo, np, viz):
     import pandas as _pd
 
@@ -122,6 +183,27 @@ def _(edge_frames, mo, np, viz):
     else:
         _out = mo.md("_No tested pairs yet on the current sample._")
     _out
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("""
+    ## 2. Does the detector actually work? Two falsification tests
+
+    Before trusting any cluster we prove the method on data where we know
+    the answer:
+
+    - **Null baseline (false-positive control):** shuffle the real traces so
+      all genuine coordination is destroyed, then re-run. The strict
+      Bonferroni network **must be ~empty** - a non-empty result means the
+      null model is broken, not that coordination was found.
+    - **Synthetic injection (recovery test):** plant a known coordinated
+      cluster (15 accounts co-retweeting 8 seed tweets within 60s) into the
+      real data and measure how cleanly the pipeline recovers exactly those
+      accounts. Precision/recall/F1 near 1.0 means it can find what it claims
+      to find.
+    """)
     return
 
 
@@ -170,6 +252,22 @@ def _(mo, null_rt, recovery, viz):
 
 
 @app.cell
+def _(mo):
+    mo.md("""
+    ## 3. Communities across the multiplex
+
+    Each channel is one *layer* over the same set of accounts. We stack the
+    validated layers, run **Leiden** community detection (CPM quality
+    function), and drop singletons. The `resolution` (gamma) knob sets how
+    dense a group must be to count - the sweep below shows which clusters
+    are **robust** (persist across gamma) versus artefacts of one setting.
+    Clusters supported by **two or more channels** are the high-confidence
+    ones.
+    """)
+    return
+
+
+@app.cell
 def _(co, con):
     layers = co.build_layers(
         con,
@@ -214,37 +312,57 @@ def _(mo, sweep, viz):
 
 
 @app.cell
-def _(aggregated, mo, nx, viz):
-    if len(aggregated):
-        _g = nx.Graph()
-        for _r in aggregated.itertuples():
-            _g.add_edge(_r.src, _r.dst, weight=_r.weight, n_channels=_r.n_channels)
-        _pos = nx.spring_layout(_g, seed=0, weight="weight")
-        _fig, _ax = viz.new_fig(7.5, 6)
-        for (_u, _v), _d in ((e, _g.edges[e]) for e in _g.edges):
-            _multi = _d["n_channels"] >= 2
-            _ax.plot(
-                [_pos[_u][0], _pos[_v][0]], [_pos[_u][1], _pos[_v][1]],
-                color=viz.VIOLET if _multi else viz.DEEMPH,
-                linewidth=2.4 if _multi else 1.4, zorder=2,
-            )
-        _deg = dict(_g.degree)
-        _ax.scatter(
-            [_pos[n][0] for n in _g], [_pos[n][1] for n in _g],
-            s=[60 + 30 * _deg[n] for n in _g], color=viz.BLUE,
-            edgecolors=viz.SURFACE, linewidths=1.4, zorder=3,
+def _(mo):
+    mo.md("""
+    ### Explore the network
+
+    The graph below is **interactive**: drag to pan, scroll to zoom, and
+    hover any node to see the account handle, its cluster, dominant
+    narrative, bot-suspicion, reach, and graph degree. Node **size** = graph
+    degree (how many validated partners), node **colour** = cluster (or
+    suspicion, via the toggle). **Violet edges** join accounts corroborated
+    across two or more channels - the strongest evidence. Use the dropdown
+    to isolate a single cluster's induced subgraph, and the legend to toggle
+    edge types or individual clusters on and off.
+    """)
+    return
+
+
+@app.cell
+def _(cluster_names, mo):
+    _opts = ["(all clusters)"]
+    if cluster_names is not None and len(cluster_names):
+        _opts += cluster_names.sort_values("label")["label"].tolist()
+    focus_ui = mo.ui.dropdown(_opts, value="(all clusters)", label="Focus cluster")
+    color_ui = mo.ui.radio(
+        ["cluster", "suspicion"], value="cluster", label="Colour nodes by", inline=True
+    )
+    mo.hstack([focus_ui, color_ui], justify="start", gap=2)
+    return color_ui, focus_ui
+
+
+@app.cell
+def _(cluster_names, con, members, netviz, topic_names, topics):
+    node_attrs = (
+        netviz.node_attributes(con, members, cluster_names, topics, topic_names)
+        if len(members)
+        else None
+    )
+    return (node_attrs,)
+
+
+@app.cell
+def _(aggregated, cluster_names, color_ui, focus_ui, mo, netviz, node_attrs):
+    if node_attrs is not None and len(aggregated):
+        _focus = None
+        if focus_ui.value != "(all clusters)" and cluster_names is not None:
+            _match = cluster_names.loc[cluster_names["label"] == focus_ui.value, "cluster_id"]
+            _focus = _match.iloc[0] if len(_match) else None
+        _out = netviz.cluster_network(
+            aggregated, node_attrs, color_by=color_ui.value, focus_cluster=_focus
         )
-        viz.legend_swatches(
-            _ax,
-            [("edge in >= 2 channels", viz.VIOLET), ("single-channel edge", viz.DEEMPH),
-             ("account (size = degree)", viz.BLUE)],
-            loc="upper right",
-        )
-        _ax.set_title("Validated multiplex graph - cross-channel edges are the strong evidence")
-        _ax.set_axis_off()
-        _out = _fig
     else:
-        _out = mo.md("_No validated edges to draw yet - the multiplex graph is empty on the current sample._")
+        _out = mo.md("_No validated edges to draw yet on the current sample._")
     _out
     return
 
@@ -417,7 +535,7 @@ def _(cluster_names, co, con, members, topic_names):
             ).drop(columns=["dominant_topic"])
     else:
         top_cluster, top_label, drill = None, None, None
-    return drill, top_cluster, top_label
+    return drill, top_label
 
 
 @app.cell

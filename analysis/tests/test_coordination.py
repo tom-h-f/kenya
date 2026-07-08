@@ -182,3 +182,71 @@ def test_with_cluster_names_adds_display_columns():
     out = co.with_cluster_names(df, names)
     assert list(out["name"]) == ["iebc rigging", "world cup"]
     assert list(out["label"]) == ["iebc rigging (n=5)", "world cup (n=3)"]
+
+
+def _incidence_frames(rows):
+    """rows = [(author, object)] -> (edges min_rep=1, degrees, M, object_degrees)."""
+    df = pd.DataFrame(rows, columns=["author_id", "action_object"]).drop_duplicates()
+    pairs = {}
+    for obj, grp in df.groupby("action_object"):
+        users = sorted(grp["author_id"])
+        for i in range(len(users)):
+            for j in range(i + 1, len(users)):
+                pairs[(users[i], users[j])] = pairs.get((users[i], users[j]), 0) + 1
+    edges = pd.DataFrame(
+        {
+            "src": [p[0] for p in pairs],
+            "dst": [p[1] for p in pairs],
+            "n_objects_shared": list(pairs.values()),
+            "weight": list(pairs.values()),
+        }
+    )
+    degrees = df.groupby("author_id")["action_object"].nunique().rename("n_objects")
+    degrees = degrees.reset_index()
+    obj_deg = df.groupby("action_object")["author_id"].nunique()
+    return edges, degrees, df["action_object"].nunique(), obj_deg
+
+
+def test_degree_corrected_svn_ignores_popular_object_chance_overlap():
+    """Two viral objects with big random audiences: the uniform hypergeometric
+    FDR flags chance co-retweeters (the failure seen live 2026-07-08); the
+    configuration-model null must not."""
+    rng = np.random.default_rng(7)
+    users = [f"u{i}" for i in range(200)]
+    rows = []
+    for obj in ("viral1", "viral2"):
+        for u in rng.choice(users, 60, replace=False):
+            rows.append((u, obj))
+    for i, u in enumerate(users):  # long tail of degree-1 niche objects
+        rows.append((u, f"niche{i}"))
+    edges, degrees, m, obj_deg = _incidence_frames(rows)
+
+    uniform = co.validate_svn(edges, degrees, m, "fdr_bh", alpha=0.01)
+    corrected = co.validate_svn(
+        edges, degrees, m, "fdr_bh", alpha=0.01, object_degrees=obj_deg
+    )
+    assert uniform["validated"].sum() > 100  # the failure mode
+    assert corrected["validated"].sum() == 0  # the fix
+
+
+def test_degree_corrected_svn_still_recovers_planted_cluster():
+    rng = np.random.default_rng(7)
+    users = [f"u{i}" for i in range(200)]
+    rows = []
+    for obj in ("viral1", "viral2"):
+        for u in rng.choice(users, 40, replace=False):
+            rows.append((u, obj))
+    for i, u in enumerate(users):  # organic background activity
+        for k in range(3):
+            rows.append((u, f"niche{i}_{k}"))
+    bots = [f"bot{i}" for i in range(10)]
+    for b in bots:  # planted cluster: 10 accounts sharing 6 seed objects
+        for s in range(6):
+            rows.append((b, f"seed{s}"))
+    edges, degrees, m, obj_deg = _incidence_frames(rows)
+    out = co.validate_svn(edges, degrees, m, "fdr_bh", alpha=0.01, object_degrees=obj_deg)
+    hits = out[out["validated"]]
+    bot_pairs = {(a, b) for a in bots for b in bots if a < b}
+    found = set(zip(hits["src"], hits["dst"]))
+    assert bot_pairs <= found  # every planted pair validated
+    assert found == bot_pairs  # and nothing else

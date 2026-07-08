@@ -1,0 +1,13 @@
+services:
+  enrich:
+    build: .
+    env_file: ../.env
+    command: ["--loop"]
+    # Three XLM-RoBERTa / mpnet models load into memory at once.
+    mem_limit: 4g
+    volumes:
+      - hf_cache:/app/hf_cache   # transformer weights, downloaded once
+    restart: unless-stopped
+
+volumes:
+  hf_cache:

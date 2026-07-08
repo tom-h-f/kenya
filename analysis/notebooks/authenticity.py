@@ -25,14 +25,24 @@ def _(WEIGHTS, df, mo):
         # Account authenticity triage
 
         **{len(df):,}** accounts scored. No ground-truth labels: this ranks how
-        bot-like an account looks, it does not prove inauthenticity.
+        bot-like an account *looks*, it does not prove inauthenticity. It feeds
+        the coordination scorecard (Phase 3) as the `bot_likeness` component.
 
-        **Heuristic weights:** {_w}. `suspicion` is in [0,1], age +
-        follower/following ratio dominant.
+        **`suspicion`** (0-1) is a weighted blend of transparent red flags -
+        weights: {_w}. What each signal captures:
 
-        **`anomaly_rank`** is an unsupervised isolation-forest second lens. It
-        flags statistical outliers - which includes genuine mega-influencers -
-        so read it alongside `suspicion`, never alone.
+        - **age** - very new accounts are cheap to mass-create.
+        - **follower/following ratio** - following thousands while followed by
+          few is a classic amplifier pattern.
+        - **rate** - superhuman posting cadence.
+        - **dup** - high share of near-duplicate text (copypasta).
+        - **bio / img / handle** - empty bio, default avatar, digit-suffix
+          handle (`Brian4893555414`) - the throwaway-account fingerprint.
+
+        **`anomaly_rank`** (0-1 percentile) is a second, *unsupervised* lens
+        (isolation forest). It flags statistical outliers on all features at
+        once - which includes genuine mega-influencers - so read it **alongside**
+        `suspicion`, never alone. An account high on both is the strong signal.
         """
     )
     return

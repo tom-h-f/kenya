@@ -1,0 +1,12 @@
+.env
+.venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+# Notebooks + their session snapshots are not needed by the enrichment worker.
+notebooks/__marimo__/
+data/
+*.parquet
+hf_cache/

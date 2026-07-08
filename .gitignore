@@ -19,3 +19,5 @@ collector/state/
 .wrangler/
 node_modules/
 **/.marimo/
+
+**/__marimo__/

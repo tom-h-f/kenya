@@ -178,7 +178,8 @@ def run(
     once: bool = typer.Option(False, "--once", help="run a single post-collection pass and exit"),
     limit: int = typer.Option(50, help="max posts per target per run"),
 ) -> None:
-    """Scheduled worker: post collection (~6x/day) + metrics refresh (~hourly), randomized."""
+    """Always-on worker: continuous cycles of posts -> snowball -> metrics ->
+    follow crawl, throttled only by per-account pacing + twscrape rate limits."""
     from kenya_monitor.scheduler import run_once, run_scheduler
 
     if once:

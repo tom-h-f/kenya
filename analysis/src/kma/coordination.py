@@ -35,6 +35,97 @@ SAMPLING_CAVEAT = (
     "of absence. Recall is bounded; precision is not affected."
 )
 
+# How each behavioural channel defines "acting together". A channel is one
+# multiplex layer; two accounts share an edge in it when they act on the same
+# object (a tweet, a hashtag, a near-duplicate text cluster).
+CHANNELS = {
+    "co_retweet": "Both retweeted the same original tweet. Amplification is the "
+    "classic coordination signal; the retweeter census makes this a near-total "
+    "count for the objects we snowball, not just a sample.",
+    "co_reply": "Both replied under the same tweet - accounts swarming one target.",
+    "text_sim": "Both posted near-duplicate text (embedding cosine >= tau). Our "
+    "advantage over link/hashtag-only tools: catches paraphrased copypasta.",
+    "fast_co_share": "co_retweet within `delta` seconds - scripted synchrony, the "
+    "strongest classic signal. Uses the time-shuffle null, not the hypergeometric.",
+    "co_hashtag": "Both used the same hashtag (Wave B; needs post-Phase-0 data).",
+    "co_url": "Both shared the same normalised outbound URL (Wave B).",
+    "co_mention": "Both mentioned the same account (Wave B). Inflated on "
+    "reply-heavy data - replies auto-mention their target.",
+}
+
+# What every metric a scorecard / edge table exposes actually means, so an
+# analyst (or a notebook) never has to reverse-engineer a column. `glossary_md`
+# renders this; keep it in sync when adding a metric.
+METRIC_GLOSSARY = {
+    # --- edge-level (one row per account pair, per channel) ---
+    "weight": "Shared action count for the pair: distinct objects both acted on "
+    "(untimed channels) or co-actions within `delta` (timed). >= min_repetition "
+    "to be tested at all - one shared action is never coordination.",
+    "p_value": "Probability the pair's overlap is this large or larger under the "
+    "null model. Small = surprising = hard to explain by chance. Default null is "
+    "degree-corrected (conditions on how popular each object is), so sharing one "
+    "viral tweet is not surprising.",
+    "p_uniform": "The same p under the classic uniform hypergeometric null, kept "
+    "for comparison. It over-flags on hub objects - that gap is why we switched.",
+    "sig_fdr": "Survived Benjamini-Hochberg FDR control at q=0.01 - the sensitive "
+    "view. Expect a few false positives among many edges; read as a candidate set.",
+    "sig_bonferroni": "Survived Bonferroni control - the high-precision core. "
+    "Near-empty on random data by design; treat these edges as load-bearing.",
+    "sig_percentile": "In the top weight percentile (CooRnet-style baseline, no "
+    "null model). Divergence from the SVN sets flags popular-object noise.",
+    "min_gap": "Tightest inter-arrival gap (seconds) between the pair's co-actions. "
+    "Small = scripted/synchronised; large = plausibly independent.",
+    # --- cluster-level (one row per detected community) ---
+    "size": "Number of accounts in the cluster (Leiden community, singletons dropped).",
+    "n_channels": "How many independent channels support the cluster. n>=2 is the "
+    "strongest evidence short of ground truth - organic co-activity rarely lines "
+    "up across retweets AND text AND replies at once.",
+    "channels": "Which specific layers support it, e.g. {co_retweet, text_sim}.",
+    "internal_edge_share": "Fraction of possible within-cluster pairs that are "
+    "actually validated edges. 1.0 = a clique; low = a loose group.",
+    # --- characterization (Phase 1 + Phase 2 joined onto clusters) ---
+    "suspicion_mean": "Mean Phase-1 bot-likeness of members (0-1). Blends account "
+    "age, follower/following ratio, posting rate, duplicate-text ratio, "
+    "default-image / empty-bio / digit-handle flags.",
+    "anomaly_rank_mean": "Mean isolation-forest anomaly percentile. A second, "
+    "unsupervised lens - flags outliers including genuine mega-influencers, so "
+    "read alongside suspicion, never alone.",
+    "creation_burst_days": "Tightest window (days) holding half the members' "
+    "account-creation dates. A narrow burst is a strong CIB signal (a batch of "
+    "accounts registered together).",
+    "near_dup_rate": "Mean pairwise embedding cosine of member posts (0-1). High = "
+    "the cluster is pushing near-identical content.",
+    "topic_entropy": "Shannon entropy of the members' topic mix. Low = they "
+    "concentrate on one narrative (homogeneous); high = varied.",
+    "median_min_gap_s": "Median synchrony of member co-actions (seconds). Tighter "
+    "= more scripted.",
+    "engagement_per_follower": "Aggregate engagement over combined followers - "
+    "amplification efficiency. Unusually high can mean manufactured engagement.",
+    # --- the composite ---
+    "inauthenticity_index": "Transparent 0-1 triage score = weighted sum of five "
+    "percentile-ranked components (see INAUTHENTICITY_WEIGHTS): bot_likeness, "
+    "synchrony, homogeneity, concealment, corroboration. NOT a verdict - "
+    "legitimate coordination scores non-zero; the component breakdown is what an "
+    "analyst acts on, not the scalar.",
+    # --- evaluation ---
+    "precision/recall/f1": "Synthetic-injection recovery: plant a known cluster, "
+    "measure how cleanly the pipeline recovers exactly those accounts.",
+    "weighted_precision": "Recovery precision penalised for splitting the planted "
+    "group across several clusters (survey metric).",
+    "suspicion_effect": "How many null standard deviations the cluster's mean "
+    "suspicion sits above random same-size groups. Positive + large = the cluster "
+    "is genuinely more bot-like than chance (a falsification test, not a vanity "
+    "metric - if it's ~0, detection captured nothing).",
+    "homogeneity_effect": "Same, for narrative homogeneity.",
+}
+
+
+def glossary_md() -> str:
+    """Markdown rendering of METRIC_GLOSSARY + CHANNELS, for notebook display."""
+    ch = "\n".join(f"- **{k}** - {v}" for k, v in CHANNELS.items())
+    mt = "\n".join(f"- **`{k}`** - {v}" for k, v in METRIC_GLOSSARY.items())
+    return f"## Channels\n\n{ch}\n\n## Metric glossary\n\n{mt}"
+
 # channel -> (trace SQL object expression, wave). text_sim is built in Python
 # from embeddings. Wave B channels need post-Phase-0 rows (hashtags/urls/
 # mentions arrays); coverage() reports when they become usable.
@@ -282,15 +373,28 @@ def validate_svn(
     n_objects: int,
     method: str = "fdr_bh",
     alpha: float = 0.01,
+    object_degrees: pd.Series | None = None,
 ) -> pd.DataFrame:
-    """Statistically Validated Network (Tumminello 2011): hypergeometric p-value
-    per pair + multiple-testing correction over the pairs actually tested.
+    """Statistically Validated Network: per-pair p-value + multiple-testing
+    correction over the pairs actually tested.
 
-    Pass `edges` computed with min_repetition=1 so n_tests covers every pair
-    sharing >= 1 object (standard SVN practice); the correction is otherwise
-    too lenient. method in {"fdr_bh", "bonferroni"}.
+    Two nulls:
+    - `object_degrees` given (default in validated_edges): degree-corrected
+      configuration-model null (Chung-Lu / BiCM Poisson tail). Conditions on
+      object popularity as well as account activity - the uniform hypergeometric
+      is wildly anti-conservative once censused objects carry dozens of
+      retweeters (falsified by the 06.2 shuffle check on live data, 2026-07-08).
+    - `object_degrees` None: the classic uniform hypergeometric (Tumminello
+      2011), kept for comparison / homogeneous-degree data.
+
+    The correction runs over the pairs in `edges` - pass the candidate set you
+    would report (weight >= min_repetition). Including every x=1 pair sounds
+    rigorous but the hub-driven flood of chance pairs sinks the BH threshold
+    below any real cluster's p (observed live 2026-07-08); a single shared
+    object is never reportable coordination anyway. method in
+    {"fdr_bh", "bonferroni"}.
     """
-    from scipy.stats import hypergeom
+    from scipy.stats import hypergeom, poisson
     from statsmodels.stats.multitest import multipletests
 
     out = edges.copy()
@@ -301,7 +405,13 @@ def validate_svn(
     n_a = deg.reindex(out["src"]).to_numpy()
     n_b = deg.reindex(out["dst"]).to_numpy()
     x = out["n_objects_shared"].to_numpy()
-    out["p_value"] = hypergeom.sf(x - 1, n_objects, n_a, n_b)
+    if object_degrees is not None:
+        e_total = float(object_degrees.sum())
+        s_sq = float((object_degrees.astype(float) ** 2).sum())
+        lam = n_a * n_b * s_sq / (e_total**2)
+        out["p_value"] = poisson.sf(x - 1, lam)
+    else:
+        out["p_value"] = hypergeom.sf(x - 1, n_objects, n_a, n_b)
     if method == "bonferroni":
         out["validated"] = out["p_value"] < alpha / len(out)
     elif method == "fdr_bh":
@@ -309,6 +419,110 @@ def validate_svn(
     else:
         raise ValueError(f"unknown method {method!r}")
     return out
+
+
+def object_degrees(
+    con: duckdb.DuckDBPyConnection,
+    channel: str,
+    platform: str = "x",
+    model: str = MODEL,
+    tau: float = 0.9,
+    trace_table: str | None = None,
+) -> pd.Series:
+    """Distinct-account degree per action object - the popularity marginal the
+    degree-corrected null conditions on."""
+    t = trace_table or _register_traces(con, channel, platform, model, tau)
+    df = con.sql(
+        f"SELECT action_object, count(DISTINCT author_id) AS n FROM {t} GROUP BY 1"
+    ).df()
+    return df.set_index("action_object")["n"]
+
+
+def validate_curveball(
+    con: duckdb.DuckDBPyConnection,
+    channel: str,
+    n_iter: int = 200,
+    alpha: float = 0.01,
+    min_repetition: int = 2,
+    method: str = "fdr_bh",
+    seed: int = 0,
+    platform: str = "x",
+    model: str = MODEL,
+    tau: float = 0.9,
+    trace_table: str | None = None,
+) -> pd.DataFrame:
+    """Exact degree-preserving Monte-Carlo null (curveball, Strona 2014):
+    randomise the bipartite incidence keeping BOTH account and object degrees,
+    recount shared objects per pair. Cross-check for the analytic Poisson null
+    in validate_svn - empirical p floors at 1/(n_iter+1), so use FDR, not
+    Bonferroni, on its output."""
+    from statsmodels.stats.multitest import multipletests
+
+    t = trace_table or _register_traces(con, channel, platform, model, tau)
+    tr = con.sql(f"SELECT DISTINCT author_id, action_object FROM {t}").df()
+    if tr.empty:
+        return pd.DataFrame(columns=["src", "dst", "weight", "p_value", "validated"])
+    authors = sorted(tr["author_id"].unique())
+    sets = {a: set() for a in authors}
+    for a, o in zip(tr["author_id"], tr["action_object"]):
+        sets[a].add(o)
+
+    def pair_counts(user_sets: dict) -> dict:
+        by_obj: dict[str, list] = {}
+        for a, objs in user_sets.items():
+            for o in objs:
+                by_obj.setdefault(o, []).append(a)
+        counts: dict[tuple, int] = {}
+        for users in by_obj.values():
+            users.sort()
+            for i in range(len(users)):
+                for j in range(i + 1, len(users)):
+                    key = (users[i], users[j])
+                    counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    obs = pair_counts(sets)
+    if not obs:
+        return pd.DataFrame(columns=["src", "dst", "weight", "p_value", "validated"])
+    rng = np.random.default_rng(seed)
+
+    def trade(user_sets: dict, n_trades: int) -> None:
+        keys = list(user_sets)
+        for _ in range(n_trades):
+            a, b = rng.choice(len(keys), 2, replace=False)
+            sa, sb = user_sets[keys[a]], user_sets[keys[b]]
+            only_a, only_b = list(sa - sb), list(sb - sa)
+            if not only_a or not only_b:
+                continue
+            pool = only_a + only_b
+            rng.shuffle(pool)
+            take_a = set(pool[: len(only_a)])
+            user_sets[keys[a]] = (sa & sb) | take_a
+            user_sets[keys[b]] = (sa & sb) | (set(pool) - take_a)
+
+    work = {a: set(s) for a, s in sets.items()}
+    trade(work, 5 * len(authors))  # burn-in
+    exceed = dict.fromkeys(obs, 0)
+    for _ in range(n_iter):
+        trade(work, len(authors))
+        null = pair_counts(work)
+        for p, c in obs.items():
+            if null.get(p, 0) >= c:
+                exceed[p] += 1
+    pairs = list(obs)
+    out = pd.DataFrame(
+        {
+            "src": [p[0] for p in pairs],
+            "dst": [p[1] for p in pairs],
+            "weight": [obs[p] for p in pairs],
+            "p_value": [(1 + exceed[p]) / (1 + n_iter) for p in pairs],
+        }
+    )
+    if method == "bonferroni":
+        out["validated"] = out["p_value"] < alpha / len(out)
+    else:
+        out["validated"] = multipletests(out["p_value"], alpha=alpha, method="fdr_bh")[0]
+    return out[out["weight"] >= min_repetition].reset_index(drop=True)
 
 
 def _object_groups(tr: pd.DataFrame):
@@ -434,10 +648,18 @@ def validated_edges(
     tau: float = 0.9,
     n_iter: int = 500,
     trace_table: str | None = None,
+    hub_cap: int | None = None,
 ) -> pd.DataFrame:
     """One channel end to end: projection + all three edge filters. Returns the
     tested edges with `p_value`, `sig_bonferroni`, `sig_fdr`, `sig_percentile`.
-    Untimed channels use the hypergeometric SVN; pass `delta` for the
+
+    Untimed channels use the degree-corrected SVN (configuration-model null;
+    `p_uniform` keeps the classic hypergeometric for comparison) over the
+    incidence with hub objects excluded: objects acted on by more than
+    `hub_cap` accounts (default max(50, 5% of accounts)) carry no coordination
+    signal - pairs sharing only a mega-viral tweet are organic - and one such
+    hub otherwise dilutes the aggregate null rate until real clusters vanish
+    (doc 02 scaling note). Excluded hubs are logged. Pass `delta` for the
     Monte-Carlo time-shuffle null instead."""
     t = trace_table or _register_traces(con, channel, platform, model, tau)
     if delta is not None:
@@ -448,17 +670,39 @@ def validated_edges(
         out = mc("fdr_bh").rename(columns={"validated": "sig_fdr"})
         out["sig_bonferroni"] = mc("bonferroni")["validated"]
     else:
+        obj_deg = object_degrees(con, channel, platform, trace_table=t)
+        n_accounts = con.sql(f"SELECT count(DISTINCT author_id) FROM {t}").fetchone()[0]
+        cap = hub_cap if hub_cap is not None else max(50, int(0.05 * n_accounts))
+        hubs = obj_deg[obj_deg > cap]
+        if len(hubs):
+            import logging
+
+            logging.getLogger("kma").info(
+                "%s: excluding %d hub object(s) with degree > %d (max %d)",
+                channel, len(hubs), cap, int(hubs.max()),
+            )
+            con.register("_hub_objects", hubs.reset_index()[["action_object"]])
+            con.register(
+                f"{t}_nohub",
+                con.sql(
+                    f"SELECT * FROM {t} WHERE action_object NOT IN "
+                    "(SELECT action_object FROM _hub_objects)"
+                ).df(),
+            )
+            t = f"{t}_nohub"
+            obj_deg = obj_deg[obj_deg <= cap]
         edges = projected_edges(
-            con, channel, platform, min_repetition=1, weighting="tfidf", trace_table=t
+            con, channel, platform, min_repetition=min_repetition,
+            weighting="tfidf", trace_table=t,
         )
         degrees, m = activity(con, channel, platform, trace_table=t)
-        out = validate_svn(edges, degrees, m, "fdr_bh", alpha).rename(
-            columns={"validated": "sig_fdr"}
-        )
-        out["sig_bonferroni"] = validate_svn(edges, degrees, m, "bonferroni", alpha)[
-            "validated"
-        ]
-        out = out[out["weight"] >= min_repetition].reset_index(drop=True)
+        out = validate_svn(
+            edges, degrees, m, "fdr_bh", alpha, object_degrees=obj_deg
+        ).rename(columns={"validated": "sig_fdr"})
+        out["sig_bonferroni"] = validate_svn(
+            edges, degrees, m, "bonferroni", alpha, object_degrees=obj_deg
+        )["validated"]
+        out["p_uniform"] = validate_svn(edges, degrees, m, "fdr_bh", alpha)["p_value"]
     pct = percentile_filter(out, q)
     keys = set(zip(pct["src"], pct["dst"])) if not pct.empty else set()
     out["sig_percentile"] = [k in keys for k in zip(out["src"], out["dst"])]

@@ -34,7 +34,17 @@ def _(mo, remote):
     ).df()
     _t = {r.v: int(r.n) for r in _counts.itertuples()}
     mo.vstack([
-        mo.md("# Kenya 2027 monitor\nQueried live through the **tf1 quack server**."),
+        mo.md(
+            "# Kenya 2027 monitor\n"
+            "The **raw-data overview**: how much has been collected, who posts, "
+            "when, and what gets engagement - before any modelling. Queried live "
+            "through the **tf1 quack server**.\n\n"
+            "- **Unique posts** - distinct tweets (deduped to their latest state).\n"
+            "- **Snapshots** - every collection of a post over time; the ratio to "
+            "unique posts shows how often we re-measure engagement.\n"
+            "- **Authors** - distinct accounts seen.\n"
+            "- **Metric snapshots** - engagement re-measurements of hot posts."
+        ),
         mo.hstack(
             [
                 mo.stat(value=f"{_t.get('latest_posts', 0):,}", label="Unique posts", bordered=True),

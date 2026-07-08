@@ -23,10 +23,29 @@ def _(mo):
     mo.md("""
     # Narrative layer
 
-    Semantic search + topic clustering over persisted post embeddings
-    (`paraphrase-multilingual-mpnet-base-v2`, handles English / Swahili /
-    Sheng). Run `embed_new` to cover the full corpus before reading topics -
-    clusters sharpen with more data.
+    What is being said, by whom, in what mood. Every post is turned into a
+    768-dimension **embedding** (`paraphrase-multilingual-mpnet-base-v2`, which
+    understands English, Swahili and Sheng in one shared space) so that meaning,
+    not exact words, drives search and clustering.
+
+    **What each tool below means:**
+
+    - **Semantic search** - ranks posts by *meaning* similarity to your query
+      (cosine of the embeddings), so "IEBC will rig it" also surfaces
+      paraphrases that share no keywords. `sim` is that cosine, 0-1, higher =
+      closer.
+    - **Topics** - UMAP + HDBSCAN group the embeddings into narrative clusters;
+      each cluster is auto-named by its most *distinctive* terms (c-TF-IDF).
+      Topic `-1` = unclustered/noise.
+    - **Sentiment** - a classifier labels each post positive / neutral /
+      negative. The by-slice charts map this to a **-1..+1 mean** (all negative
+      = -1, all positive = +1, 0 = balanced).
+    - **Stance** - zero-shot supports / neutral / opposes *toward a named
+      target*, which is different from sentiment: a post can be angry (negative
+      sentiment) yet *support* the person it is angry on behalf of.
+
+    Run `embed_new` to cover the full corpus before reading topics - clusters
+    sharpen with more data.
     """)
     return
 
