@@ -1,0 +1,21 @@
+# Tailnet egress proxies for twscrape account routing (optional).
+# Copy to config/proxies.yaml if you want a named pool for round-robin assignment.
+#
+# Each entry is an HTTP proxy reachable from the collector host (pi0) over Tailscale.
+# twscrape also accepts socks5:// URLs. Leave proxy "" for the collector host's own IP.
+#
+# Setup on pi0/tf1 (example):
+#   ssh tf1 'docker run -d --name x-egress-proxy --restart unless-stopped \
+#     -p 100.93.107.4:11080:8888 -e ALLOW=100.64.0.0/10 vimagick/tinyproxy'
+#
+# Verify from pi0:
+#   curl -x http://100.93.107.4:11080 https://ifconfig.me
+
+proxies:
+  - name: pi0-direct
+    proxy: ""
+    note: "pi0 residential egress (no proxy)"
+
+  - name: tf1-hetzner
+    proxy: "http://100.93.107.4:11080"
+    note: "Hetzner egress via tinyproxy on tf1 tailscale IP"

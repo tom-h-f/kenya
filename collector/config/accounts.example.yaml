@@ -5,6 +5,12 @@
 #
 # twscrape logs in with each account and pools/rotates them across requests.
 # More accounts = more resilient to bans and higher throughput per run.
+# The scheduler picks least-recently-used accounts (TWS_ACCOUNT_ORDER), runs
+# COLLECT_CONCURRENCY keyword workers in parallel, and maintains the pool every
+# ACCOUNT_SYNC_HOURS (sync yaml, relogin failures, reset stale locks).
+#
+#   monitor accounts sync   # refresh proxy/cookie changes from yaml
+#   monitor accounts stats  # pool health + per-account usage
 #
 # Auth options per account:
 #   A) username + password + email + email_password  (twscrape does the full login,
@@ -13,6 +19,11 @@
 #      less likely to trip a challenge). Provide cookies AND/OR password.
 #
 # Only `username` is strictly required if you supply `cookies`.
+#
+# Per-account egress (optional):
+#   proxy: ""                         -> collector host IP (pi0 residential)
+#   proxy: "http://100.93.107.4:11080" -> route via a tailnet HTTP proxy on another node
+# See config/proxies.example.yaml for the egress pool and setup notes.
 
 accounts:
   - username: burner_one

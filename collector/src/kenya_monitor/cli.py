@@ -45,15 +45,61 @@ def targets() -> None:
 @accounts_app.command("add")
 def accounts_add() -> None:
     """Load config/accounts.yaml into the twscrape pool and log in."""
-    from kenya_monitor.collectors.x import build_api, sync_accounts
+    from kenya_monitor.collectors.x import build_api
+    from kenya_monitor.accounts import sync_accounts
 
     async def _run() -> None:
         api = build_api()
-        added = await sync_accounts(api, load_accounts())
+        result = await sync_accounts(api, load_accounts())
         info = await api.pool.accounts_info()
-        typer.echo(f"added {added} new account(s); pool now has {len(info)}:")
+        typer.echo(
+            f"synced pool: +{result.added} new, {result.updated} updated; "
+            f"{result.active} active / {len(info)} total"
+        )
         for a in info:
-            typer.echo(f"  @{a['username']}  active={a['active']}")
+            if not a["active"]:
+                typer.echo(f"  @{a['username']}  active=False  err={a['error_msg']}")
+
+    asyncio.run(_run())
+
+
+@accounts_app.command("sync")
+def accounts_sync(
+    relogin: bool = typer.Option(True, help="attempt relogin on failed accounts"),
+) -> None:
+    """Refresh proxy/cookie changes from yaml and maintain the pool."""
+    from kenya_monitor.accounts import pool_health, sync_accounts
+    from kenya_monitor.collectors.x import build_api
+
+    async def _run() -> None:
+        api = build_api()
+        result = await sync_accounts(api, load_accounts(), relogin_failed=relogin)
+        health = await pool_health(api.pool)
+        typer.echo(
+            f"sync: +{result.added} new, {result.updated} updated, "
+            f"{result.relogin_attempted} relogin attempts; "
+            f"{health.active} active, {health.inactive} inactive, {health.locked} locked"
+        )
+
+    asyncio.run(_run())
+
+
+@accounts_app.command("stats")
+def accounts_stats() -> None:
+    """Show pool health and rotation order."""
+    from kenya_monitor.accounts import pool_health
+    from kenya_monitor.collectors.x import build_api
+
+    async def _run() -> None:
+        api = build_api()
+        health = await pool_health(api.pool)
+        typer.echo(f"pool: {health.active} active / {health.total} total ({health.locked} locked)")
+        typer.echo(f"rotation: {api.pool._order_by}")
+        for a in await api.pool.accounts_info():
+            used = a["last_used"].isoformat() if a["last_used"] else "never"
+            typer.echo(
+                f"  @{a['username']:20} active={a['active']}  reqs={a['total_req']:4}  last={used}"
+            )
 
     asyncio.run(_run())
 
@@ -139,6 +185,63 @@ def backfill(
 
     counts = asyncio.run(run_backfill_once(days=days, window_limit=limit))
     typer.echo(f"backfill: {counts}")
+
+
+@app.command()
+def snowball(
+    top_retweeted: int = typer.Option(None, help="hot reposted objects to census (default from env)"),
+    top_conversations: int = typer.Option(None, help="hot conversations to hydrate (default from env)"),
+    retweeters_limit: int = typer.Option(None, help="max retweeters per object (default from env)"),
+) -> None:
+    """One snowball pass: retweeter lists, reply threads, referenced-original hydration."""
+    from kenya_monitor.scheduler import run_snowball_once
+
+    overrides = {
+        k: v
+        for k, v in {
+            "top_retweeted": top_retweeted,
+            "top_conversations": top_conversations,
+            "retweeters_limit": retweeters_limit,
+        }.items()
+        if v is not None
+    }
+    counts = asyncio.run(run_snowball_once(**overrides))
+    typer.echo(f"snowball: {counts}")
+
+
+@app.command()
+def adapt(
+    dry_run: bool = typer.Option(False, "--dry-run", help="compute promotions without saving"),
+) -> None:
+    """Run one adaptive-promotion pass (bursting hashtags + cluster accounts)."""
+    from kenya_monitor import adaptive
+
+    storage = _storage()
+    entries = adaptive.promote(
+        storage.con,
+        storage.posts_view(platform="x"),
+        storage.clusters_view(platform="x"),
+        storage.authors_view(platform="x"),
+        dry_run=dry_run,
+    )
+    for e in entries:
+        typer.echo(f"{e.kind:8} {e.value}  ({e.source}, confirmed {e.last_confirmed})")
+    typer.echo(f"{len(entries)} dynamic target(s){' (dry run, not saved)' if dry_run else ''}")
+
+
+@app.command()
+def follows(
+    handle: list[str] = typer.Option(None, "--handle", help="explicit handles (else flagged clusters)"),
+    limit: int = typer.Option(None, help="max edges per direction per account (default from env)"),
+) -> None:
+    """Fetch follower/following edges for flagged-cluster members."""
+    from kenya_monitor.config import FOLLOW_FETCH_LIMIT
+    from kenya_monitor.scheduler import run_follows_once
+
+    counts = asyncio.run(
+        run_follows_once(handles=list(handle) or None, limit=limit or FOLLOW_FETCH_LIMIT)
+    )
+    typer.echo(f"follows: {counts}")
 
 
 @app.command()

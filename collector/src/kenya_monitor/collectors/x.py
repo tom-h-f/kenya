@@ -8,8 +8,16 @@ from pathlib import Path
 from twscrape import API
 from twscrape.models import Tweet
 
-from kenya_monitor.collectors.base import Author, Collector, MetricSnapshot, Post
-from kenya_monitor.config import APP_ROOT, XAccount
+from kenya_monitor.collectors.base import (
+    Author,
+    Collector,
+    Engagement,
+    FollowEdge,
+    MetricSnapshot,
+    Post,
+)
+from kenya_monitor.accounts import sync_accounts  # re-export for callers
+from kenya_monitor.config import APP_ROOT
 from kenya_monitor.pacing import human_pause
 
 DEFAULT_DB_PATH = Path(os.getenv("TWS_ACCOUNTS_DB", APP_ROOT / "state" / "accounts.db"))
@@ -62,24 +70,25 @@ def build_api(db_path: Path = DEFAULT_DB_PATH) -> API:
     return API(str(db_path))
 
 
-async def sync_accounts(api: API, accounts: list[XAccount]) -> int:
-    """Add any not-yet-known accounts to the pool, then log them in. Idempotent."""
-    existing = {a["username"] for a in await api.pool.accounts_info()}
-    added = 0
-    for acc in accounts:
-        if acc.username in existing:
-            continue
-        await api.pool.add_account(
-            username=acc.username,
-            password=acc.password,
-            email=acc.email,
-            email_password=acc.email_password,
-            cookies=acc.cookies or None,
-            proxy=acc.proxy or None,
-        )
-        added += 1
-    await api.pool.login_all()
-    return added
+def build_query(
+    keyword: str,
+    min_faves: int | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    include_retweets: bool = False,
+) -> str:
+    """X search query string. `include:nativeretweets` matters: without it the
+    co-retweet channel only ever sees retweets from target timelines."""
+    parts = [keyword]
+    if min_faves:
+        parts.append(f"min_faves:{min_faves}")
+    if since:
+        parts.append(f"since:{since}")
+    if until:
+        parts.append(f"until:{until}")
+    if include_retweets:
+        parts.append("include:nativeretweets")
+    return " ".join(parts)
 
 
 def _s(value) -> str | None:
@@ -128,17 +137,13 @@ class XCollector(Collector):
         since: str | None = None,
         until: str | None = None,
         min_faves: int | None = None,
+        product: str | None = None,
+        include_retweets: bool = False,
     ) -> AsyncIterator[Post]:
-        parts = [keyword]
-        if min_faves:
-            parts.append(f"min_faves:{min_faves}")
-        if since:
-            parts.append(f"since:{since}")
-        if until:
-            parts.append(f"until:{until}")
-        query = " ".join(parts)
+        query = build_query(keyword, min_faves, since, until, include_retweets)
+        kv = {"product": product} if product else None
         cutoff = _cutoff()
-        async for tw in self.api.search(query, limit=limit):
+        async for tw in self.api.search(query, limit=limit, kv=kv):
             if tw.date.astimezone(timezone.utc) >= cutoff:
                 post = self._to_post(tw)
                 post.source_query = keyword
@@ -152,6 +157,45 @@ class XCollector(Collector):
         async for tw in self.api.user_tweets(user.id, limit=limit):
             if tw.date.astimezone(timezone.utc) >= cutoff:
                 yield self._to_post(tw)
+
+    async def retweeters(self, post_id: str, limit: int) -> AsyncIterator[Engagement]:
+        async for u in self.api.retweeters(int(post_id), limit=limit):
+            self._authors[str(u.id)] = self._to_author(u)
+            yield Engagement(
+                platform=self.platform,
+                platform_post_id=post_id,
+                platform_user_id=str(u.id),
+                kind="retweet",
+            )
+
+    async def replies(self, post_id: str, limit: int) -> AsyncIterator[Post]:
+        cutoff = _cutoff()
+        async for tw in self.api.tweet_replies(int(post_id), limit=limit):
+            if tw.date.astimezone(timezone.utc) >= cutoff:
+                yield self._to_post(tw)
+
+    async def hydrate(self, post_ids: list[str]) -> AsyncIterator[Post]:
+        """Fetch referenced posts by id; no age cutoff - an old original is
+        still the object its retweets point at."""
+        for i, pid in enumerate(post_ids):
+            if i:
+                await human_pause()
+            tw = await self.api.tweet_details(int(pid))
+            if tw is not None:
+                yield self._to_post(tw)
+
+    async def follows(self, handle: str, limit: int) -> AsyncIterator[FollowEdge]:
+        user = await self.api.user_by_login(handle)
+        if user is None:
+            return
+        uid = str(user.id)
+        async for u in self.api.followers(user.id, limit=limit):
+            self._authors[str(u.id)] = self._to_author(u)
+            yield FollowEdge(platform=self.platform, follower_id=str(u.id), followed_id=uid)
+        await human_pause()
+        async for u in self.api.following(user.id, limit=limit):
+            self._authors[str(u.id)] = self._to_author(u)
+            yield FollowEdge(platform=self.platform, follower_id=uid, followed_id=str(u.id))
 
     async def refresh_metrics(self, post_ids: list[str]) -> AsyncIterator[MetricSnapshot]:
         for i, pid in enumerate(post_ids):
