@@ -266,6 +266,59 @@ def follows(
     typer.echo(f"follows: {counts}")
 
 
+@app.command("crawl-follows")
+def crawl_follows_cmd(
+    handle: list[str] = typer.Option(None, "--handle", help="seed handles to start from"),
+    limit: int = typer.Option(None, help="max edges per direction per account"),
+    max_accounts: int = typer.Option(None, help="accounts to crawl this run"),
+    refresh_days: int = typer.Option(None, help="re-crawl after this many days"),
+    top_suspicious: int = typer.Option(
+        None, "--top-suspicious", help="also seed from top-N suspicion-ranked accounts"
+    ),
+    no_edges: bool = typer.Option(
+        False, "--no-edges", help="do not queue uncrawled accounts already seen in follows/"
+    ),
+    status: bool = typer.Option(False, "--status", help="print crawl state summary and exit"),
+) -> None:
+    """Recursively crawl follower/following graphs; tracks crawl time per account."""
+    from kenya_monitor.config import (
+        FOLLOW_CRAWL_MAX_PER_RUN,
+        FOLLOW_CRAWL_REFRESH_DAYS,
+        FOLLOW_FETCH_LIMIT,
+    )
+    from kenya_monitor.follow_crawl import (
+        crawl_summary,
+        load_crawl_state,
+        pending_count,
+    )
+    from kenya_monitor.scheduler import run_follow_crawl_once
+    from kenya_monitor.storage import Storage
+    from kenya_monitor.config import R2Config
+
+    storage = Storage(R2Config.from_env())
+    entries = load_crawl_state()
+    if status:
+        summary = crawl_summary(entries)
+        pending = pending_count(storage, refresh_days or FOLLOW_CRAWL_REFRESH_DAYS)
+        typer.echo(f"tracked: {summary['tracked']} (ok={summary['ok']}, failed={summary['failed']})")
+        typer.echo(f"pending from edges: {pending}")
+        if summary["latest_crawl"]:
+            typer.echo(f"latest crawl: {summary['latest_crawl']}")
+        return
+
+    counts = asyncio.run(
+        run_follow_crawl_once(
+            seed_handles=handle,
+            limit=limit or FOLLOW_FETCH_LIMIT,
+            max_accounts=max_accounts or FOLLOW_CRAWL_MAX_PER_RUN,
+            refresh_days=refresh_days or FOLLOW_CRAWL_REFRESH_DAYS,
+            from_edges=not no_edges,
+            top_suspicious=top_suspicious,
+        )
+    )
+    typer.echo(f"crawl-follows: {counts}")
+
+
 @app.command()
 def metrics(
     days: int = typer.Option(5, help="look-back window in days"),

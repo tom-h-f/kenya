@@ -48,6 +48,8 @@ BURST_MIN_POSTS = int(os.getenv("BURST_MIN_POSTS", "100"))  # hourly floor befor
 
 FOLLOW_FETCH_LIMIT = int(os.getenv("FOLLOW_FETCH_LIMIT", "500"))  # edges per direction per account
 FOLLOW_MAX_ACCOUNTS = int(os.getenv("FOLLOW_MAX_ACCOUNTS", "30"))  # accounts per pass
+FOLLOW_CRAWL_REFRESH_DAYS = int(os.getenv("FOLLOW_CRAWL_REFRESH_DAYS", "30"))
+FOLLOW_CRAWL_MAX_PER_RUN = int(os.getenv("FOLLOW_CRAWL_MAX_PER_RUN", "50"))
 
 # Account pool / throughput (scale with pool size; see kenya_monitor.accounts).
 TWS_ACCOUNT_ORDER = os.getenv("TWS_ACCOUNT_ORDER", "COALESCE(last_used, '1970-01-01') ASC")
@@ -61,6 +63,7 @@ METRICS_MAX_POSTS_PER_ACCOUNT = int(os.getenv("METRICS_MAX_POSTS_PER_ACCOUNT", "
 STATE_DIR = APP_ROOT / "state"
 DYNAMIC_TARGETS_PATH = Path(os.getenv("DYNAMIC_TARGETS_PATH", STATE_DIR / "dynamic_targets.json"))
 SNOWBALL_STATE_PATH = Path(os.getenv("SNOWBALL_STATE_PATH", STATE_DIR / "snowball.json"))
+FOLLOW_CRAWL_STATE_PATH = Path(os.getenv("FOLLOW_CRAWL_STATE_PATH", STATE_DIR / "follow_crawl.json"))
 
 
 @dataclass(frozen=True)

@@ -19,6 +19,8 @@ from kenya_monitor.accounts import (
 from kenya_monitor.collectors.x import MAX_AGE_DAYS, backfill_windows, build_api, recent_windows
 from kenya_monitor.config import (
     ACCOUNT_SYNC_HOURS,
+    FOLLOW_CRAWL_MAX_PER_RUN,
+    FOLLOW_CRAWL_REFRESH_DAYS,
     FOLLOW_FETCH_LIMIT,
     FOLLOW_MAX_ACCOUNTS,
     METRICS_MAX_POSTS_FLOOR,
@@ -140,6 +142,45 @@ async def run_follows_once(
     counts = await collect_follows(collector, storage, handles, limit)
     counts["accounts"] = len(handles)
     log.info("follows run complete: %s", counts)
+    return counts
+
+
+async def run_follow_crawl_once(
+    seed_handles: list[str] | None = None,
+    limit: int = FOLLOW_FETCH_LIMIT,
+    max_accounts: int = FOLLOW_CRAWL_MAX_PER_RUN,
+    refresh_days: int = FOLLOW_CRAWL_REFRESH_DAYS,
+    from_edges: bool = True,
+    top_suspicious: int | None = None,
+) -> dict[str, int]:
+    """Recursive BFS follow-graph crawl with persisted per-account state."""
+    from kenya_monitor.follow_crawl import crawl_follows, crawl_summary, load_crawl_state
+    from kenya_monitor.suspicion import top_suspicious_handles
+
+    storage = Storage(R2Config.from_env())
+    seeds = list(seed_handles or [])
+    if top_suspicious:
+        seeds.extend(
+            top_suspicious_handles(
+                storage.con,
+                storage.authors_view(platform="x"),
+                storage.posts_view(platform="x"),
+                n=top_suspicious,
+            )
+        )
+    collector = await build_x_collector(load_accounts())
+    counts = await crawl_follows(
+        collector,
+        storage,
+        seed_handles=seeds,
+        limit=limit,
+        max_accounts=max_accounts,
+        refresh_days=refresh_days,
+        from_edges=from_edges,
+    )
+    summary = crawl_summary(load_crawl_state())
+    counts.update({f"tracked_{k}": v for k, v in summary.items() if isinstance(v, int)})
+    log.info("follow crawl run complete: %s", counts)
     return counts
 
 
