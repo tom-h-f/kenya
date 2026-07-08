@@ -8,12 +8,14 @@ app = marimo.App(width="medium")
 def _():
     import marimo as mo
 
+    from kma import viz
     from kma.db import connect
     from kma.semantic import assign_topics, search, topic_summary
 
+    viz.use_theme()
     con = connect()
     con.execute("SET enable_progress_bar=false")
-    return assign_topics, con, mo, search, topic_summary
+    return assign_topics, con, mo, search, topic_summary, viz
 
 
 @app.cell
@@ -47,48 +49,125 @@ def _(con, query, search):
 
 
 @app.cell
-def _(assign_topics, con, mo, topic_summary):
-    _df = assign_topics(con, min_cluster_size=60)
-    _n = _df["topic"].nunique() - (1 if -1 in _df["topic"].values else 0)
+def _(assign_topics, con):
+    topics_df = assign_topics(con, min_cluster_size=60)
+    return (topics_df,)
+
+
+@app.cell
+def _(mo, topic_summary, topics_df):
+    _n = topics_df["topic"].nunique() - (1 if -1 in topics_df["topic"].values else 0)
+    summary_df = topic_summary(topics_df)
     mo.vstack([
-        mo.md(f"### Topics: **{_n}** clusters, **{int((_df['topic'] == -1).sum())}** unclustered of {len(_df)}"),
-        topic_summary(_df)[["topic", "size", "terms"]],
+        mo.md(
+            f"### Topics: **{_n}** clusters, "
+            f"**{int((topics_df['topic'] == -1).sum())}** unclustered of {len(topics_df)}"
+        ),
+        summary_df[["name", "size", "terms"]],
     ])
+    return (summary_df,)
+
+
+@app.cell
+def _(summary_df, viz):
+    _s = summary_df.sort_values("size", ascending=False).head(15)
+    _fig, _ax = viz.new_fig(9, max(3.0, 0.42 * len(_s)))
+    _fig.subplots_adjust(left=0.30)
+    viz.hbars(_ax, _s["label"], _s["size"])
+    _ax.set_title("Narrative clusters by size")
+    _ax.set_xlabel("posts")
+    _fig
     return
 
 
 @app.cell
-def _(con, mo):
+def _(con):
     from kma.db import latest_labels
 
-    _lab = latest_labels(con, "x").df()
+    labels_df = latest_labels(con, "x").df()
+    return (labels_df,)
+
+
+@app.cell
+def _(labels_df, mo, viz):
+    _sent = labels_df["sentiment"].value_counts().to_dict()
+    _fig, _ax = viz.new_fig(9, 1.8)
+    viz.diverging_stack(
+        _ax,
+        [_sent],
+        [f"{len(labels_df):,} posts"],
+    )
+    _ax.set_title("Sentiment share, negative | neutral | positive")
+    viz.legend_swatches(
+        _ax,
+        [("negative", viz.DIV_NEG), ("neutral", viz.NEUTRAL), ("positive", viz.DIV_POS)],
+        loc="upper right",
+    )
+    mo.vstack([mo.md(f"### Sentiment / emotion over {len(labels_df):,} labelled posts"), _fig])
+    return
+
+
+@app.cell
+def _(labels_df, viz):
+    _emo = labels_df["emotion"].value_counts()
+    _fig, _ax = viz.new_fig(9, 3.4)
+    viz.hbars(_ax, _emo.index, _emo.values)
+    _ax.set_title("Emotion distribution")
+    _ax.set_xlabel("posts")
+    _fig
+    return
+
+
+@app.cell
+def _(con):
+    from kma.deltas import TRIBE_DISCLAIMER, slice_sentiment
+
+    region_df = slice_sentiment(con, "region", min_posts=3).df()
+    community_df = slice_sentiment(con, "community", min_posts=3).df()
+    return TRIBE_DISCLAIMER, community_df, region_df
+
+
+@app.cell
+def _(TRIBE_DISCLAIMER, community_df, mo, region_df):
     mo.vstack([
-        mo.md(f"### Sentiment / emotion over {len(_lab):,} labelled posts"),
-        mo.hstack([
-            _lab["sentiment"].value_counts().rename("posts").to_frame(),
-            _lab["emotion"].value_counts().rename("posts").to_frame(),
-        ]),
+        mo.md("### Sentiment by region"),
+        region_df,
+        mo.md(f"### Sentiment by community\n\n_{TRIBE_DISCLAIMER}_"),
+        community_df,
     ])
     return
 
 
 @app.cell
-def _(con, mo):
-    from kma.deltas import TRIBE_DISCLAIMER, slice_sentiment
-
-    mo.vstack([
-        mo.md("### Sentiment by region"),
-        slice_sentiment(con, "region", min_posts=3).df(),
-        mo.md(f"### Sentiment by community"),
-        slice_sentiment(con, "community", min_posts=3).df(),
-    ])
+def _(community_df, mo, region_df, viz):
+    _figs = []
+    for _df, _title in (
+        (region_df, "Mean sentiment by region"),
+        (community_df, "Mean sentiment by community, experimental proxy"),
+    ):
+        if not len(_df):
+            continue
+        _d = _df.sort_values("mean_sentiment", ascending=False)
+        _fig, _ax = viz.new_fig(9, max(2.2, 0.45 * len(_d)))
+        _fig.subplots_adjust(left=0.16)
+        viz.hbars(
+            _ax,
+            [f"{s}  ({int(n):,})" for s, n in zip(_d["slice"], _d["posts"])],
+            _d["mean_sentiment"],
+            colors=[viz.DIV_POS if v >= 0 else viz.DIV_NEG for v in _d["mean_sentiment"]],
+            tip_fmt=lambda v: f"{v:+.2f}",
+        )
+        _ax.set_title(_title)
+        _ax.set_xlabel("mean sentiment, -1 to 1  (label = slice and post count)")
+        _figs.append(_fig)
+    mo.vstack(_figs) if _figs else mo.md("_No labelled slices yet._")
     return
 
 
 @app.cell
 def _(mo):
     target = mo.ui.dropdown(
-        ["Ruto", "Raila", "Gachagua", "Kalonzo", "IEBC", "Sifuna"],
+        ["Ruto", "Raila", "Gachagua", "Kalonzo", "IEBC", "Sifuna", "Murkomen", "Goons"],
         value="Ruto",
         label="Stance toward",
     )
@@ -100,7 +179,36 @@ def _(mo):
 def _(con, target):
     from kma.classify import stance
 
-    stance(con, target.value, limit=60)[["stance", "stance_score", "author_handle", "text"]]
+    stance_df = stance(con, target.value, limit=60)
+    return (stance_df,)
+
+
+@app.cell
+def _(mo, stance_df, target):
+    mo.vstack([
+        mo.md(f"### Stance toward **{target.value}**"),
+        stance_df[["stance", "stance_score", "author_handle", "text"]],
+    ])
+    return
+
+
+@app.cell
+def _(stance_df, target, viz):
+    _counts = stance_df["stance"].value_counts().to_dict()
+    _fig, _ax = viz.new_fig(9, 1.8)
+    viz.diverging_stack(
+        _ax,
+        [_counts],
+        [f"{len(stance_df)} posts"],
+        order=("opposes", "neutral", "supports"),
+    )
+    _ax.set_title(f"Stance toward {target.value}, opposes | neutral | supports")
+    viz.legend_swatches(
+        _ax,
+        [("opposes", viz.DIV_NEG), ("neutral", viz.NEUTRAL), ("supports", viz.DIV_POS)],
+        loc="upper right",
+    )
+    _fig
     return
 
 

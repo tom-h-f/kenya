@@ -224,15 +224,38 @@ def assign_topics(
     return df
 
 
-def topic_summary(df, top_terms: int = 8):
-    """Per-topic size, c-TF-IDF top terms (distinctive per cluster), and a sample
-    post. Input is `assign_topics` output."""
+def _short_name_from_terms(terms: str, max_words: int = 3) -> str:
+    words = [t.strip() for t in terms.split(", ") if t.strip()]
+    return " ".join(words[:max_words])
+
+
+def _dedupe_topic_names(names: list[str], term_rows: list[str], max_words: int = 3) -> list[str]:
+    used: set[str] = set()
+    out: list[str] = []
+    for name, terms in zip(names, term_rows):
+        candidate = name
+        extra = [t.strip() for t in terms.split(", ") if t.strip()]
+        n = max_words + 1
+        while candidate in used and n <= len(extra):
+            candidate = " ".join(extra[:n])
+            n += 1
+        if candidate in used:
+            candidate = f"{candidate} alt"
+        used.add(candidate)
+        out.append(candidate)
+    return out
+
+
+def topic_summary(df, top_terms: int = 8, max_words: int = 3):
+    """Per-topic size, c-TF-IDF top terms (distinctive per cluster), short
+    display name (1-3 words), label ``name (n=size)``, and a sample post.
+    Input is `assign_topics` output."""
     import numpy as np
     import pandas as pd
     from sklearn.feature_extraction.text import CountVectorizer
 
     clusters = sorted(t for t in df["topic"].unique() if t != -1)
-    cols = ["topic", "size", "terms", "sample"]
+    cols = ["topic", "size", "terms", "name", "label", "sample"]
     if not clusters:
         return pd.DataFrame(columns=cols)
     docs = [
@@ -256,6 +279,31 @@ def topic_summary(df, top_terms: int = 8):
         }
         for i, c in enumerate(clusters)
     ]
+    raw_names = [_short_name_from_terms(r["terms"], max_words) or "topic" for r in rows]
+    names = _dedupe_topic_names(raw_names, [r["terms"] for r in rows], max_words)
+    for row, name in zip(rows, names):
+        row["name"] = name
+        row["label"] = f"{name} (n={row['size']})"
     return pd.DataFrame(rows, columns=cols).sort_values(
         "size", ascending=False, ignore_index=True
     )
+
+
+def with_topic_names(
+    df: pd.DataFrame,
+    names: pd.DataFrame,
+    *,
+    id_col: str = "topic",
+    drop_id: bool = False,
+) -> pd.DataFrame:
+    """Attach topic name + label columns keyed on `id_col` (default ``topic``)."""
+    import pandas as pd
+
+    out = df.merge(
+        names[["topic", "name", "label"]].rename(columns={"topic": id_col}),
+        on=id_col,
+        how="left",
+    )
+    if drop_id:
+        out = out.drop(columns=[id_col])
+    return out

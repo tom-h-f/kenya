@@ -13,12 +13,12 @@ def _():
     from kma import coordination as co
     from kma import viz
     from kma.db import connect
-    from kma.semantic import assign_topics
+    from kma.semantic import assign_topics, topic_summary, with_topic_names
 
     viz.use_theme()
     con = connect()
     con.execute("SET enable_progress_bar=false")
-    return assign_topics, co, con, mo, np, nx, viz
+    return assign_topics, co, con, mo, np, nx, topic_summary, viz
 
 
 @app.cell
@@ -250,8 +250,9 @@ def _(aggregated, mo, nx, viz):
 
 
 @app.cell
-def _(assign_topics, co, con, layers, members, summary):
+def _(assign_topics, co, con, layers, members, summary, topic_summary):
     topics = assign_topics(con, min_cluster_size=60)
+    topic_names = topic_summary(topics)
     cluster_names = co.cluster_names(con, members, summary) if len(members) else None
     cards = co.scorecards(con, members, layers, topics=topics) if len(members) else None
     iv = (
@@ -259,31 +260,41 @@ def _(assign_topics, co, con, layers, members, summary):
         if len(members)
         else None
     )
-    return cards, cluster_names, iv, topics
+    return cards, cluster_names, iv, topic_names, topics
 
 
 @app.cell
-def _(cards, cluster_names, co, mo, summary):
+def _(cards, cluster_names, co, mo, summary, topic_names):
     _summary = (
         co.with_cluster_names(summary, cluster_names, drop_id=True)
         if cluster_names is not None and len(summary)
         else summary
     )
-    _card_cols = [
-        "name", "size", "n_channels", "suspicion_mean", "near_dup_rate",
-        "dominant_topic", "inauthenticity_index",
-    ]
     _cards = (
         co.with_cluster_names(cards, cluster_names, drop_id=True)
         if cards is not None and cluster_names is not None and len(cards)
         else cards
     )
+    if _cards is not None and len(_cards) and "dominant_topic" in _cards.columns:
+        _cards = (
+            _cards.merge(
+                topic_names[["topic", "name"]].rename(
+                    columns={"topic": "dominant_topic", "name": "dominant_narrative"}
+                ),
+                on="dominant_topic",
+                how="left",
+            ).drop(columns=["dominant_topic"])
+        )
+    _card_cols = [
+        "name", "size", "n_channels", "suspicion_mean", "near_dup_rate",
+        "dominant_narrative", "inauthenticity_index",
+    ]
     mo.vstack([
         mo.md("### Detected clusters (co-retweet + text-sim, FDR-validated)"),
         _summary if len(summary) else mo.md("_No clusters >= min_size on current sample._"),
         mo.md("### Scorecards, ranked by inauthenticity index") if cards is not None else mo.md(""),
         _cards[_card_cols].head(15)
-        if _cards is not None and len(_cards) and "dominant_topic" in _cards.columns
+        if _cards is not None and len(_cards) and "dominant_narrative" in _cards.columns
         else (_cards.head(15) if _cards is not None and len(_cards) else mo.md("")),
     ])
     return
@@ -385,7 +396,7 @@ def _(cluster_names, co, con, layers, members, mo, persist, summary):
 
 
 @app.cell
-def _(cluster_names, co, con, members):
+def _(cluster_names, co, con, members, topic_names):
     if len(members) and cluster_names is not None:
         top_cluster = members["cluster_id"].value_counts().idxmax()
         top_label = cluster_names.loc[
@@ -396,6 +407,14 @@ def _(cluster_names, co, con, members):
             cluster_names,
             drop_id=True,
         )
+        if "dominant_topic" in drill.columns:
+            drill = drill.merge(
+                topic_names[["topic", "name"]].rename(
+                    columns={"topic": "dominant_topic", "name": "dominant_narrative"}
+                ),
+                on="dominant_topic",
+                how="left",
+            ).drop(columns=["dominant_topic"])
     else:
         top_cluster, top_label, drill = None, None, None
     return drill, top_cluster, top_label
