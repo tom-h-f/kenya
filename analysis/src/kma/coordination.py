@@ -21,6 +21,7 @@ scorecards are a triage tool for human review, never an auto-label.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import duckdb
@@ -168,6 +169,54 @@ def _latest_posts_cte(platform: str) -> str:
     """
 
 
+_MANUAL_RT = re.compile(r"^\s*RT\s+@", re.IGNORECASE)
+
+
+def _is_manual_retweet(text: object) -> bool:
+    """Old-style `RT @handle: …` posts when is_repost metadata is missing."""
+    return isinstance(text, str) and bool(_MANUAL_RT.match(text))
+
+
+def _filter_clustering_posts(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop retweets and duplicate same-author reposts before similarity clustering.
+
+    Retweets (native or manual RT @…) amplify someone else's claim; they are not
+    independent voices repeating it. Same author posting identical text twice is
+    spam/repost behaviour, not cross-account coordination."""
+    if df.empty:
+        return df
+    repost = df["is_repost"].fillna(False).astype(bool)
+    manual_rt = df["text"].map(_is_manual_retweet)
+    out = df[~(repost | manual_rt)].copy()
+    if out.empty:
+        return out
+    out["_text_key"] = out["text"].str.lower().str.strip()
+    out = out.sort_values("created_at").drop_duplicates(
+        subset=["author_id", "_text_key"], keep="first"
+    )
+    return out.drop(columns=["_text_key"])
+
+
+def _eligible_clustering_posts_cte(platform: str) -> str:
+    """Latest posts kept for text-sim / story clustering (not co_retweet traces)."""
+    return f"""
+        SELECT * FROM ({_latest_posts_cte(platform)})
+        WHERE NOT COALESCE(is_repost, false)
+          AND NOT regexp_matches(coalesce(text, ''), '^\\s*RT\\s+@', 'i')
+        QUALIFY row_number() OVER (
+            PARTITION BY author_id, lower(trim(text)) ORDER BY created_at
+        ) = 1
+    """
+
+
+def _original_posts_sql(prefix: str = "lp") -> str:
+    """SQL predicates excluding retweets (for trusted corroboration, etc.)."""
+    return (
+        f"NOT COALESCE({prefix}.is_repost, false) AND "
+        f"NOT regexp_matches(coalesce({prefix}.text, ''), '^\\\\s*RT\\\\s+@', 'i')"
+    )
+
+
 def content_clusters(
     con: duckdb.DuckDBPyConnection,
     platform: str = "x",
@@ -182,10 +231,16 @@ def content_clusters(
 
     df = con.sql(
         f"""
-        SELECT platform_post_id, embedding FROM {embeddings_source(platform, _slug(model))}
-        QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id ORDER BY embedded_at DESC
-        ) = 1
+        WITH eligible AS ({_eligible_clustering_posts_cte(platform)}),
+             e AS (
+                 SELECT platform_post_id, embedding
+                 FROM {embeddings_source(platform, _slug(model))}
+                 QUALIFY row_number() OVER (
+                     PARTITION BY platform_post_id ORDER BY embedded_at DESC
+                 ) = 1
+             )
+        SELECT e.platform_post_id, e.embedding
+        FROM e JOIN eligible USING (platform_post_id)
         """
     ).df()
     if df.empty:

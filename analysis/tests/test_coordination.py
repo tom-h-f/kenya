@@ -35,6 +35,57 @@ def test_validate_svn_empty():
     assert out.empty
 
 
+def test_filter_clustering_posts_drops_retweets_and_dupes():
+    df = pd.DataFrame(
+        [
+            {
+                "author_id": "a",
+                "text": "iebc rigged",
+                "is_repost": False,
+                "created_at": pd.Timestamp("2026-07-08", tz="UTC"),
+                "platform_post_id": "p1",
+            },
+            {
+                "author_id": "a",
+                "text": "iebc rigged",
+                "is_repost": False,
+                "created_at": pd.Timestamp("2026-07-09", tz="UTC"),
+                "platform_post_id": "p2",
+            },
+            {
+                "author_id": "b",
+                "text": "RT @x: iebc rigged",
+                "is_repost": False,
+                "created_at": pd.Timestamp("2026-07-08", tz="UTC"),
+                "platform_post_id": "p3",
+            },
+            {
+                "author_id": "c",
+                "text": "iebc rigged",
+                "is_repost": True,
+                "created_at": pd.Timestamp("2026-07-08", tz="UTC"),
+                "platform_post_id": "p4",
+            },
+            {
+                "author_id": "d",
+                "text": "different claim",
+                "is_repost": False,
+                "created_at": pd.Timestamp("2026-07-08", tz="UTC"),
+                "platform_post_id": "p5",
+            },
+        ]
+    )
+    out = co._filter_clustering_posts(df)
+    assert set(out["platform_post_id"]) == {"p1", "p5"}
+
+
+def test_is_manual_retweet():
+    assert co._is_manual_retweet("RT @NationAfrica: headline here")
+    assert co._is_manual_retweet("  rt @foo: bar")
+    assert not co._is_manual_retweet("the RT meaning is retweet")
+    assert not co._is_manual_retweet("original post")
+
+
 def test_percentile_filter():
     edges = pd.DataFrame({"src": ["a", "b", "c"], "dst": ["b", "c", "d"], "weight": [1, 5, 10]})
     out = co.percentile_filter(edges, q=0.667)

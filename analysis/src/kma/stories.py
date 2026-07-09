@@ -36,7 +36,12 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from kma.coordination import _burstiness_days, _ctfidf_top_terms
+from kma.coordination import (
+    _burstiness_days,
+    _ctfidf_top_terms,
+    _filter_clustering_posts,
+    _original_posts_sql,
+)
 from kma.db import (
     BUCKET,
     embeddings_source,
@@ -98,8 +103,8 @@ METRIC_GLOSSARY = {
     "component of the cosine >= tau graph) over the recent window. One story = one "
     "claim circulating, paraphrases included.",
     "size": "Distinct authors posting the story - reach in accounts, not posts.",
-    "n_posts": "Member posts in the story (>= size; reposts and paraphrases inflate "
-    "this above the author count).",
+    "n_posts": "Member posts in the story after dropping retweets and same-author "
+    "duplicate text (>= size; paraphrases from the same account still count).",
     "keywords": "Distinctive terms of the story via c-TF-IDF over member text (same "
     "recipe as topic naming) - what the story is about, in a few words.",
     "hashtags": "Most frequent hashtags among member posts.",
@@ -170,7 +175,8 @@ def candidate_stories(
     """Claim-level stories: connected components of the cosine >= tau graph over
     recent post embeddings (same primitive as coordination.content_clusters, but
     joined to latest_posts and filtered to the last `days`, at a lower story-level
-    tau). Keeps components with >= min_size distinct authors.
+    tau). Retweets and same-author duplicate text are dropped before clustering.
+    Keeps components with >= min_size distinct authors.
 
     Returns one row per member post: story_id, author_id, author_handle, text,
     created_at, is_repost, hashtags, conversation_id, embedding. story_id is a
@@ -193,6 +199,9 @@ def candidate_stories(
         WHERE lp.created_at > now() - INTERVAL '{int(days)}' DAY
         """
     ).df()
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    df = _filter_clustering_posts(df)
     if df.empty:
         return pd.DataFrame(columns=cols)
     x = np.asarray(df["embedding"].tolist(), dtype="float32")
@@ -236,6 +245,7 @@ def _trusted_posts(
         FROM e JOIN lp USING (platform_post_id)
         WHERE lower(lp.author_handle) IN ({handles})
           AND lp.created_at > now() - INTERVAL '{int(days)}' DAY
+          AND {_original_posts_sql("lp")}
         """
     ).df()
 
