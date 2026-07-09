@@ -21,3 +21,4 @@ node_modules/
 **/.marimo/
 
 **/__marimo__/
+/analysis/notebooks/__marimo__/session
