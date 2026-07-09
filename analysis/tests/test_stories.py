@@ -101,6 +101,19 @@ def test_story_hashtags_counted_and_prefixed():
     assert tags[0][0] == "#rigged"
 
 
+def test_story_keywords_grouped_by_story():
+    s = _stories_frame(
+        {
+            0: [("a", [1, 0, 0], "iebc rigged election", []),
+                ("b", [1, 0, 0], "iebc rigged again", [])],
+            1: [("c", [0, 1, 0], "weather sunny today", [])],
+        }
+    )
+    kw = st._story_keywords(s)
+    assert set(kw) == {0, 1}
+    assert all(isinstance(terms, list) for terms in kw.values())
+
+
 def test_scorecard_ranks_uncorroborated_botty_story_first(monkeypatch):
     # story 0: bot-amplified, coordinated, uncorroborated. story 1: clean, corroborated.
     s = _stories_frame(

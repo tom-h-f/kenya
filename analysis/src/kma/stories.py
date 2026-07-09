@@ -246,6 +246,7 @@ def corroboration(
     days: int = DEFAULT_DAYS,
     platform: str = "x",
     model: str = MODEL,
+    centroids: dict[int, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """Per story: max cosine of its centroid to any trusted-source post in the
     window, plus that nearest trusted post (for the human to judge the gap).
@@ -257,7 +258,8 @@ def corroboration(
     cols = ["story_id", "corrob_sim", "nearest_handle", "nearest_text", "nearest_post_id"]
     if stories.empty:
         return pd.DataFrame(columns=cols)
-    centroids = story_centroids(stories)
+    if centroids is None:
+        centroids = story_centroids(stories)
     trusted = _trusted_posts(con, days, platform, model)
     rows = []
     if trusted.empty:
@@ -293,11 +295,9 @@ def _coordination_author_ids(con: duckdb.DuckDBPyConnection, platform: str) -> s
 
 
 def _story_keywords(stories: pd.DataFrame) -> dict[int, list[str]]:
-    sids = sorted(stories["story_id"].unique())
-    docs = [
-        " ".join(stories.loc[stories["story_id"] == s, "text"].dropna().tolist())
-        for s in sids
-    ]
+    grouped = stories.groupby("story_id")["text"]
+    sids = sorted(grouped.groups)
+    docs = [" ".join(grouped.get_group(s).dropna().tolist()) for s in sids]
     terms = _ctfidf_top_terms(docs)
     return {int(s): t for s, t in zip(sids, terms)}
 
@@ -307,7 +307,9 @@ def _story_hashtags(stories: pd.DataFrame, top: int = 5) -> dict[int, list[str]]
     for sid, grp in stories.groupby("story_id"):
         counts: dict[str, int] = {}
         for tags in grp["hashtags"]:
-            for t in tags or []:
+            if np.ndim(tags) == 0:
+                continue
+            for t in tags:
                 t = f"#{str(t).lstrip('#').lower()}"
                 counts[t] = counts.get(t, 0) + 1
         out[int(sid)] = [t for t, _ in sorted(counts.items(), key=lambda kv: -kv[1])[:top]]
@@ -340,12 +342,14 @@ def story_scorecard(
             "representative_post_id"]
     if stories.empty:
         return pd.DataFrame(columns=cols + ["story_suspicion_index"])
+    centroids = story_centroids(stories)
     if corrob is None:
-        corrob = corroboration(con, stories, days=days, platform=platform, model=model)
+        corrob = corroboration(
+            con, stories, days=days, platform=platform, model=model, centroids=centroids
+        )
 
     auth = authenticity_score(con, platform=platform).set_index("platform_user_id")
     coord_ids = _coordination_author_ids(con, platform)
-    centroids = story_centroids(stories)
     keywords = _story_keywords(stories)
     hashtags = _story_hashtags(stories)
 
