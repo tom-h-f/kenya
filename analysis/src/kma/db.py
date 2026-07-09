@@ -198,6 +198,22 @@ def latest_coordination_clusters(con: duckdb.DuckDBPyConnection, platform: str =
     )
 
 
+def stories_source(platform: str = "*") -> str:
+    """A read_parquet(...) expression for persisted story artifacts (Phase 4)."""
+    glob = f"r2://{BUCKET}/stories/platform={platform}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def latest_stories(con: duckdb.DuckDBPyConnection, platform: str = "x"):
+    """Rows of the most recent persisted stories run for a platform."""
+    return con.sql(
+        f"""
+        SELECT * FROM {stories_source(platform)}
+        QUALIFY dense_rank() OVER (ORDER BY computed_at DESC) = 1
+        """
+    )
+
+
 def connect_quack(name: str = "kenya") -> duckdb.DuckDBPyConnection:
     """Attach the tf1 DuckDB quack server. Queries run on tf1 against R2; no R2 creds
     are needed locally - only QUACK_HOST + QUACK_TOKEN (from the shared .env).

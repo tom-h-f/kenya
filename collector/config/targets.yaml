@@ -35,6 +35,9 @@ x:
     - citizentvkenya
     - KTNNewsKE
     - ntvkenya
+    # Fact-checkers (trusted corroboration source for story triage, Phase 4)
+    - PesaCheck
+    - AfricaCheck
     # Commentariat / influencers
     - gabrieloguda        # high-engagement political commentator
     # Legacy (still active: mourning, ODM/Nyanza succession)

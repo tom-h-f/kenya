@@ -28,6 +28,7 @@ from kenya_monitor.config import (
     DYNAMIC_MAX_ACCOUNTS,
     DYNAMIC_MAX_KEYWORDS,
     DYNAMIC_TARGETS_PATH,
+    STORY_FLAG_MIN_INDEX,
     PlatformTargets,
 )
 
@@ -121,6 +122,36 @@ def cluster_accounts(
         ).fetchall()
     except duckdb.Error:
         return []  # no clusters persisted yet
+    return [r[0] for r in rows]
+
+
+def flagged_story_keywords(
+    con: duckdb.DuckDBPyConnection,
+    stories_view: str,
+    min_index: float = STORY_FLAG_MIN_INDEX,
+) -> list[str]:
+    """Keywords + hashtags of the latest flagged-stories run whose
+    story_suspicion_index clears `min_index`. These are promoted as targeted
+    search terms so the collector chases a suspicious story (Phase 4 handoff)."""
+    try:
+        rows = con.sql(
+            f"""
+            WITH latest_run AS (
+                SELECT * FROM {stories_view}
+                QUALIFY dense_rank() OVER (ORDER BY computed_at DESC) = 1
+            ), flagged AS (
+                SELECT * FROM latest_run WHERE story_suspicion_index >= {float(min_index)}
+            )
+            SELECT DISTINCT term FROM (
+                SELECT unnest(hashtags) AS term FROM flagged
+                UNION ALL
+                SELECT unnest(keywords) AS term FROM flagged
+            )
+            WHERE term IS NOT NULL AND length(trim(term)) > 0
+            """
+        ).fetchall()
+    except duckdb.Error:
+        return []  # no stories persisted yet
     return [r[0] for r in rows]
 
 
@@ -228,14 +259,23 @@ def promote(
     posts_view: str,
     clusters_view: str,
     authors_view: str,
+    stories_view: str | None = None,
     state_path: Path = DYNAMIC_TARGETS_PATH,
     dry_run: bool = False,
 ) -> list[DynamicEntry]:
     """One promotion pass: compute candidates, refresh the state file, return
-    the live entries. `dry_run` computes without saving."""
+    the live entries. `dry_run` computes without saving. When `stories_view` is
+    given, flagged-story keywords/hashtags join the hashtag bursts as promoted
+    keywords, tagged source="story-flag"."""
     keywords = bursting_hashtags(con, posts_view)
     accounts = cluster_accounts(con, clusters_view, authors_view)
-    entries = refresh_entries(load_state(state_path), keywords, accounts)
+    sources: dict[str, str] = {}
+    if stories_view is not None:
+        story_kw = flagged_story_keywords(con, stories_view)
+        for kw in story_kw:
+            sources[kw] = "story-flag"
+        keywords = keywords + [kw for kw in story_kw if kw not in keywords]
+    entries = refresh_entries(load_state(state_path), keywords, accounts, sources=sources)
     if not dry_run:
         save_state(entries, state_path)
     for e in entries:

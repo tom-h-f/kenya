@@ -47,8 +47,8 @@ METRICS_TOP_PCT = 0.05
 
 
 def _adaptive_targets(storage: Storage, dry_run: bool = False) -> PlatformTargets:
-    """Static targets merged with the capped dynamic promotions (hashtag bursts
-    + coordination-cluster members). Never edits targets.yaml."""
+    """Static targets merged with the capped dynamic promotions (hashtag bursts,
+    coordination-cluster members, flagged-story keywords). Never edits targets.yaml."""
     static = load_targets().get("x", PlatformTargets())
     try:
         entries = adaptive.promote(
@@ -56,6 +56,7 @@ def _adaptive_targets(storage: Storage, dry_run: bool = False) -> PlatformTarget
             storage.posts_view(platform="x"),
             storage.clusters_view(platform="x"),
             storage.authors_view(platform="x"),
+            stories_view=storage.stories_view(platform="x"),
             dry_run=dry_run,
         )
     except Exception:

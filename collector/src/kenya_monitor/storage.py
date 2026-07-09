@@ -230,3 +230,8 @@ class Storage:
         """Persisted coordination clusters (written by the analysis side)."""
         glob = self._uri(f"coordination/platform={platform}/kind=clusters/dt=*/run=*.parquet")
         return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+    def stories_view(self, platform: str = "*") -> str:
+        """Persisted flagged stories (written by the analysis side, Phase 4)."""
+        glob = self._uri(f"stories/platform={platform}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
