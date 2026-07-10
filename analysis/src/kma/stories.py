@@ -30,6 +30,7 @@ bounded.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import duckdb
@@ -48,7 +49,7 @@ from kma.db import (
     engagements_source,
     posts_source,
 )
-from kma.semantic import MODEL, _slug
+from kma.semantic import MODEL, STOPWORDS, _slug
 
 # Handles whose posts count as trusted corroboration. The five media outlets are
 # already collected as timeline accounts (targets.yaml); the two fact-checkers are
@@ -84,17 +85,42 @@ SAMPLING_CAVEAT = (
 # in the notebook as data grows.
 DEFAULT_TAU = 0.80
 DEFAULT_DAYS = 7
-DEFAULT_MIN_SIZE = 4
+DEFAULT_MIN_SIZE = 3
+
+# Posts with fewer than this many content words (after stripping URLs and mentions)
+# are dropped before clustering. Bare links, one-liners and pure-emoji posts carry
+# near-identical low-information embeddings that bridge unrelated claims into one
+# giant connected component (single-linkage chaining); removing them is what keeps a
+# distinct claim from being swallowed by that blob.
+MIN_CONTENT_WORDS = 5
+
+# A connected component that is BOTH large and dispersed is a single-linkage chaining
+# artifact (a hairball of unrelated claims), not one story - it is rejected. Both
+# conditions are required so a small tight cluster or a genuinely viral cohesive story
+# is never dropped. Measured: real claim clusters top out ~96 authors at cohesion
+# ~0.75-0.99 (mean 0.91), while the pathological blob was 3,646 authors at 0.71.
+MAX_COHERENT_AUTHORS = 150
+MIN_COHESION = 0.80
+
+# A trusted-outlet post counts as corroboration only if it shares at least this many
+# salient terms with the story - and, when the story names entities, at least one of
+# those (see _entity_terms). Embedding proximity alone is not enough. This makes the
+# signal claim-level: a fabricated "Ruto motorcade crash" sits near generic accident
+# coverage (~0.65) and shares generic words (accident, injured) but no entities
+# (Ruto/Embu vs Nakuru/Eldoret), so that coverage no longer masks the gap.
+MIN_SHARED_TERMS = 3
 
 # Transparent triage weights over percentile-ranked components (mirror
-# coordination.INAUTHENTICITY_WEIGHTS). The corroboration gap carries the most
-# weight - it is the signal this layer adds - but a gap alone never flags a story;
-# amplification + coordination must stack with it. Not a verdict.
+# coordination.INAUTHENTICITY_WEIGHTS). The corroboration gap carries the most weight -
+# it is the signal this layer adds - but a gap alone never flags a story; amplification,
+# coordination and reach must stack with it. Not a verdict. burst_recency was dropped:
+# over the recent window every claim cluster is time-tight, so it carried no signal;
+# reach (how many distinct accounts carry the claim) replaced it.
 STORY_WEIGHTS = {
-    "corroboration_gap": 0.30,
+    "corroboration_gap": 0.25,
     "amplifier_botness": 0.25,
     "coordination_overlap": 0.20,
-    "burst_recency": 0.15,
+    "reach": 0.20,
     "source_concentration": 0.10,
 }
 
@@ -115,15 +141,16 @@ METRIC_GLOSSARY = {
     "similar; low = no mainstream echo.",
     "nearest_handle": "Trusted outlet whose post is closest to the story - read its "
     "text before trusting the gap.",
-    "corroboration_gap": "1 - corrob_sim. High = the corroboration gap: the claim is "
-    "spreading with no close trusted-media match. A triage flag, never a verdict "
+    "corroboration_gap": "1 - corrob_sim, where corroboration is claim-level (a "
+    "trusted post must share the story's vocabulary, not just its topic). High = the "
+    "claim is spreading with no trusted-media match. A triage flag, never a verdict "
     "(outlets lag; see STORY_CAVEAT).",
     "amplifier_botness": "Mean Phase-1 authenticity suspicion of the story's authors "
     "(0-1). High = the accounts pushing it look bot-like.",
     "coordination_overlap": "Share of story authors that sit in a persisted "
     "Phase-3 coordination cluster. High = a known coordinated group is pushing it.",
-    "burst_recency": "Concentration of member posts in time (tightest window holding "
-    "half of them, inverted). High = a sharp burst rather than a slow simmer.",
+    "reach": "Distinct authors carrying the claim. High = a wide push across many "
+    "accounts rather than one or two voices.",
     "source_concentration": "Posts per distinct author. High = a handful of accounts "
     "generating the volume (manufactured), rather than broad organic spread.",
     "story_suspicion_index": "Transparent 0-1 triage score = weighted sum of the five "
@@ -164,6 +191,92 @@ def _renorm(v: np.ndarray) -> np.ndarray:
     return v / n if n else v
 
 
+_URL_RE = re.compile(r"https?://\S+")
+_MENTION_RE = re.compile(r"@\w+")
+_WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
+_STOP = frozenset(STOPWORDS)
+
+
+def _content_words(text: object) -> int:
+    """Count of real word tokens after dropping URLs, @mentions and the # symbol.
+
+    Hashtag words still count (their meaning survives), but links and mentions do
+    not - a post that is only a link or a couple of mentions has zero content."""
+    if not isinstance(text, str):
+        return 0
+    t = _URL_RE.sub(" ", text)
+    t = _MENTION_RE.sub(" ", t)
+    return len(_WORD_RE.findall(t.replace("#", " ")))
+
+
+def _salient_terms(text: object) -> set[str]:
+    """Distinctive content words of a post (>= 3 chars, non-stopword, lower-cased).
+
+    Used to gate corroboration on shared claim vocabulary: a trusted post about the
+    SAME topic but a DIFFERENT claim (e.g. an unrelated road accident vs a fabricated
+    presidential-motorcade crash) shares almost none of these terms."""
+    if not isinstance(text, str):
+        return set()
+    t = _URL_RE.sub(" ", text)
+    t = _MENTION_RE.sub(" ", t)
+    return {
+        w for w in (m.lower() for m in _WORD_RE.findall(t.replace("#", " ")))
+        if len(w) >= 3 and w not in _STOP
+    }
+
+
+_ENTITY_RE = re.compile(r"[A-Z][A-Za-z]{2,}")
+
+
+def _entity_terms(text: object) -> set[str]:
+    """Proper-noun-ish tokens (capitalised / all-caps words, lower-cased) - a cheap
+    named-entity proxy. Two accident stories share generic words (accident, injured)
+    but different entities (Ruto/Embu vs matatu/Nakuru); shared entities are what
+    separate the same claim from merely the same topic."""
+    if not isinstance(text, str):
+        return set()
+    t = _URL_RE.sub(" ", text)
+    t = _MENTION_RE.sub(" ", t)
+    return {m.lower() for m in _ENTITY_RE.findall(t)} - _STOP
+
+
+def _drop_low_information(
+    df: pd.DataFrame, min_words: int = MIN_CONTENT_WORDS
+) -> pd.DataFrame:
+    """Drop low-information posts (bare links, one-liners, pure emoji) that chain
+    unrelated claims together during single-linkage clustering. Stories only."""
+    if df.empty:
+        return df
+    return df[df["text"].map(_content_words) >= min_words].copy()
+
+
+def _component_cohesion(v: np.ndarray) -> float:
+    """Mean cosine of members to their (renormalised) centroid: 1 = identical, low
+    = a dispersed chain. Members are L2-normalised, so this is a plain dot product."""
+    return float((v @ _renorm(v.mean(axis=0))).mean())
+
+
+def _reject_chaining_blobs(
+    x: np.ndarray,
+    labels: np.ndarray,
+    author_ids: np.ndarray,
+    max_authors: int = MAX_COHERENT_AUTHORS,
+    min_cohesion: float = MIN_COHESION,
+) -> np.ndarray:
+    """Boolean keep-mask dropping components that are both large (> max_authors
+    distinct authors) and dispersed (cohesion < min_cohesion) - the single-linkage
+    chaining blob. Both conditions required, so tight or small clusters are safe."""
+    author_ids = np.asarray(author_ids)
+    keep = np.ones(len(labels), dtype=bool)
+    for comp in np.unique(labels):
+        m = labels == comp
+        if np.unique(author_ids[m]).size <= max_authors:
+            continue
+        if _component_cohesion(x[m]) < min_cohesion:
+            keep &= ~m
+    return keep
+
+
 def candidate_stories(
     con: duckdb.DuckDBPyConnection,
     days: int = DEFAULT_DAYS,
@@ -175,8 +288,10 @@ def candidate_stories(
     """Claim-level stories: connected components of the cosine >= tau graph over
     recent post embeddings (same primitive as coordination.content_clusters, but
     joined to latest_posts and filtered to the last `days`, at a lower story-level
-    tau). Retweets and same-author duplicate text are dropped before clustering.
-    Keeps components with >= min_size distinct authors.
+    tau). Retweets, same-author duplicate text and low-information posts (bare
+    links / one-liners) are dropped before clustering, and degenerate chaining
+    blobs (large + dispersed components) are rejected after. Keeps components with
+    >= min_size distinct authors.
 
     Returns one row per member post: story_id, author_id, author_handle, text,
     created_at, is_repost, hashtags, conversation_id, embedding. story_id is a
@@ -201,13 +316,17 @@ def candidate_stories(
     ).df()
     if df.empty:
         return pd.DataFrame(columns=cols)
-    df = _filter_clustering_posts(df)
+    df = _drop_low_information(_filter_clustering_posts(df))
     if df.empty:
         return pd.DataFrame(columns=cols)
     x = np.asarray(df["embedding"].tolist(), dtype="float32")
     # embeddings are L2-normalised: cosine >= tau <=> euclidean <= sqrt(2 - 2 tau)
     g = radius_neighbors_graph(x, radius=float(np.sqrt(2 - 2 * tau)), mode="connectivity")
     _, labels = connected_components(g, directed=False)
+    keep = _reject_chaining_blobs(x, labels, df["author_id"].to_numpy())
+    if not keep.all():
+        df = df[keep].copy()
+        labels = labels[keep]
     df["_comp"] = labels
     # keep components with >= min_size distinct authors
     author_counts = df.groupby("_comp")["author_id"].nunique()
@@ -257,14 +376,22 @@ def corroboration(
     platform: str = "x",
     model: str = MODEL,
     centroids: dict[int, np.ndarray] | None = None,
+    min_shared_terms: int = MIN_SHARED_TERMS,
 ) -> pd.DataFrame:
-    """Per story: max cosine of its centroid to any trusted-source post in the
-    window, plus that nearest trusted post (for the human to judge the gap).
+    """Per story: max cosine of its centroid to any trusted-source post that also
+    shares the story's claim vocabulary, plus that nearest trusted post (for the
+    human to judge the gap).
+
+    The lexical + entity gate makes this claim-level, not topic-level: a trusted post
+    corroborates a story only if it shares >= min_shared_terms salient words AND (when
+    the story names entities) at least one entity. A fabricated claim that merely sits
+    near real coverage of the same topic in embedding space (an unrelated accident,
+    say) shares generic words but no entities, so it is correctly scored as
+    uncorroborated (maximal gap).
 
     Returns story_id, corrob_sim, nearest_handle, nearest_text, nearest_post_id.
-    When a story's own members include a trusted handle, corrob_sim is ~1 by
-    construction (that story is corroborated). No trusted posts in range ->
-    corrob_sim 0.0 and null nearest fields (a maximal gap)."""
+    No trusted post clears the gate (or none in range) -> corrob_sim 0.0 and null
+    nearest fields (a maximal gap)."""
     cols = ["story_id", "corrob_sim", "nearest_handle", "nearest_text", "nearest_post_id"]
     if stories.empty:
         return pd.DataFrame(columns=cols)
@@ -278,9 +405,30 @@ def corroboration(
                          "nearest_text": None, "nearest_post_id": None})
         return pd.DataFrame(rows, columns=cols)
     tv = np.asarray(trusted["embedding"].tolist(), dtype="float32")
+    trusted_terms = [_salient_terms(t) for t in trusted["text"]]
+    trusted_ents = [_entity_terms(t) for t in trusted["text"]]
+    story_terms, story_ents = {}, {}
+    for sid, grp in stories.groupby("story_id"):
+        story_terms[int(sid)] = set().union(*(_salient_terms(t) for t in grp["text"]))
+        story_ents[int(sid)] = set().union(*(_entity_terms(t) for t in grp["text"]))
     for sid, c in centroids.items():
-        sims = tv @ c
+        terms, ents = story_terms.get(int(sid), set()), story_ents.get(int(sid), set())
+        gate = np.array(
+            [
+                len(terms & tt) >= min_shared_terms
+                # when the story names entities, the match must share one - this is what
+                # rejects same-topic / different-claim coverage (see _entity_terms)
+                and (not ents or len(ents & te) >= 1)
+                for tt, te in zip(trusted_terms, trusted_ents)
+            ],
+            dtype=bool,
+        )
+        sims = np.where(gate, tv @ c, -np.inf)
         j = int(np.argmax(sims))
+        if not np.isfinite(sims[j]):  # no trusted post shares the claim vocabulary
+            rows.append({"story_id": sid, "corrob_sim": 0.0, "nearest_handle": None,
+                         "nearest_text": None, "nearest_post_id": None})
+            continue
         rows.append(
             {
                 "story_id": sid,
@@ -400,8 +548,8 @@ def story_scorecard(
         "corroboration_gap": rank(df["corroboration_gap"]),
         "amplifier_botness": rank(df["amplifier_botness"]),
         "coordination_overlap": rank(df["coordination_overlap"]),
-        # tighter burst window (fewer days) => burstier => higher rank
-        "burst_recency": rank(df["burst_days"], invert=True),
+        # more distinct accounts carrying the claim => wider push => higher rank
+        "reach": rank(df["size"]),
         "source_concentration": rank(df["source_concentration"]),
     }
     for name, comp in components.items():

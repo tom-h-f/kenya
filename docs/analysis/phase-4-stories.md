@@ -44,18 +44,34 @@ Two further caveats, kept visible in code + notebook:
    connected components of the cosine >= `tau` graph over recent post embeddings
    (same primitive as `coordination.content_clusters`, joined to `latest_posts` and
    filtered to the last `days`, at a lower story-level `tau ~= 0.80` - paraphrases,
-   not verbatim copypasta). Keeps components with >= `min_size` distinct authors.
+   not verbatim copypasta). Before clustering, retweets/same-author dupes AND
+   low-information posts (bare links, one-liners, pure emoji: `< MIN_CONTENT_WORDS`
+   real words) are dropped; after clustering, degenerate **chaining blobs** (a
+   component that is both large, `> MAX_COHERENT_AUTHORS`, and dispersed, cohesion
+   `< MIN_COHESION`) are rejected. Both are needed - without them, low-info posts
+   single-linkage-chain thousands of unrelated claims into one 6k-author component
+   that swallows small stories. Keeps components with >= `min_size` distinct authors
+   (default 3).
 2. **`corroboration(con, stories, days)`** - per story: max cosine of its centroid
-   (renormalised mean member embedding) to any `TRUSTED_SOURCES` post in the window,
-   plus that nearest trusted post (handle/text/sim) for the human. Low sim => gap.
+   (renormalised mean member embedding) to any `TRUSTED_SOURCES` post that also
+   **shares the story's claim vocabulary** - `>= MIN_SHARED_TERMS` salient words and,
+   when the story names entities, at least one entity (proper-noun proxy, see
+   `_entity_terms`). This lexical+entity gate makes the signal **claim-level, not
+   topic-level**: a fabricated "Ruto motorcade crash" embeds near real accident
+   coverage (~0.65) but shares no entities with it, so that coverage no longer masks
+   the gap. Returns the nearest gated trusted post (handle/text/sim); none passing =>
+   `corrob_sim 0.0` (maximal gap).
 3. **`story_scorecard(con, stories, corrob)`** - transparent weighted
    percentile-rank index (mirrors `coordination.scorecards` / `STORY_WEIGHTS`):
-   `corroboration_gap` (0.30), `amplifier_botness` (0.25, via
+   `corroboration_gap` (0.25), `amplifier_botness` (0.25, via
    `authenticity.authenticity_score`), `coordination_overlap` (0.20, share of
-   authors in `latest_coordination_clusters`), `burst_recency` (0.15, via
-   `_burstiness_days` on member `created_at`), `source_concentration` (0.10, posts
-   per distinct author). A gap alone never flags a story - amplification and
-   coordination must stack with it. Attaches c-TF-IDF `keywords` + top `hashtags`.
+   authors in `latest_coordination_clusters`), `reach` (0.20, distinct authors
+   carrying the claim), `source_concentration` (0.10, posts per distinct author). A
+   gap alone never flags a story - amplification, coordination and reach must stack
+   with it. (`burst_recency` was dropped: over the recent window every claim cluster
+   is time-tight, so it carried no signal; `reach` replaced it - a wide multi-account
+   push is what lifts a coordinated story like the SACCO case above 2-account noise.)
+   Attaches c-TF-IDF `keywords` + top `hashtags`.
 4. **`origin(con, story)`** - earliest-seen member posts + author authenticity +
    coordination-cluster membership (first-mover view; bounded by capture).
 5. **`spread(con, story)`** - amplifiers (retweeters from the engagement census +
@@ -99,13 +115,54 @@ New R2 prefix: `stories/platform=x/dt=YYYY-MM-DD/run=<utc-ts>.parquet`. Columns:
 component + `story_suspicion_index`, `computed_at`. Readers in `kma/db.py`:
 `stories_source()` / `latest_stories()`.
 
+## Ground-truth eval (`kma/eval.py`, `run_eval.py`)
+
+A regression harness anchored on real disinfo that circulated on X. Each
+`GroundTruthCase` (matched by claim-text `ILIKE` + confirmed author handles) is
+walked through the pipeline stage-by-stage and the first drop-out is reported:
+**collection** (not in corpus) -> **embedding** -> **clustering** (sub-threshold or
+swallowed by a blob) -> **scoring** (below the top-`TOP_FRACTION` triage cut).
+`expect="surface"` cases gate a green run; `expect="known-limitation"` cases are
+tracked but not required. Run: `cd analysis && uv run python run_eval.py`.
+
+The two seed cases and how the fixes above were derived from them:
+- **`sacco-savings-borrow`** (surface): a distorted "government to borrow SACCO
+  savings" claim pushed by ~19 accounts. A trusted outlet (`ntvkenya`) covered the
+  topic, so its corroboration gap is legitimately low - it is surfaced by
+  reach/botness/coordination, not the gap. Post-fix it ranks ~58/456 (top ~13%,
+  inside the 15% cut).
+- **`ruto-motorcade-crash`** (known-limitation): see below.
+
+Every threshold in the fixes (`MIN_CONTENT_WORDS`, `MAX_COHERENT_AUTHORS`,
+`MIN_COHESION`, `MIN_SHARED_TERMS`, `STORY_WEIGHTS`) was chosen by measuring this
+harness against live R2, not guessed.
+
+## Known limitation - small, no-coverage fabrications
+
+The fabricated **Ruto motorcade crash** (~3 Jul 2026, no reputable outlet reported
+it) is *not* reliably surfaced, and this is structural, not a bug:
+- Only ~2 accounts carried it, so it is below `min_size` (and even at `min_size=2`
+  it has no reach/botness/coordination signal to lift it in an amplification-ranked
+  list).
+- Its topic overlaps real accident coverage and its only entity ("Ruto") is
+  ubiquitous, so entity-gated corroboration only *partially* isolates it (gap rises
+  but not to maximal).
+
+Catching this class needs a **dedicated small-cluster high-gap view** (list 2+ author
+clusters ranked by claim-level gap + recency, with a stricter rare-entity gate),
+separate from the amplification scorecard - deferred. The harness tracks this case so
+the day a fix lands, it flips green.
+
 ## Decisions locked
 
-- Story clustering = connected-components at `tau ~= 0.80` (cheap, deterministic,
-  reuses the trusted `content_clusters` primitive; not UMAP/HDBSCAN).
-- Corroboration source = trusted outlets' **X posts only** for v1 (RSS/news-site
-  ingestion deferred).
+- Story clustering = connected-components at `tau ~= 0.80` with a low-information
+  pre-filter and a chaining-blob reject (cheap, deterministic, reuses the trusted
+  `content_clusters` primitive; not UMAP/HDBSCAN).
+- Corroboration = claim-level: trusted outlets' **X posts only** for v1, gated by
+  shared salient terms + entities (RSS/news-site ingestion deferred).
 - Trusted set = 5 media handles + fact-checkers `PesaCheck`, `AfricaCheck`.
+- Scorecard weights favour amplification + reach over the corroboration gap alone
+  (the gap is a noise magnet for tiny uncorroborated clusters).
 
 ## Verify (small scale first)
 

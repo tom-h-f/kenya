@@ -51,12 +51,13 @@ def test_story_centroids_are_renormalised_means():
 
 
 def test_corroboration_high_when_trusted_matches(monkeypatch):
-    s = _stories_frame({0: [("a", [1, 0, 0], "iebc rigged", [])]})
+    # trusted post shares the claim vocabulary (iebc/rigged/election), so it corroborates
+    s = _stories_frame({0: [("a", [1, 0, 0], "iebc rigged election results", [])]})
     trusted = pd.DataFrame(
         {
             "platform_post_id": ["t1", "t2"],
             "author_handle": ["NationAfrica", "StandardKenya"],
-            "text": ["IEBC denies rigging claim", "unrelated weather report"],
+            "text": ["IEBC denies rigged election claim", "unrelated weather report"],
             "created_at": [pd.Timestamp("2026-07-08", tz="UTC")] * 2,
             "embedding": [list(_unit([0.99, 0.14, 0])), list(_unit([0, 0, 1]))],
         }
@@ -65,6 +66,26 @@ def test_corroboration_high_when_trusted_matches(monkeypatch):
     out = st.corroboration(None, s)
     assert out.loc[0, "corrob_sim"] > 0.95
     assert out.loc[0, "nearest_handle"] == "NationAfrica"
+
+
+def test_corroboration_gated_out_when_only_topic_overlaps(monkeypatch):
+    # same topic (accident), different claim: shares only "accident" -> not corroboration
+    s = _stories_frame(
+        {0: [("a", [1, 0, 0], "ruto motorcade crash accident kills bodyguard", [])]}
+    )
+    trusted = pd.DataFrame(
+        {
+            "platform_post_id": ["t1"],
+            "author_handle": ["citizentvkenya"],
+            "text": ["eight dead in road accident on nakuru eldoret highway matatu"],
+            "created_at": [pd.Timestamp("2026-07-08", tz="UTC")],
+            "embedding": [list(_unit([0.97, 0.24, 0]))],  # embeds close (same topic)
+        }
+    )
+    monkeypatch.setattr(st, "_trusted_posts", lambda *a, **k: trusted)
+    out = st.corroboration(None, s)
+    assert out.loc[0, "corrob_sim"] == 0.0  # topic bleed does not count as coverage
+    assert pd.isna(out.loc[0, "nearest_handle"])
 
 
 def test_corroboration_low_when_no_trusted_match(monkeypatch):
