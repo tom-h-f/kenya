@@ -16,7 +16,7 @@ def _():
     viz.use_theme()
     con = connect()
     con.execute("SET enable_progress_bar=false")
-    return con, mo, np, st, viz
+    return con, mo, st, viz
 
 
 @app.cell
@@ -78,7 +78,7 @@ def _(con, st):
                                    min_size=st.DEFAULT_MIN_SIZE)
     corrob = st.corroboration(con, stories, days=st.DEFAULT_DAYS)
     cards = st.story_scorecard(con, stories, corrob)
-    return cards, corrob, stories
+    return cards, stories
 
 
 @app.cell
@@ -203,7 +203,7 @@ def _(cards, mo, st, story_pick):
             mo.md(f"**Story ({_c['size']} authors):** {_c['representative_text']}"),
             mo.md(
                 f"**Nearest trusted post** — _{_c['nearest_handle']}_ "
-                f"(sim **{_c['corrob_sim']:.2f}**):\n\n> {_near}"
+                f"(sim **{_c['corrob_sim']:.2f}**):\n\n> \n{_near}\n"
                 if _near else "_No trusted-outlet post in range - a maximal gap._"
             ),
         ])

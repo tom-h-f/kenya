@@ -143,15 +143,15 @@ def _(con):
 
     region_df = slice_sentiment(con, "region", min_posts=3).df()
     community_df = slice_sentiment(con, "community", min_posts=3).df()
-    return TRIBE_DISCLAIMER, community_df, region_df
+    return community_df, region_df
 
 
 @app.cell
-def _(TRIBE_DISCLAIMER, community_df, mo, region_df):
+def _(community_df, mo, region_df):
     mo.vstack([
         mo.md("### Sentiment by region"),
         region_df,
-        mo.md(f"### Sentiment by community\n\n_{TRIBE_DISCLAIMER}_"),
+        mo.md(f"### Sentiment by community"),
         community_df,
     ])
     return
