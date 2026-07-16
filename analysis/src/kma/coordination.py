@@ -1333,6 +1333,93 @@ def persist_clusters(
     return key
 
 
+# --- claim-scoped views (desk brief) ----------------------------------------
+
+
+def story_account_set(
+    story: pd.DataFrame,
+    amplifiers: pd.DataFrame | None = None,
+) -> set[str]:
+    """Author ids for a story's members ∪ optional amplifiers (retweeters/repliers).
+
+    `story` is candidate_stories rows for one story (needs author_id).
+    `amplifiers` is spread()["amplifiers"] (platform_user_id) when available.
+    """
+    accounts: set[str] = set()
+    if story is not None and not story.empty and "author_id" in story.columns:
+        accounts.update(str(a) for a in story["author_id"].dropna().tolist())
+    if amplifiers is not None and not amplifiers.empty:
+        col = "platform_user_id" if "platform_user_id" in amplifiers.columns else "author_id"
+        if col in amplifiers.columns:
+            accounts.update(str(a) for a in amplifiers[col].dropna().tolist())
+    return accounts
+
+
+def claim_coordination(
+    accounts: set[str] | list[str],
+    edges: pd.DataFrame | None = None,
+    clusters: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame | dict]:
+    """Filter validated edges / cluster membership to accounts tied to one claim.
+
+    Empty account set or empty inputs -> empty frames, no crash. Language stays
+    triage: summary counts only, no auto inauthentic label.
+
+    Returns {"edges", "clusters", "summary"} where summary has n_accounts,
+    n_edges, channels, n_clusters, cluster_ids.
+    """
+    empty_edges = pd.DataFrame(columns=["src", "dst", "weight", "channel"])
+    empty_clusters = pd.DataFrame(columns=["author_id", "cluster_id"])
+    acct = {str(a) for a in accounts}
+    if not acct:
+        return {
+            "edges": empty_edges,
+            "clusters": empty_clusters,
+            "summary": {
+                "n_accounts": 0,
+                "n_edges": 0,
+                "channels": [],
+                "n_clusters": 0,
+                "cluster_ids": [],
+                "note": "triage slice only - coordination is probabilistic, not malice",
+            },
+        }
+
+    if edges is None or edges.empty:
+        claim_edges = empty_edges
+    else:
+        e = edges.copy()
+        # accept src/dst or author_a/author_b style
+        src = "src" if "src" in e.columns else "author_a"
+        dst = "dst" if "dst" in e.columns else "author_b"
+        mask = e[src].astype(str).isin(acct) & e[dst].astype(str).isin(acct)
+        claim_edges = e.loc[mask].reset_index(drop=True)
+
+    if clusters is None or clusters.empty:
+        claim_clusters = empty_clusters
+    else:
+        c = clusters.copy()
+        aid = "author_id" if "author_id" in c.columns else "platform_user_id"
+        claim_clusters = c.loc[c[aid].astype(str).isin(acct)].reset_index(drop=True)
+
+    channels: list[str] = []
+    if not claim_edges.empty and "channel" in claim_edges.columns:
+        channels = sorted(claim_edges["channel"].dropna().astype(str).unique().tolist())
+    cluster_ids: list = []
+    if not claim_clusters.empty and "cluster_id" in claim_clusters.columns:
+        cluster_ids = sorted(claim_clusters["cluster_id"].dropna().unique().tolist())
+
+    summary = {
+        "n_accounts": len(acct),
+        "n_edges": int(len(claim_edges)),
+        "channels": channels,
+        "n_clusters": len(cluster_ids),
+        "cluster_ids": cluster_ids,
+        "note": "triage slice only - coordination is probabilistic, not malice",
+    }
+    return {"edges": claim_edges, "clusters": claim_clusters, "summary": summary}
+
+
 # --- evaluation (06) --------------------------------------------------------
 
 

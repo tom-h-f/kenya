@@ -301,3 +301,37 @@ def test_degree_corrected_svn_still_recovers_planted_cluster():
     found = set(zip(hits["src"], hits["dst"]))
     assert bot_pairs <= found  # every planted pair validated
     assert found == bot_pairs  # and nothing else
+
+
+def test_story_account_set_members_and_amplifiers():
+    story = pd.DataFrame({"author_id": ["a", "b", "a"]})
+    amps = pd.DataFrame({"platform_user_id": ["c"], "kind": ["retweet"], "n": [2]})
+    assert co.story_account_set(story, amps) == {"a", "b", "c"}
+    assert co.story_account_set(pd.DataFrame(), None) == set()
+
+
+def test_claim_coordination_filters_edges_to_accounts():
+    edges = pd.DataFrame(
+        {
+            "src": ["a", "a", "x"],
+            "dst": ["b", "z", "y"],
+            "weight": [3, 2, 9],
+            "channel": ["co_retweet", "co_retweet", "text_sim"],
+        }
+    )
+    clusters = pd.DataFrame(
+        {"author_id": ["a", "b", "x"], "cluster_id": [1, 1, 2]}
+    )
+    out = co.claim_coordination({"a", "b"}, edges, clusters)
+    assert set(zip(out["edges"]["src"], out["edges"]["dst"])) == {("a", "b")}
+    assert set(out["clusters"]["author_id"]) == {"a", "b"}
+    assert out["summary"]["n_edges"] == 1
+    assert out["summary"]["n_clusters"] == 1
+    assert "malice" in out["summary"]["note"] or "probabilistic" in out["summary"]["note"]
+
+
+def test_claim_coordination_empty_accounts():
+    edges = pd.DataFrame({"src": ["a"], "dst": ["b"], "weight": [1], "channel": ["co_retweet"]})
+    out = co.claim_coordination(set(), edges, None)
+    assert out["edges"].empty
+    assert out["summary"]["n_accounts"] == 0
