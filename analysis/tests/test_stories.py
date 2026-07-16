@@ -180,3 +180,118 @@ def test_empty_stories_return_empty_frames():
     empty = pd.DataFrame(columns=["story_id", "embedding"])
     assert st.corroboration(None, empty).empty
     assert st.story_scorecard(None, empty).empty
+
+
+def test_stable_story_id_deterministic_for_same_members():
+    ids_a = ["p3", "p1", "p2"]
+    ids_b = ["p1", "p2", "p3"]
+    assert st.stable_story_id(ids_a) == st.stable_story_id(ids_b)
+    assert st.stable_story_id(ids_a) != st.stable_story_id(["p1", "p2"])
+
+
+def test_attach_stable_story_ids_on_members():
+    s = _stories_frame(
+        {
+            0: [("a", [1, 0, 0], "claim one alpha", []),
+                ("b", [1, 0, 0], "claim one beta", [])],
+            1: [("c", [0, 1, 0], "other claim gamma", [])],
+        }
+    )
+    out = st.attach_stable_story_ids(s)
+    assert "stable_story_id" in out.columns
+    g0 = out.loc[out["story_id"] == 0, "stable_story_id"].unique()
+    g1 = out.loc[out["story_id"] == 1, "stable_story_id"].unique()
+    assert len(g0) == 1 and len(g1) == 1
+    assert g0[0] != g1[0]
+    assert g0[0] == st.stable_story_id(
+        out.loc[out["story_id"] == 0, "platform_post_id"].tolist()
+    )
+
+
+def test_assign_tiers_thin_high_gap_not_high_suspicion_without_amp(monkeypatch):
+    # 2-author maximal-gap claim: thin_evidence, not high_suspicion
+    s = _stories_frame(
+        {
+            0: [
+                ("a", [1, 0, 0], "Ruto motorcade crash Embu highway kills guard", []),
+                ("b", [1, 0, 0], "Ruto motorcade crash Embu highway injured", []),
+            ],
+        }
+    )
+    s = st.attach_stable_story_ids(s)
+    corrob = pd.DataFrame(
+        {
+            "story_id": [0],
+            "corrob_sim": [0.0],
+            "nearest_handle": [None],
+            "nearest_text": [None],
+            "nearest_post_id": [None],
+        }
+    )
+    fake_auth = pd.DataFrame(
+        {"platform_user_id": ["a", "b"], "suspicion": [0.1, 0.12]}
+    )
+    monkeypatch.setattr(
+        "kma.authenticity.authenticity_score", lambda *a, **k: fake_auth
+    )
+    monkeypatch.setattr(st, "_coordination_author_ids", lambda *a, **k: set())
+    cards = st.story_scorecard(None, s, corrob)
+    cards = st.assign_tiers(s, cards)
+    assert cards.loc[0, "tier"] == st.TIER_THIN
+    assert cards.loc[0, "high_suspicion"] is False or cards.loc[0, "high_suspicion"] == False
+    assert cards.loc[0, "stable_story_id"] == s.loc[0, "stable_story_id"]
+
+
+def test_assign_tiers_main_lane_size_three():
+    s = _stories_frame(
+        {
+            0: [
+                ("a", [1, 0, 0], "iebc rigged election results claim", []),
+                ("b", [1, 0, 0], "iebc rigged election results again", []),
+                ("c", [1, 0, 0], "iebc rigged election results third", []),
+            ],
+        }
+    )
+    s = st.attach_stable_story_ids(s)
+    cards = pd.DataFrame(
+        {
+            "story_id": [0],
+            "size": [3],
+            "corroboration_gap": [0.8],
+            "amplifier_botness": [0.2],
+            "coordination_overlap": [0.0],
+            "story_suspicion_index": [0.6],
+        }
+    )
+    out = st.assign_tiers(s, cards)
+    assert out.loc[0, "tier"] == st.TIER_MAIN
+    assert out.loc[0, "stable_story_id"] == s.loc[s["story_id"] == 0, "stable_story_id"].iloc[0]
+
+
+
+def test_persist_columns_include_tier_and_stable_id():
+    cards = pd.DataFrame(
+        {
+            "story_id": [0],
+            "stable_story_id": ["abc123"],
+            "tier": [st.TIER_THIN],
+            "size": [2],
+            "n_posts": [2],
+            "keywords": [["ruto"]],
+            "hashtags": [[]],
+            "representative_text": ["x"],
+            "representative_post_id": ["p0"],
+            "member_post_ids": [["p0", "p1"]],
+            "corrob_sim": [0.0],
+            "corroboration_gap": [1.0],
+            "amplifier_botness": [0.1],
+            "coordination_overlap": [0.0],
+            "source_concentration": [1.0],
+            "story_suspicion_index": [0.4],
+            "high_suspicion": [False],
+        }
+    )
+    cols = st.persist_story_columns(cards)
+    assert "stable_story_id" in cols
+    assert "tier" in cols
+    assert "high_suspicion" in cols

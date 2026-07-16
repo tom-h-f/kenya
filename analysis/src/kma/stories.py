@@ -30,6 +30,7 @@ bounded.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
 
@@ -86,6 +87,13 @@ SAMPLING_CAVEAT = (
 DEFAULT_TAU = 0.80
 DEFAULT_DAYS = 7
 DEFAULT_MIN_SIZE = 3
+# Thin high-gap lane: small clusters (below main min_size) with near-maximal
+# corroboration gap + named entities. Triage as thin_evidence, never auto-elevated
+# to high suspicion without amp/coordination signals.
+THIN_MIN_SIZE = 2
+THIN_MIN_GAP = 0.95
+TIER_MAIN = "main"
+TIER_THIN = "thin_evidence"
 
 # Posts with fewer than this many content words (after stripping URLs and mentions)
 # are dropped before clustering. Bare links, one-liners and pure-emoji posts carry
@@ -125,9 +133,17 @@ STORY_WEIGHTS = {
 }
 
 METRIC_GLOSSARY = {
-    "story_id": "Stable index of a near-duplicate content cluster (connected "
-    "component of the cosine >= tau graph) over the recent window. One story = one "
-    "claim circulating, paraphrases included.",
+    "story_id": "Run-local index of a near-duplicate content cluster (connected "
+    "component of the cosine >= tau graph) over the recent window. Remapped each "
+    "run (largest first). Prefer stable_story_id for persistence / deltas.",
+    "stable_story_id": "Deterministic id = sha1 of sorted member platform_post_ids. "
+    "Same member set => same id across runs.",
+    "tier": f"'{TIER_MAIN}' = >= {DEFAULT_MIN_SIZE} authors (amp-weighted triage); "
+    f"'{TIER_THIN}' = {THIN_MIN_SIZE}..{DEFAULT_MIN_SIZE - 1} authors with near-maximal "
+    "corroboration gap and named entities. Thin is evidence, not high suspicion.",
+    "high_suspicion": "True only when amp/coordination signals support elevation. "
+    "Thin-tier stories are False unless amplifier_botness or coordination_overlap "
+    "fires. Main-tier uses story_suspicion_index >= 0.5 as a soft cut.",
     "size": "Distinct authors posting the story - reach in accounts, not posts.",
     "n_posts": "Member posts in the story after dropping retweets and same-author "
     "duplicate text (>= size; paraphrases from the same account still count).",
@@ -157,6 +173,110 @@ METRIC_GLOSSARY = {
     "percentile-ranked components (see STORY_WEIGHTS). NOT a verdict - the component "
     "breakdown, plus the nearest trusted post, is what a human acts on.",
 }
+
+
+def stable_story_id(member_post_ids: list | tuple) -> str:
+    """Deterministic story id from the set of member platform_post_ids."""
+    blob = "\n".join(sorted(str(p) for p in member_post_ids))
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def attach_stable_story_ids(stories: pd.DataFrame) -> pd.DataFrame:
+    """Add stable_story_id per story_id group (hash of sorted member post ids)."""
+    if stories.empty:
+        out = stories.copy()
+        out["stable_story_id"] = pd.Series(dtype=str)
+        return out
+    out = stories.copy()
+    sid_to_stable = {
+        sid: stable_story_id(grp["platform_post_id"].tolist())
+        for sid, grp in out.groupby("story_id")
+    }
+    out["stable_story_id"] = out["story_id"].map(sid_to_stable)
+    return out
+
+
+def _story_has_entities(stories: pd.DataFrame) -> dict[int, bool]:
+    return {
+        int(sid): bool(set().union(*(_entity_terms(t) for t in grp["text"])))
+        for sid, grp in stories.groupby("story_id")
+    }
+
+
+def assign_tiers(stories: pd.DataFrame, scorecard: pd.DataFrame) -> pd.DataFrame:
+    """Attach tier, stable_story_id, and high_suspicion to a scorecard.
+
+    - main: size >= DEFAULT_MIN_SIZE
+    - thin_evidence: THIN_MIN_SIZE <= size < DEFAULT_MIN_SIZE, gap >= THIN_MIN_GAP,
+      and member text has at least one entity term
+    - other small/low-gap rows get tier dropped (filtered out)
+
+    Thin rows are never high_suspicion unless amp botness or coordination fires.
+    """
+    if scorecard.empty:
+        out = scorecard.copy()
+        for col in ("tier", "stable_story_id", "high_suspicion"):
+            if col not in out.columns:
+                out[col] = pd.Series(dtype=object if col != "high_suspicion" else bool)
+        return out
+
+    out = scorecard.copy()
+    if "stable_story_id" not in out.columns or out["stable_story_id"].isna().all():
+        if not stories.empty and "stable_story_id" in stories.columns:
+            stab = (
+                stories.groupby("story_id")["stable_story_id"]
+                .first()
+                .to_dict()
+            )
+        else:
+            stab = {
+                sid: stable_story_id(grp["platform_post_id"].tolist())
+                for sid, grp in stories.groupby("story_id")
+            } if not stories.empty else {}
+        out["stable_story_id"] = out["story_id"].map(stab)
+
+    has_ent = _story_has_entities(stories) if not stories.empty else {}
+    tiers = []
+    for _, row in out.iterrows():
+        sid = int(row["story_id"])
+        size = int(row["size"])
+        gap = float(row.get("corroboration_gap", 0.0) or 0.0)
+        if size >= DEFAULT_MIN_SIZE:
+            tiers.append(TIER_MAIN)
+        elif (
+            size >= THIN_MIN_SIZE
+            and gap >= THIN_MIN_GAP
+            and has_ent.get(sid, False)
+        ):
+            tiers.append(TIER_THIN)
+        else:
+            tiers.append(None)
+    out["tier"] = tiers
+    out = out[out["tier"].notna()].copy()
+    if out.empty:
+        return out.reset_index(drop=True)
+
+    amp = out["amplifier_botness"].fillna(0.0) >= 0.5
+    coord = out["coordination_overlap"].fillna(0.0) > 0.0
+    main_cut = out["story_suspicion_index"].fillna(0.0) >= 0.5
+    out["high_suspicion"] = np.where(
+        out["tier"] == TIER_THIN,
+        amp | coord,
+        main_cut,
+    )
+    return out.reset_index(drop=True)
+
+
+def persist_story_columns(scorecard: pd.DataFrame) -> list[str]:
+    """Column order written by persist_stories (also used in tests)."""
+    cols = [
+        "story_id", "stable_story_id", "tier", "high_suspicion",
+        "size", "n_posts", "keywords", "hashtags", "representative_text",
+        "representative_post_id", "member_post_ids", "corrob_sim", "corroboration_gap",
+        "amplifier_botness", "coordination_overlap", "source_concentration",
+        "story_suspicion_index",
+    ]
+    return [c for c in cols if c in scorecard.columns]
 
 
 def glossary_md() -> str:
@@ -284,6 +404,7 @@ def candidate_stories(
     min_size: int = DEFAULT_MIN_SIZE,
     platform: str = "x",
     model: str = MODEL,
+    include_thin: bool = False,
 ) -> pd.DataFrame:
     """Claim-level stories: connected components of the cosine >= tau graph over
     recent post embeddings (same primitive as coordination.content_clusters, but
@@ -291,17 +412,19 @@ def candidate_stories(
     tau). Retweets, same-author duplicate text and low-information posts (bare
     links / one-liners) are dropped before clustering, and degenerate chaining
     blobs (large + dispersed components) are rejected after. Keeps components with
-    >= min_size distinct authors.
+    >= min_size distinct authors (or >= THIN_MIN_SIZE when include_thin=True;
+    tiering happens later in assign_tiers after corroboration).
 
-    Returns one row per member post: story_id, author_id, author_handle, text,
-    created_at, is_repost, hashtags, conversation_id, embedding. story_id is a
-    contiguous 0..k index."""
+    Returns one row per member post: story_id, stable_story_id, author_id,
+    author_handle, text, created_at, is_repost, hashtags, conversation_id,
+    embedding. story_id is a contiguous 0..k index; stable_story_id is durable."""
     from scipy.sparse.csgraph import connected_components
     from sklearn.neighbors import radius_neighbors_graph
 
+    keep_min = THIN_MIN_SIZE if include_thin else min_size
     cols = [
-        "platform_post_id", "story_id", "author_id", "author_handle", "text",
-        "created_at", "is_repost", "hashtags", "conversation_id", "embedding",
+        "platform_post_id", "story_id", "stable_story_id", "author_id", "author_handle",
+        "text", "created_at", "is_repost", "hashtags", "conversation_id", "embedding",
     ]
     df = con.sql(
         f"""
@@ -328,9 +451,9 @@ def candidate_stories(
         df = df[keep].copy()
         labels = labels[keep]
     df["_comp"] = labels
-    # keep components with >= min_size distinct authors
+    # keep components with >= keep_min distinct authors
     author_counts = df.groupby("_comp")["author_id"].nunique()
-    keep = author_counts[author_counts >= min_size].index
+    keep = author_counts[author_counts >= keep_min].index
     df = df[df["_comp"].isin(keep)].copy()
     if df.empty:
         return pd.DataFrame(columns=cols)
@@ -338,7 +461,7 @@ def candidate_stories(
     order = df["_comp"].value_counts().index.tolist()
     remap = {c: i for i, c in enumerate(order)}
     df["story_id"] = df["_comp"].map(remap)
-    return df[cols].reset_index(drop=True)
+    return attach_stable_story_ids(df)[cols].reset_index(drop=True)
 
 
 def story_centroids(stories: pd.DataFrame) -> dict[int, np.ndarray]:
@@ -500,6 +623,8 @@ def story_scorecard(
             "representative_post_id"]
     if stories.empty:
         return pd.DataFrame(columns=cols + ["story_suspicion_index"])
+    if "stable_story_id" not in stories.columns:
+        stories = attach_stable_story_ids(stories)
     centroids = story_centroids(stories)
     if corrob is None:
         corrob = corroboration(
@@ -520,6 +645,7 @@ def story_scorecard(
         rows.append(
             {
                 "story_id": sid,
+                "stable_story_id": grp["stable_story_id"].iloc[0],
                 "size": len(author_ids),
                 "n_posts": len(grp),
                 "keywords": keywords.get(sid, []),
@@ -669,13 +795,8 @@ def persist_stories(
     if keep.empty:
         return None
     now = datetime.now(timezone.utc)
-    cols = [
-        "story_id", "size", "n_posts", "keywords", "hashtags", "representative_text",
-        "representative_post_id", "member_post_ids", "corrob_sim", "corroboration_gap",
-        "amplifier_botness", "coordination_overlap", "source_concentration",
-        "story_suspicion_index",
-    ]
-    buf = keep[[c for c in cols if c in keep.columns]].copy()
+    cols = persist_story_columns(keep)
+    buf = keep[cols].copy()
     buf["computed_at"] = now
     key = (
         f"stories/platform={platform}"

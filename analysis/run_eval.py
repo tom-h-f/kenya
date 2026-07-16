@@ -21,11 +21,12 @@ con = connect()
 
 report = gt.evaluate(con, days=DAYS, tau=st.DEFAULT_TAU, min_size=st.DEFAULT_MIN_SIZE)
 
-cols = ["case", "expect", "n_present", "n_embedded", "story_id", "story_authors",
-        "is_blob", "rank", "triage_cut", "n_stories", "suspicion", "surfaced",
+cols = ["case", "expect", "lane", "n_present", "n_embedded", "story_id", "story_authors",
+        "tier", "is_blob", "rank", "triage_cut", "n_main_stories", "suspicion", "surfaced",
         "pass", "drop_stage"]
 print(f"\n=== ground-truth report (days={DAYS}, tau={st.DEFAULT_TAU}, "
-      f"min_size={st.DEFAULT_MIN_SIZE}, triage_fraction={gt.TOP_FRACTION}) ===")
+      f"min_size={st.DEFAULT_MIN_SIZE}, triage_fraction={gt.TOP_FRACTION}, "
+      f"include_thin=True) ===")
 print(report[cols].to_string(index=False))
 
 required = report[report["expect"] == gt.EXPECT_SURFACE]
@@ -39,3 +40,5 @@ for _, r in report.iterrows():
         print(f"  NOTE {r['case']}: known limitation, {state} - {case.note}")
     elif not r["pass"]:
         print(f"  RED  {r['case']}: dropped at {r['drop_stage']} - {case.note}")
+    elif r["pass"] and r["lane"] == "thin":
+        print(f"  OK   {r['case']}: thin lane (tier={r['tier']})")

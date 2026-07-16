@@ -58,6 +58,7 @@ class GroundTruthCase:
     approx_date: str
     verdict: str = "disinfo"
     expect: str = EXPECT_SURFACE
+    lane: str = "main"  # main | thin | either - which triage lane should hold it
     note: str = ""
     tags: list[str] = field(default_factory=list)
 
@@ -71,6 +72,7 @@ GROUND_TRUTH: list[GroundTruthCase] = [
         anchor_handles=["pocketpowerr", "MutembeiTV", "money254HQ", "MwagoIsaac"],
         approx_date="2026-07-05",
         expect=EXPECT_SURFACE,
+        lane="main",
         note="Distorted claim amplified by ~19 accounts. A trusted outlet (ntvkenya) "
              "covered the topic, so its corroboration gap is legitimately low - it must "
              "be flagged via reach / botness / coordination, not the gap. This is the "
@@ -84,15 +86,12 @@ GROUND_TRUTH: list[GroundTruthCase] = [
                    "%speeding%security%accident%", "%ruto%speeding%motorcade%"],
         anchor_handles=["ouma_neko", "Benson_Mwiti_25"],
         approx_date="2026-07-05",
-        expect=EXPECT_KNOWN_LIMITATION,
-        note="Fabricated crash, no reputable coverage - but only ~2 accounts carried it. "
-             "KNOWN LIMITATION: below min_size, and even at min_size=2 with a maximal gap "
-             "a 2-account claim has no reach/botness/coordination signal to lift it in the "
-             "amplification scorecard. Its topic also overlaps real accident coverage and "
-             "its lone entity (Ruto) is ubiquitous, so entity-gated corroboration only "
-             "partially isolates it. Catching this class needs a dedicated small-cluster "
-             "high-gap view (see docs/analysis/phase-4-stories.md).",
-        tags=["positive", "no-coverage", "small"],
+        expect=EXPECT_SURFACE,
+        lane="thin",
+        note="Fabricated crash, no reputable coverage, ~2 accounts. Expected in the "
+             "thin_evidence lane (include_thin=True + assign_tiers), not main triage. "
+             "high_suspicion stays False without amp/coord signals.",
+        tags=["positive", "no-coverage", "small", "thin"],
     ),
 ]
 
@@ -120,7 +119,7 @@ def _triage_cut(n_stories: int) -> int:
     return max(int(np.ceil(TOP_FRACTION * n_stories)), TOP_MIN)
 
 
-def _drop_stage(row: dict) -> str | None:
+def _drop_stage(row: dict, lane: str = "main") -> str | None:
     if row["n_present"] == 0:
         return "collection"
     if row["n_embedded"] == 0:
@@ -129,7 +128,22 @@ def _drop_stage(row: dict) -> str | None:
         return "clustering (sub-threshold)"
     if row["is_blob"]:
         return "clustering (blob/chaining)"
-    if row["rank"] is None or row["rank"] > _triage_cut(row["n_stories"]):
+    if lane == "thin":
+        if row.get("tier") != st.TIER_THIN:
+            return "tiering (not thin_evidence)"
+        return None
+    if lane == "either":
+        if row.get("tier") in (st.TIER_MAIN, st.TIER_THIN):
+            if row["tier"] == st.TIER_THIN:
+                return None
+            if row["rank"] is None or row["rank"] > _triage_cut(row["n_main_stories"]):
+                return "scoring"
+            return None
+        return "tiering"
+    # main lane: must be main tier and within triage cut among main stories
+    if row.get("tier") != st.TIER_MAIN:
+        return "tiering (not main)"
+    if row["rank"] is None or row["rank"] > _triage_cut(row["n_main_stories"]):
         return "scoring"
     return None
 
@@ -147,20 +161,32 @@ def evaluate(
 
     One row per case: presence, embedding coverage, the story it lands in, whether
     that story is a degenerate blob, its suspicion rank, a green/red pass flag, and
-    the first drop-out stage (None when green)."""
+    the first drop-out stage (None when green). Uses include_thin + assign_tiers so
+    small high-gap cases can surface in the thin_evidence lane."""
     cases = cases or GROUND_TRUTH
     embedded = semantic._embedded_ids(con, platform, model)
-    stories = st.candidate_stories(con, days=days, tau=tau, min_size=min_size,
-                                   platform=platform, model=model)
+    stories = st.candidate_stories(
+        con, days=days, tau=tau, min_size=min_size,
+        platform=platform, model=model, include_thin=True,
+    )
     if stories.empty:
-        cards = pd.DataFrame(columns=["story_id", "story_suspicion_index"])
+        cards = pd.DataFrame(
+            columns=["story_id", "story_suspicion_index", "tier", "stable_story_id"]
+        )
     else:
         cards = st.story_scorecard(con, stories, days=days, platform=platform, model=model)
-    rank_of = {int(sid): i + 1 for i, sid in enumerate(cards["story_id"])}
+        cards = st.assign_tiers(stories, cards)
+
+    main_cards = cards[cards["tier"] == st.TIER_MAIN] if not cards.empty else cards
+    rank_of = {int(sid): i + 1 for i, sid in enumerate(main_cards["story_id"])}
+    tier_of = (
+        cards.set_index("story_id")["tier"].to_dict() if not cards.empty else {}
+    )
     authors_of = (
         stories.groupby("story_id")["author_id"].nunique().to_dict()
         if not stories.empty else {}
     )
+    n_main = int(main_cards["story_id"].nunique()) if not main_cards.empty else 0
 
     rows = []
     for case in cases:
@@ -168,7 +194,9 @@ def evaluate(
         ids = set(present["platform_post_id"])
         n_embedded = len(ids & embedded)
 
-        story_id, story_authors, is_blob, rank, susp = None, None, False, None, None
+        story_id, story_authors, is_blob, rank, susp, tier = (
+            None, None, False, None, None, None
+        )
         if not stories.empty and ids:
             mine = stories[stories["platform_post_id"].isin(ids)]
             if not mine.empty:
@@ -176,6 +204,7 @@ def evaluate(
                 story_id = int(mine["story_id"].value_counts().idxmax())
                 story_authors = int(authors_of.get(story_id, 0))
                 is_blob = story_authors > BLOB_AUTHORS
+                tier = tier_of.get(story_id)
                 rank = rank_of.get(story_id)
                 hit = cards[cards["story_id"] == story_id]
                 susp = float(hit["story_suspicion_index"].iloc[0]) if len(hit) else None
@@ -184,18 +213,21 @@ def evaluate(
             "case": case.name,
             "verdict": case.verdict,
             "expect": case.expect,
+            "lane": case.lane,
             "n_present": len(present),
             "present_authors": present["author_id"].nunique(),
             "n_embedded": n_embedded,
             "story_id": story_id,
             "story_authors": story_authors,
+            "tier": tier,
             "is_blob": is_blob,
             "rank": rank,
             "n_stories": int(stories["story_id"].nunique()) if not stories.empty else 0,
-            "triage_cut": _triage_cut(int(stories["story_id"].nunique())) if not stories.empty else 0,
+            "n_main_stories": n_main,
+            "triage_cut": _triage_cut(n_main) if n_main else 0,
             "suspicion": susp,
         }
-        row["drop_stage"] = _drop_stage(row)
+        row["drop_stage"] = _drop_stage(row, lane=case.lane)
         surfaced = row["drop_stage"] is None
         # known-limitation cases are tracked but never required to pass; only the
         # "surface" cases gate a green run.

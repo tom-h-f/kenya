@@ -141,10 +141,13 @@ def test_ground_truth_registry_well_formed():
     assert "sacco-savings-borrow" in names and "ruto-motorcade-crash" in names
     assert all(c.expect in (gt.EXPECT_SURFACE, gt.EXPECT_KNOWN_LIMITATION)
                for c in gt.GROUND_TRUTH)
-    # at least one required-to-surface case, and the motorcade is a documented limit
+    assert all(c.lane in ("main", "thin", "either") for c in gt.GROUND_TRUTH)
     assert any(c.expect == gt.EXPECT_SURFACE for c in gt.GROUND_TRUTH)
     moto = next(c for c in gt.GROUND_TRUTH if c.name == "ruto-motorcade-crash")
-    assert moto.expect == gt.EXPECT_KNOWN_LIMITATION
+    assert moto.expect == gt.EXPECT_SURFACE
+    assert moto.lane == "thin"
+    sacco = next(c for c in gt.GROUND_TRUTH if c.name == "sacco-savings-borrow")
+    assert sacco.lane == "main"
 
 
 def test_triage_cut_is_fraction_with_floor():
