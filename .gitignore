@@ -22,3 +22,5 @@ node_modules/
 
 **/__marimo__/
 /analysis/notebooks/__marimo__/session
+
+.worktrees/
