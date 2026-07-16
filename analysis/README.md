@@ -22,8 +22,13 @@ notebooks run against this kernel (`ipykernel` is included).
 
 ```bash
 uv run marimo edit notebooks/explore.py
+uv run marimo edit notebooks/desk_brief.py
 uv run marimo edit notebooks/coordination.py
 ```
+
+`desk_brief.py` is the investigator-facing composition (claims, corroboration,
+amplifiers, framing, claim-scoped coordination, region/community aggregates).
+See `../docs/plans/2026-07-16-misinfo-desk-brief/`.
 
 ## Usage
 

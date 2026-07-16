@@ -11,6 +11,7 @@ runs end-to-end against live R2.
 | [2](phase-2-semantic.md) | Semantic / narrative layer | done (topic tuning open) |
 | [3](phase-3/README.md) | Coordination networks (CIB) | done (Wave B pending data) |
 | [4](phase-4-stories.md) | Story discovery + trusted-media triage | done (fact-checker backfill accruing) |
+| [5](../plans/2026-07-16-misinfo-desk-brief/) | Desk brief + claim-centric method rebuild | in progress |
 
 ## How the analysis works (context)
 

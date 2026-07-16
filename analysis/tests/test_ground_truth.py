@@ -153,3 +153,33 @@ def test_ground_truth_registry_well_formed():
 def test_triage_cut_is_fraction_with_floor():
     assert gt._triage_cut(1000) == 150            # 15%
     assert gt._triage_cut(10) == gt.TOP_MIN       # floored on tiny runs
+
+
+def test_drop_stage_thin_lane_surfaces_without_main_rank():
+    row = {
+        "n_present": 2,
+        "n_embedded": 2,
+        "story_id": 7,
+        "is_blob": False,
+        "tier": st.TIER_THIN,
+        "rank": None,
+        "n_main_stories": 40,
+    }
+    assert gt._drop_stage(row, lane="thin") is None
+    row["tier"] = st.TIER_MAIN
+    assert gt._drop_stage(row, lane="thin") == "tiering (not thin_evidence)"
+
+
+def test_drop_stage_main_requires_rank_within_cut():
+    row = {
+        "n_present": 5,
+        "n_embedded": 5,
+        "story_id": 1,
+        "is_blob": False,
+        "tier": st.TIER_MAIN,
+        "rank": 3,
+        "n_main_stories": 40,
+    }
+    assert gt._drop_stage(row, lane="main") is None
+    row["rank"] = 100
+    assert gt._drop_stage(row, lane="main") == "scoring"
