@@ -120,3 +120,105 @@ def slice_sentiment(
         ORDER BY posts DESC
         """
     )
+
+
+def map_location(location: object, dimension: str = "region") -> str | None:
+    """Map a free-text profile location to region or community label (or None)."""
+    if not isinstance(location, str) or not location.strip():
+        return None
+    loc = location.lower()
+    rules = REGION_RULES if dimension == "region" else COMMUNITY_RULES
+    for toks, label in rules:
+        if any(tok in loc for tok in toks):
+            return label
+    return None
+
+
+MIN_LOCATION_COVERAGE = 0.20
+
+
+def slice_claim(
+    authors: "pd.DataFrame",
+    dimension: str = "region",
+    min_coverage: float = MIN_LOCATION_COVERAGE,
+) -> "pd.DataFrame":
+    """Aggregate volume (+ optional sentiment) for a claim's author set.
+
+    `authors` columns: author_id or platform_user_id, location; optional sentiment
+    (-1/0/1 or label). Returns aggregate rows only (never per-author community).
+
+    Always includes columns: slice, n_authors, coverage_pct,
+    insufficient_location_signal, disclaimer.
+    """
+    import pandas as pd
+
+    if dimension not in ("region", "community"):
+        raise ValueError("dimension must be 'region' or 'community'")
+
+    empty_cols = [
+        "slice", "n_authors", "mean_sentiment", "coverage_pct",
+        "insufficient_location_signal", "disclaimer",
+    ]
+    disclaimer = TRIBE_DISCLAIMER if dimension == "community" else (
+        "Region inferred from free-text profile location; many authors unmapped."
+    )
+    if authors is None or authors.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    df = authors.copy()
+    id_col = "author_id" if "author_id" in df.columns else "platform_user_id"
+    if id_col not in df.columns:
+        raise ValueError("authors needs author_id or platform_user_id")
+    if "location" not in df.columns:
+        df["location"] = None
+
+    df = df.drop_duplicates(subset=[id_col])
+    df["_slice"] = df["location"].map(lambda loc: map_location(loc, dimension))
+    n_total = len(df)
+    n_mapped = int(df["_slice"].notna().sum())
+    coverage = n_mapped / n_total if n_total else 0.0
+    insufficient = coverage < min_coverage
+
+    if n_mapped == 0:
+        return pd.DataFrame(
+            [
+                {
+                    "slice": None,
+                    "n_authors": 0,
+                    "mean_sentiment": None,
+                    "coverage_pct": round(coverage * 100, 1),
+                    "insufficient_location_signal": True,
+                    "disclaimer": disclaimer,
+                }
+            ],
+            columns=empty_cols,
+        )
+
+    sent_col = None
+    if "sentiment" in df.columns:
+        if df["sentiment"].dtype == object:
+            sent_col = df["sentiment"].map(
+                {"positive": 1.0, "negative": -1.0, "neutral": 0.0}
+            )
+        else:
+            sent_col = pd.to_numeric(df["sentiment"], errors="coerce")
+
+    rows = []
+    for label, grp in df[df["_slice"].notna()].groupby("_slice"):
+        mean_sent = None
+        if sent_col is not None:
+            mean_sent = round(float(sent_col.loc[grp.index].mean()), 3)
+        rows.append(
+            {
+                "slice": label,
+                "n_authors": len(grp),
+                "mean_sentiment": mean_sent,
+                "coverage_pct": round(coverage * 100, 1),
+                "insufficient_location_signal": insufficient,
+                "disclaimer": disclaimer,
+            }
+        )
+    out = pd.DataFrame(rows, columns=empty_cols).sort_values(
+        "n_authors", ascending=False, ignore_index=True
+    )
+    return out
