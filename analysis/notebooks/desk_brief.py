@@ -42,7 +42,6 @@ def _():
         pd,
         st,
         topic_summary,
-        viz,
     )
 
 
@@ -94,7 +93,7 @@ def _(con, days, st):
     else:
         corrob = st.corroboration(con, stories, days=int(days.value))
         cards = st.assign_tiers(stories, st.story_scorecard(con, stories, corrob))
-    return cards, corrob, stories
+    return cards, stories
 
 
 @app.cell
@@ -160,14 +159,13 @@ def _(filtered, mo):
 
 
 @app.cell
-def _(cards, mo, st, story_pick):
+def _(cards, mo, story_pick):
     mo.md("## 2. Corroboration desk")
     _sid = story_pick.value
     if cards is not None and len(cards) and _sid is not None and _sid >= 0:
         _c = cards[cards["story_id"] == _sid].iloc[0]
         _near = _c.get("nearest_text")
         _out = mo.vstack([
-            mo.callout(mo.md(f"**{st.STORY_CAVEAT}**"), kind="warn"),
             mo.md(f"**Claim exemplar** (`tier={_c['tier']}`):\n\n> {_c['representative_text']}"),
             mo.md(
                 f"**Nearest trusted post** — _{_c.get('nearest_handle')}_ "
@@ -211,61 +209,40 @@ def _(con, mo, st, stories, story_pick):
 
 
 @app.cell
-def _(mo):
-    mo.md("""
-    ## 4. Framing shifts
-
-    Claim-anchored topic neighborhood + sentiment timeline. Topics are corpus-wide;
-    the claim is mapped onto them (not the other way around). Stance stays live /
-    target-parameterized in the narratives notebook.
-    """)
-    run_topics = mo.ui.run_button(label="Compute topics + framing (slow)")
-    run_topics
-    return (run_topics,)
-
-
-@app.cell
 def _(
     assign_topics,
     con,
     fr,
     latest_labels,
     mo,
-    run_topics,
     stories,
     story_pick,
     topic_summary,
 ):
     _sid = story_pick.value
-    if not run_topics.value:
-        framing_bundle = None
-        _out = mo.md("_Press the button to run UMAP/HDBSCAN topics + framing for this window._")
-    elif stories is None or not len(stories) or _sid is None or _sid < 0:
-        framing_bundle = None
-        _out = mo.md("_Need stories + a focus story._")
-    else:
-        _topics = assign_topics(con, min_cluster_size=60)
-        _summary = topic_summary(_topics)
-        try:
-            _labels = latest_labels(con).df()
-        except Exception:
-            _labels = None
-        _story = stories[stories["story_id"] == _sid]
-        framing_bundle = fr.story_framing(
-            _story, topics_df=_topics, topic_summary=_summary, labels=_labels
-        )
-        _kw = framing_bundle["keywords"].get(int(_sid), [])
-        _out = mo.vstack([
-            mo.md(f"**Local keywords:** {', '.join(_kw) if _kw else '_(none)_'}"),
-            mo.md("### Topic overlap"),
-            framing_bundle["topics"] if len(framing_bundle["topics"])
-            else mo.md("_No topic overlap (all noise or empty)._"),
-            mo.md("### Sentiment timeline (member posts with labels)"),
-            framing_bundle["sentiment_timeline"] if len(framing_bundle["sentiment_timeline"])
-            else mo.md("_No labeled members in this claim window._"),
-        ])
+
+    _topics = assign_topics(con, min_cluster_size=60)
+    _summary = topic_summary(_topics)
+    try:
+        _labels = latest_labels(con).df()
+    except Exception:
+        _labels = None
+    _story = stories[stories["story_id"] == _sid]
+    framing_bundle = fr.story_framing(
+        _story, topics_df=_topics, topic_summary=_summary, labels=_labels
+    )
+    _kw = framing_bundle["keywords"].get(int(_sid), [])
+    _out = mo.vstack([
+        mo.md(f"**Local keywords:** {', '.join(_kw) if _kw else '_(none)_'}"),
+        mo.md("### Topic overlap"),
+        framing_bundle["topics"] if len(framing_bundle["topics"])
+        else mo.md("_No topic overlap (all noise or empty)._"),
+        mo.md("### Sentiment timeline (member posts with labels)"),
+        framing_bundle["sentiment_timeline"] if len(framing_bundle["sentiment_timeline"])
+        else mo.md("_No labeled members in this claim window._"),
+    ])
     _out
-    return (framing_bundle,)
+    return
 
 
 @app.cell
@@ -313,7 +290,7 @@ def _(
             else mo.md("_No cluster membership overlap._"),
         ])
     _out
-    return (coord_view,)
+    return
 
 
 @app.cell
