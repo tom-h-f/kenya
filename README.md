@@ -11,6 +11,12 @@ Phased build in `docs/analysis/`:
 - Phase 1 - account authenticity / bot scoring.
 - Phase 2 - semantic / narrative layer (embeddings, sentiment, stance, topics).
 - Phase 3 - coordination networks (coordinated inauthentic behaviour).
+- Phase 4 - story / claim discovery + trusted-media triage.
+
+Plus an ethnic-incitement lens (coded-term lexicon + zero-shot NLI) and dated
+investigation campaigns under `analysis/investigations/`. How the data and code
+fit together: [docs/analysis/data-model.md](docs/analysis/data-model.md) and
+[docs/analysis/code-map.md](docs/analysis/code-map.md).
 
 References: [what_are_embeddings](https://github.com/veekaybee/what_are_embeddings),
 [DuckDB VSS](https://duckdb.org/docs/current/core_extensions/vss),
@@ -53,12 +59,16 @@ Immutable per-run Parquet files in R2, Hive-partitioned; no database. Dedup and
 engagement-over-time are reconstructed in DuckDB at read time.
 
 ```
-r2://kenya-monitor-2027/posts/platform=x/type=search/dt=YYYY-MM-DD/run=<utc-ts>.parquet
-r2://kenya-monitor-2027/posts/platform=x/type=timeline/dt=YYYY-MM-DD/run=<utc-ts>.parquet
-r2://kenya-monitor-2027/metrics/platform=x/dt=YYYY-MM-DD/run=<utc-ts>.parquet
+r2://kenya-monitor-2027/
+  posts/platform=x/type={search,timeline,replies,hydrated}/dt=YYYY-MM-DD/run=<utc-ts>.parquet
+  authors/  metrics/  engagements/  follows/          # collector-written
+  embeddings/  labels/  incitement/                   # analysis-written (enrichment)
+  coordination/  stories/                             # analysis-written (collector handoff)
 ```
 
-Full plan: `~/.claude/plans/in-this-dir-i-swift-hollerith.md`.
+Full column schemas, the latest-state read pattern, read paths, and the
+gotchas: [docs/analysis/data-model.md](docs/analysis/data-model.md). The `kma`
+package that reads it: [docs/analysis/code-map.md](docs/analysis/code-map.md).
 
 ## TODO
 

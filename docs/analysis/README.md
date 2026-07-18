@@ -13,6 +13,20 @@ runs end-to-end against live R2.
 | [4](phase-4-stories.md) | Story discovery + trusted-media triage | done (fact-checker backfill accruing) |
 | [5](../plans/2026-07-16-misinfo-desk-brief/) | Desk brief + claim-centric method rebuild | in progress |
 
+## Reference docs
+
+- **[data-model.md](data-model.md)** - how the data is stored: R2 prefixes,
+  exact Parquet schemas, the latest-state read pattern, read paths
+  (`connect` vs `connect_quack`), and the operational quirks that bite.
+- **[code-map.md](code-map.md)** - how the `kma` package is organised: a
+  module-by-module map, the data-flow diagram, the notebooks, and the
+  investigation-folder pattern.
+
+The ethnic-incitement lens (`kma.incitement`, coded-term lexicon + zero-shot
+NLI) and the 2026-07 manipulation sweep
+(`analysis/investigations/2026-07-17-manipulation-sweep/`) extend Phases 1-4;
+both are described in the code map.
+
 ## How the analysis works (context)
 
 Disinformation-campaign detection is probabilistic - no single signal proves
