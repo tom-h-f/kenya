@@ -1,0 +1,3 @@
+platform_user_id,handle,age_days,tweet_count,n_window,window_rate,lifetime_rate,awaken_ratio,followers_count,in_coord_cluster
+1305907394539655168,joshnyongesa,2131,451,23,23.0,0.21163772876583764,108.67627494456762,153,True
+1573224007524130816,sirglickson,1393,129,23,2.737555844238142,0.09260588657573582,29.561358845145207,19,False

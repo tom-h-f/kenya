@@ -1,0 +1,4 @@
+slice,n_authors,mean_sentiment,coverage_pct,insufficient_location_signal,disclaimer
+Nairobi,3,,42.9,False,Region inferred from free-text profile location; many authors unmapped.
+Western,2,,42.9,False,Region inferred from free-text profile location; many authors unmapped.
+Central,1,,42.9,False,Region inferred from free-text profile location; many authors unmapped.
