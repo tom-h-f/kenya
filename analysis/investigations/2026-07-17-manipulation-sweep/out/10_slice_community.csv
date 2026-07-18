@@ -1,0 +1,3 @@
+slice,n_authors,mean_sentiment,coverage_pct,insufficient_location_signal,disclaimer
+Luhya,2,,21.4,False,"EXPERIMENTAL location->community proxy: conflates geography with ethnicity, aggregate-only, wrong for individuals and for mixed/urban/diaspora users."
+Kikuyu,1,,21.4,False,"EXPERIMENTAL location->community proxy: conflates geography with ethnicity, aggregate-only, wrong for individuals and for mixed/urban/diaspora users."

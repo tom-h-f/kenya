@@ -92,6 +92,51 @@ def use_theme() -> None:
     )
 
 
+SURFACE_538 = "#f0f0f0"
+GRID_538 = "#d7d7d6"
+
+def use_theme_538() -> None:
+    """FiveThirtyEight-flavoured variant of the house theme: gray surface,
+    bold left titles, heavier baseline. Palette unchanged (first five
+    categorical slots re-validated against #f0f0f0; aqua/yellow carry the
+    contrast WARN, so charts using them must direct-label or ship a table)."""
+    use_theme()
+    mpl.rcParams.update(
+        {
+            "figure.facecolor": SURFACE_538,
+            "axes.facecolor": SURFACE_538,
+            "savefig.facecolor": SURFACE_538,
+            "grid.color": GRID_538,
+            "grid.linewidth": 1.2,
+            "axes.titlesize": 14,
+            "axes.titleweight": "bold",
+            "axes.titlepad": 16,
+            "axes.edgecolor": INK_2,
+            "axes.linewidth": 1.4,
+        }
+    )
+
+
+def altair_theme_538() -> dict:
+    """Matching config dict for Altair charts (`alt.Chart(...).configure(**...)`
+    is not composable, so charts call `.properties()` then this via
+    `.configure_*` helpers packed in one dict for `chart.configure(...)`)."""
+    return {
+        "background": SURFACE_538,
+        "view": {"stroke": None},
+        "axis": {
+            "gridColor": GRID_538, "gridWidth": 1.2, "domainColor": INK_2,
+            "labelColor": MUTED, "titleColor": INK_2, "labelFontSize": 10,
+            "titleFontSize": 10.5,
+        },
+        "title": {
+            "anchor": "start", "color": INK, "fontSize": 15,
+            "fontWeight": "bold", "subtitleColor": INK_2, "subtitleFontSize": 11,
+        },
+        "legend": {"labelColor": INK_2, "titleColor": INK_2},
+    }
+
+
 def new_fig(width: float = 9.0, height: float = 4.0):
     """Figure + axes with the house margins."""
     fig, ax = plt.subplots(figsize=(width, height))

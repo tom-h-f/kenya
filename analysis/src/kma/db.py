@@ -114,6 +114,25 @@ def latest_labels(con: duckdb.DuckDBPyConnection, platform: str = "*"):
     )
 
 
+def incitement_source(platform: str = "*") -> str:
+    glob = f"r2://{BUCKET}/incitement/platform={platform}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def latest_incitement(con: duckdb.DuckDBPyConnection, platform: str = "*"):
+    """One incitement-score row per post (latest). Separate prefix from labels/
+    on purpose: latest_labels dedups on platform_post_id alone, so a second
+    writer under labels/ would shadow sentiment/emotion rows."""
+    return con.sql(
+        f"""
+        SELECT * FROM {incitement_source(platform)}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform_post_id ORDER BY scored_at DESC
+        ) = 1
+        """
+    )
+
+
 def engagements_source(platform: str = "*") -> str:
     glob = f"r2://{BUCKET}/engagements/platform={platform}/dt=*/run=*.parquet"
     return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
