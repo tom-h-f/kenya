@@ -1,0 +1,49 @@
+{
+  "split_version": 2,
+  "rows_raw": 48076,
+  "rows_after_exact_dedup": 48044,
+  "agreement_distribution": {
+    "0.0": 1,
+    "0.4": 1,
+    "0.5": 684,
+    "0.6": 21,
+    "0.67": 23439,
+    "0.75": 372,
+    "0.8": 26,
+    "0.83": 2,
+    "1.0": 23498
+  },
+  "vote_totals": {
+    "0": 1,
+    "2": 36,
+    "3": 46348,
+    "4": 1549,
+    "5": 90,
+    "6": 15,
+    "7": 3,
+    "8": 2
+  },
+  "langid_dropped": 80,
+  "near_dup_clusters": 599,
+  "near_dup_rows": 1308,
+  "split_train": {
+    "neither": 29169,
+    "offensive": 6885,
+    "hate": 2578
+  },
+  "split_val": {
+    "neither": 3538,
+    "offensive": 827,
+    "hate": 301
+  },
+  "split_test": {
+    "neither": 3539,
+    "offensive": 827,
+    "hate": 300
+  },
+  "split_test_unanimous": {
+    "neither": 2054,
+    "offensive": 135,
+    "hate": 75
+  }
+}

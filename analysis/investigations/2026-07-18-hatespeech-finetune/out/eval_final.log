@@ -1,0 +1,32 @@
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]Loading weights: 100%|██████████| 201/201 [00:00<00:00, 7894.74it/s]
+              precision    recall  f1-score   support
+
+     neither      0.904     0.714     0.798      3633
+   offensive      0.328     0.550     0.411       854
+        hate      0.343     0.544     0.421       318
+
+    accuracy                          0.673      4805
+   macro avg      0.525     0.603     0.543      4805
+weighted avg      0.764     0.673     0.704      4805
+
+macro-F1: 0.5432
+wrote /Users/tom/Code/Misc/kenya-monitor-2027/.claude/worktrees/hatespeech-finetune/analysis/investigations/2026-07-18-hatespeech-finetune/out/03_confusion.png
+1569 errors -> out/03_errors.csv (worst = most confident)
+
+hate-class threshold sweep (for triage tuning):
+ threshold  flagged  precision   recall
+      0.50      457   0.361050 0.518868
+      0.55      436   0.376147 0.515723
+      0.60      412   0.388350 0.503145
+      0.65      390   0.394872 0.484277
+      0.70      366   0.407104 0.468553
+      0.75      341   0.422287 0.452830
+      0.80      317   0.438486 0.437107
+      0.85      292   0.455479 0.418239
+      0.90      259   0.451737 0.367925
+      0.95      197   0.522843 0.323899
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]Loading weights: 100%|██████████| 201/201 [00:00<00:00, 18481.57it/s]
+label
+offensive    8
+neither      6
+wrote out/04_spotcheck_flagged.csv
