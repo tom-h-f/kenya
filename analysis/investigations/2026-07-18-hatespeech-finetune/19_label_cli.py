@@ -18,6 +18,8 @@ import pandas as pd
 from _common import LABELS, OUT
 
 SHEET_PATH = OUT / "blind_check_coded.csv"
+CALIBRATION_V1_PATH = OUT / "blind_check_coded_calibration_v1.csv"
+CALIBRATION_PATH = OUT / "blind_check_coded_calibration.csv"
 FLAGS = (
     "dehumanisation",
     "violence_call",
@@ -73,6 +75,24 @@ def prepare_recode_frame(df: pd.DataFrame) -> pd.DataFrame:
             result[column] = ""
         result[column] = result[column].fillna("").astype(str).str.strip()
     return result
+
+
+def requires_recode_preparation(df: pd.DataFrame) -> bool:
+    return (
+        "human_label_v1" not in df
+        and "human_label" in df
+        and df["human_label"].fillna("").astype(str).str.strip().isin(LABELS).any()
+    )
+
+
+def write_recode_files(source: Path, archive: Path, output: Path) -> None:
+    if archive.exists() or output.exists():
+        raise FileExistsError(
+            f"refusing to overwrite existing recode files: {archive}, {output}"
+        )
+    original = pd.read_csv(source, dtype={"post_id": str})
+    original.to_csv(archive, index=False)
+    prepare_recode_frame(original).to_csv(output, index=False)
 
 
 def record_annotation(
@@ -198,13 +218,34 @@ def prompt_annotation(text: str) -> tuple[str, set[str], str, str, bool] | None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Calibrated human labelling CLI")
     parser.add_argument("--sheet", default=str(SHEET_PATH), help="Path to the CSV sheet")
+    parser.add_argument(
+        "--prepare-recode",
+        action="store_true",
+        help="preserve the completed sheet and create a blank calibrated copy",
+    )
+    parser.add_argument("--archive", default=str(CALIBRATION_V1_PATH))
+    parser.add_argument("--output", default=str(CALIBRATION_PATH))
     args = parser.parse_args()
 
     sheet_path = Path(args.sheet)
     if not sheet_path.exists():
         sys.exit(f"Error: {sheet_path} does not exist. Run 18_blind_check.py make first.")
+    if args.prepare_recode:
+        try:
+            write_recode_files(sheet_path, Path(args.archive), Path(args.output))
+        except FileExistsError as error:
+            sys.exit(str(error))
+        print(f"preserved original labels: {args.archive}")
+        print(f"calibrated working sheet: {args.output}")
+        print(f"label with: uv run 19_label_cli.py --sheet {args.output}")
+        return
 
     original = pd.read_csv(sheet_path, dtype={"post_id": str})
+    if requires_recode_preparation(original):
+        sys.exit(
+            "completed legacy sheet detected; preserve it first with "
+            "--prepare-recode, then label the generated calibration sheet"
+        )
     df = prepare_recode_frame(original)
     if not df.equals(original):
         df.to_csv(sheet_path, index=False)

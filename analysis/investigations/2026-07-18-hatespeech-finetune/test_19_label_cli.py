@@ -76,3 +76,35 @@ def test_record_annotation_writes_independent_flags() -> None:
     assert frame.loc[0, "human_dehumanisation"] == "false"
     assert frame.loc[0, "human_confidence"] == "medium"
     assert frame.loc[0, "translation_used"] == "true"
+
+
+def test_write_recode_files_preserves_source_and_creates_blank_working_copy(
+    tmp_path: Path,
+) -> None:
+    module = load_label_cli_module()
+    source_path = tmp_path / "blind.csv"
+    archive_path = tmp_path / "blind_calibration_v1.csv"
+    output_path = tmp_path / "blind_calibration.csv"
+    source = pd.DataFrame(
+        {"post_id": ["1"], "text": ["example"], "human_label": ["hate"]}
+    )
+    source.to_csv(source_path, index=False)
+
+    module.write_recode_files(source_path, archive_path, output_path)
+
+    assert pd.read_csv(source_path, dtype={"post_id": str}).equals(source)
+    assert pd.read_csv(archive_path, dtype={"post_id": str}).equals(source)
+    working = pd.read_csv(output_path, keep_default_na=False)
+    assert working.loc[0, "human_label_v1"] == "hate"
+    assert working.loc[0, "human_label"] == ""
+
+
+def test_completed_legacy_sheet_requires_explicit_recode_preparation() -> None:
+    module = load_label_cli_module()
+    legacy = pd.DataFrame(
+        {"post_id": ["1"], "text": ["example"], "human_label": ["hate"]}
+    )
+    prepared = module.prepare_recode_frame(legacy)
+
+    assert module.requires_recode_preparation(legacy)
+    assert not module.requires_recode_preparation(prepared)
