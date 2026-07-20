@@ -1,0 +1,21 @@
+{
+  "n": 93,
+  "confidence": 0.95,
+  "target_half_width": 0.1,
+  "worst_case_wilson_half_width": 0.0996,
+  "excluded": {
+    "calibration": 120,
+    "training_gold": 283,
+    "overlap": 4
+  },
+  "pools": {
+    "split_primary_soft": 28,
+    "random_remaining": 28,
+    "agree_offensive": 14,
+    "agree_hate": 14,
+    "split_primary_hard": 9
+  },
+  "seed": 43,
+  "human_labels_complete": false,
+  "v3_labels_complete": false
+}
