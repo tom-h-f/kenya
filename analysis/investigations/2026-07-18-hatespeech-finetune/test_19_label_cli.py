@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import pandas as pd
+
+
+def load_label_cli_module():
+    path = Path(__file__).with_name("19_label_cli.py")
+    spec = importlib.util.spec_from_file_location("label_cli", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_prepare_recode_preserves_original_labels_and_blanks_new_fields() -> None:
+    module = load_label_cli_module()
+    source = pd.DataFrame(
+        {
+            "post_id": ["1", "2"],
+            "text": ["a", "b"],
+            "human_label": ["hate", "offensive"],
+        }
+    )
+
+    result = module.prepare_recode_frame(source)
+
+    assert result["human_label_v1"].tolist() == ["hate", "offensive"]
+    assert result["human_label"].tolist() == ["", ""]
+    for column in module.STRUCTURED_COLUMNS:
+        assert column in result
+        assert result[column].tolist() == ["", ""]
+
+
+def test_prepare_recode_is_idempotent() -> None:
+    module = load_label_cli_module()
+    source = pd.DataFrame(
+        {
+            "post_id": ["1"],
+            "text": ["a"],
+            "human_label_v1": ["hate"],
+            "human_label": ["offensive"],
+            "human_confidence": ["high"],
+        }
+    )
+
+    result = module.prepare_recode_frame(source)
+
+    assert result.loc[0, "human_label_v1"] == "hate"
+    assert result.loc[0, "human_label"] == "offensive"
+    assert result.loc[0, "human_confidence"] == "high"
+
+
+def test_record_annotation_writes_independent_flags() -> None:
+    module = load_label_cli_module()
+    frame = module.prepare_recode_frame(
+        pd.DataFrame({"post_id": ["1"], "text": ["coded threat"]})
+    )
+
+    module.record_annotation(
+        frame,
+        0,
+        label="offensive",
+        flags={"violence_call", "coded_language"},
+        confidence="medium",
+        rationale="Threat has no identifiable protected-group target.",
+        translation_used=True,
+    )
+
+    assert frame.loc[0, "human_label"] == "offensive"
+    assert frame.loc[0, "human_violence_call"] == "true"
+    assert frame.loc[0, "human_coded_language"] == "true"
+    assert frame.loc[0, "human_ethnic_targeting"] == "false"
+    assert frame.loc[0, "human_dehumanisation"] == "false"
+    assert frame.loc[0, "human_confidence"] == "medium"
+    assert frame.loc[0, "translation_used"] == "true"

@@ -12,23 +12,191 @@ import argparse
 import functools
 import sys
 from pathlib import Path
+
 import pandas as pd
-from deep_translator import GoogleTranslator
+
 from _common import LABELS, OUT
 
 SHEET_PATH = OUT / "blind_check_coded.csv"
+FLAGS = (
+    "dehumanisation",
+    "violence_call",
+    "ethnic_targeting",
+    "coded_language",
+)
+STRUCTURED_COLUMNS = (
+    *(f"human_{flag}" for flag in FLAGS),
+    "human_confidence",
+    "human_rationale",
+    "translation_used",
+)
+RUBRIC = """\
+PROTECTED-GROUP RUBRIC
+  hate       attacks a protected group, or a person because of protected-group
+             membership. The target must be identifiable from the post/context.
+  offensive  abuse, threats, profanity, or degradation without such a target.
+  neither    criticism, reporting, electoral arithmetic, counterspeech, or banter.
+
+Boundary checks:
+  "Ruto is a thief" -> offensive (individual abuse)
+  "Kalenjins are thieves" -> hate (collective protected-group contempt)
+  Generic or coded violence with no identifiable protected target is not hate;
+  label offensive and set violence_call/coded_language as applicable.
+  Quoted hate that the author condemns is neither; judge the author's stance.
+
+Flags are independent of class:
+  dehumanisation  people framed as vermin, disease, filth, demons, or non-human
+  violence_call   threat, call, celebration, or approval of physical violence
+  ethnic_targeting protected ethnic/tribal/religious/regional group is targeted
+  coded_language  harmful meaning depends on euphemism, metaphor, or local code
+"""
+
+
+def prepare_recode_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Add structured fields while preserving an existing first-pass label."""
+    result = df.copy()
+    if "human_label" not in result:
+        result["human_label"] = ""
+    result["human_label"] = result["human_label"].fillna("").astype(str).str.strip()
+
+    if "human_label_v1" not in result:
+        result["human_label_v1"] = result["human_label"]
+        if result["human_label"].isin(LABELS).any():
+            result["human_label"] = ""
+    else:
+        result["human_label_v1"] = (
+            result["human_label_v1"].fillna("").astype(str).str.strip()
+        )
+
+    for column in STRUCTURED_COLUMNS:
+        if column not in result:
+            result[column] = ""
+        result[column] = result[column].fillna("").astype(str).str.strip()
+    return result
+
+
+def record_annotation(
+    df: pd.DataFrame,
+    index: int,
+    *,
+    label: str,
+    flags: set[str],
+    confidence: str,
+    rationale: str,
+    translation_used: bool,
+) -> None:
+    if label not in LABELS:
+        raise ValueError(f"invalid label: {label}")
+    if not flags <= set(FLAGS):
+        raise ValueError(f"invalid flags: {flags - set(FLAGS)}")
+    if confidence not in {"high", "medium", "low"}:
+        raise ValueError(f"invalid confidence: {confidence}")
+    if not rationale.strip():
+        raise ValueError("rationale is required")
+
+    df.at[index, "human_label"] = label
+    for flag in FLAGS:
+        df.at[index, f"human_{flag}"] = str(flag in flags).lower()
+    df.at[index, "human_confidence"] = confidence
+    df.at[index, "human_rationale"] = rationale.strip()
+    df.at[index, "translation_used"] = str(translation_used).lower()
+
+
+def completed_mask(df: pd.DataFrame) -> pd.Series:
+    flags_complete = pd.Series(True, index=df.index)
+    for flag in FLAGS:
+        flags_complete &= df[f"human_{flag}"].isin(["true", "false"])
+    return (
+        df["human_label"].isin(LABELS)
+        & df["human_confidence"].isin(["high", "medium", "low"])
+        & df["human_rationale"].ne("")
+        & flags_complete
+    )
 
 
 @functools.lru_cache(maxsize=1000)
 def get_translation(text: str) -> str:
     try:
+        from deep_translator import GoogleTranslator
+
         return GoogleTranslator(source="auto", target="en").translate(text)
     except Exception as e:
         return f"[Translation failed: {e}]"
 
 
+def parse_flags(value: str) -> set[str]:
+    aliases = {"d": "dehumanisation", "v": "violence_call",
+               "e": "ethnic_targeting", "c": "coded_language"}
+    tokens = [token.strip().lower() for token in value.split(",") if token.strip()]
+    flags = {aliases.get(token, token) for token in tokens}
+    unknown = flags - set(FLAGS)
+    if unknown:
+        raise ValueError(f"unknown flags: {', '.join(sorted(unknown))}")
+    return flags
+
+
+def prompt_annotation(text: str) -> tuple[str, set[str], str, str, bool] | None:
+    translation_used = False
+    while True:
+        choice = input(
+            "Class: [1/n] neither | [2/o] offensive | [3/h] hate | "
+            "[t] translate | [r] rubric | [b] back | [q] quit: "
+        ).strip().lower()
+        choices = {
+            "1": "neither", "n": "neither", "neither": "neither",
+            "2": "offensive", "o": "offensive", "offensive": "offensive",
+            "3": "hate", "h": "hate", "hate": "hate",
+        }
+        if choice in choices:
+            label = choices[choice]
+            break
+        if choice in {"b", "back"}:
+            return None
+        if choice in {"q", "quit", "exit"}:
+            raise EOFError
+        if choice == "r":
+            print("\n" + RUBRIC)
+            continue
+        if choice == "t":
+            print("\nMachine translation (use cautiously):")
+            print(get_translation(text))
+            translation_used = True
+            continue
+        print("Invalid class choice.")
+
+    while True:
+        try:
+            flags = parse_flags(input(
+                "Flags comma-separated [d]ehumanisation, [v]iolence, "
+                "[e]thnic targeting, [c]oded; blank for none: "
+            ))
+            break
+        except ValueError as error:
+            print(error)
+
+    confidence_choices = {
+        "h": "high", "high": "high",
+        "m": "medium", "medium": "medium",
+        "l": "low", "low": "low",
+    }
+    while True:
+        confidence = confidence_choices.get(
+            input("Confidence [h]igh/[m]edium/[l]ow: ").strip().lower()
+        )
+        if confidence:
+            break
+        print("Invalid confidence.")
+
+    while True:
+        rationale = input("One-sentence rationale (quote the operative phrase): ").strip()
+        if rationale:
+            break
+        print("Rationale is required.")
+    return label, flags, confidence, rationale, translation_used
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Label CLI with translation")
+    parser = argparse.ArgumentParser(description="Calibrated human labelling CLI")
     parser.add_argument("--sheet", default=str(SHEET_PATH), help="Path to the CSV sheet")
     args = parser.parse_args()
 
@@ -36,19 +204,18 @@ def main() -> None:
     if not sheet_path.exists():
         sys.exit(f"Error: {sheet_path} does not exist. Run 18_blind_check.py make first.")
 
-    df = pd.read_csv(sheet_path)
-    
-    if "human_label" not in df.columns:
-        df["human_label"] = ""
-    df["human_label"] = df["human_label"].fillna("").astype(str).str.strip()
+    original = pd.read_csv(sheet_path, dtype={"post_id": str})
+    df = prepare_recode_frame(original)
+    if not df.equals(original):
+        df.to_csv(sheet_path, index=False)
 
     total = len(df)
-    labeled_mask = df["human_label"].isin(LABELS)
-    labeled_count = labeled_mask.sum()
-    
+    labeled_mask = completed_mask(df)
+    labeled_count = int(labeled_mask.sum())
+
     first_unlabeled = 0
-    for idx, label in enumerate(df["human_label"]):
-        if label not in LABELS:
+    for idx, complete in enumerate(labeled_mask):
+        if not complete:
             first_unlabeled = idx
             break
     else:
@@ -59,7 +226,8 @@ def main() -> None:
     print(f"Total posts: {total}")
     print(f"Labeled so far: {labeled_count}/{total} ({labeled_count/total:.1%})")
     print("=" * 60)
-    
+    print(RUBRIC)
+
     try:
         start_input = input(f"Start index (0-{total-1}, default {first_unlabeled}): ").strip()
         if start_input:
@@ -84,63 +252,28 @@ def main() -> None:
         print("-" * 60)
         print("Original Text:")
         print(text)
-        print("-" * 60)
-        print("Translating Swahili/Sheng to English...")
-        translation = get_translation(text)
-        print("Translation:")
-        print(translation)
         print("=" * 60)
-        
-        while True:
-            prompt = "Rate: [1/n] neither | [2/o] offensive | [3/h] hate | [?] explain | [b] back | [q] quit: "
-            choice = input(prompt).strip().lower()
 
-            if choice in ("1", "n", "neither"):
-                df.at[idx, "human_label"] = "neither"
-                df.to_csv(sheet_path, index=False)
-                idx += 1
-                break
-            elif choice in ("2", "o", "offensive"):
-                df.at[idx, "human_label"] = "offensive"
-                df.to_csv(sheet_path, index=False)
-                idx += 1
-                break
-            elif choice in ("3", "h", "hate"):
-                df.at[idx, "human_label"] = "hate"
-                df.to_csv(sheet_path, index=False)
-                idx += 1
-                break
-            elif choice == "?":
-                print("\nQuerying agy for explanation...")
-                explanation_prompt = (
-                    "Explain what this Kenyan social media post means. "
-                    "Translate and explain any Swahili, Sheng, or Kenyan political/ethnic terms, slang, or references:\n\n"
-                    f"{text}"
-                )
-                try:
-                    import subprocess
-                    proc = subprocess.run(
-                        ["agy", "-p", explanation_prompt],
-                        capture_output=True,
-                        text=True,
-                        check=True
-                    )
-                    print("\nExplanation:")
-                    print(proc.stdout.strip())
-                    print("=" * 60)
-                except Exception as e:
-                    print(f"\nError running agy: {e}")
-            elif choice in ("b", "back"):
-                if idx > 0:
-                    idx -= 1
-                else:
-                    print("Already at the first post.")
-                break
-            elif choice in ("q", "quit", "exit"):
-                print(f"\nSaved progress. {df['human_label'].isin(LABELS).sum()}/{total} labeled.")
-                return
-            else:
-                print("Invalid input. Please choose 1/n, 2/o, 3/h, ?, b, or q.")
+        try:
+            annotation = prompt_annotation(text)
+        except EOFError:
+            print(f"\nSaved progress. {int(completed_mask(df).sum())}/{total} complete.")
+            return
+        if annotation is None:
+            idx = max(0, idx - 1)
+            continue
+        label, flags, confidence, rationale, translation_used = annotation
+        record_annotation(
+            df,
+            idx,
+            label=label,
+            flags=flags,
+            confidence=confidence,
+            rationale=rationale,
+            translation_used=translation_used,
+        )
+        df.to_csv(sheet_path, index=False)
+        idx += 1
 
     print(f"\nFinished! All {total} rows labeled.")
     print("You can now run: uv run 18_blind_check.py score")
