@@ -1,0 +1,17 @@
+{
+  "n": 120,
+  "overall_agreement": 0.5513,
+  "hate_agreement": 0.6667,
+  "gate_overall_pass": false,
+  "gate_hate_pass": false,
+  "missed_hate": 11,
+  "over_called_hate": 6,
+  "by_pool": {
+    "agree_coded": 0.6667,
+    "agree_hate": 0.6667,
+    "random_agreed": 0.4167,
+    "split_gem_hard": 0.0,
+    "split_gem_soft": 0.0
+  },
+  "verdict": "labels are too conservative on hate -> widen the prompt (v3), relabel"
+}

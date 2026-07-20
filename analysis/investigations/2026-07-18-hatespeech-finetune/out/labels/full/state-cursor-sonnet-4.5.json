@@ -1,0 +1,590 @@
+{
+  "chunk_000": {
+    "chunk": "chunk_000",
+    "rows": 25,
+    "seconds": 73.2,
+    "attempts": 1
+  },
+  "chunk_001": {
+    "chunk": "chunk_001",
+    "rows": 25,
+    "seconds": 57.8,
+    "attempts": 1
+  },
+  "chunk_002": {
+    "chunk": "chunk_002",
+    "rows": 25,
+    "seconds": 86.1,
+    "attempts": 1
+  },
+  "chunk_003": {
+    "chunk": "chunk_003",
+    "rows": 25,
+    "seconds": 49.9,
+    "attempts": 1
+  },
+  "chunk_004": {
+    "chunk": "chunk_004",
+    "rows": 25,
+    "seconds": 57.8,
+    "attempts": 1
+  },
+  "chunk_005": {
+    "chunk": "chunk_005",
+    "rows": 25,
+    "seconds": 50.8,
+    "attempts": 1
+  },
+  "chunk_006": {
+    "chunk": "chunk_006",
+    "rows": 25,
+    "seconds": 42.8,
+    "attempts": 1
+  },
+  "chunk_007": {
+    "chunk": "chunk_007",
+    "rows": 25,
+    "seconds": 48.6,
+    "attempts": 1
+  },
+  "chunk_008": {
+    "chunk": "chunk_008",
+    "rows": 25,
+    "seconds": 55.7,
+    "attempts": 1
+  },
+  "chunk_009": {
+    "chunk": "chunk_009",
+    "rows": 25,
+    "seconds": 62.2,
+    "attempts": 1
+  },
+  "chunk_010": {
+    "chunk": "chunk_010",
+    "rows": 25,
+    "seconds": 48.0,
+    "attempts": 1
+  },
+  "chunk_011": {
+    "chunk": "chunk_011",
+    "rows": 25,
+    "seconds": 63.1,
+    "attempts": 1
+  },
+  "chunk_012": {
+    "chunk": "chunk_012",
+    "rows": 25,
+    "seconds": 60.4,
+    "attempts": 1
+  },
+  "chunk_013": {
+    "chunk": "chunk_013",
+    "rows": 25,
+    "seconds": 53.9,
+    "attempts": 1
+  },
+  "chunk_014": {
+    "chunk": "chunk_014",
+    "rows": 25,
+    "seconds": 67.6,
+    "attempts": 1
+  },
+  "chunk_015": {
+    "chunk": "chunk_015",
+    "rows": 25,
+    "seconds": 58.9,
+    "attempts": 1
+  },
+  "chunk_016": {
+    "chunk": "chunk_016",
+    "rows": 25,
+    "seconds": 64.7,
+    "attempts": 1
+  },
+  "chunk_017": {
+    "chunk": "chunk_017",
+    "rows": 25,
+    "seconds": 46.7,
+    "attempts": 1
+  },
+  "chunk_018": {
+    "chunk": "chunk_018",
+    "rows": 25,
+    "seconds": 61.6,
+    "attempts": 1
+  },
+  "chunk_019": {
+    "chunk": "chunk_019",
+    "rows": 25,
+    "seconds": 62.8,
+    "attempts": 1
+  },
+  "chunk_020": {
+    "chunk": "chunk_020",
+    "rows": 25,
+    "seconds": 67.1,
+    "attempts": 1
+  },
+  "chunk_021": {
+    "chunk": "chunk_021",
+    "rows": 25,
+    "seconds": 79.0,
+    "attempts": 1
+  },
+  "chunk_022": {
+    "chunk": "chunk_022",
+    "rows": 25,
+    "seconds": 161.5,
+    "attempts": 2
+  },
+  "chunk_023": {
+    "chunk": "chunk_023",
+    "rows": 25,
+    "seconds": 59.0,
+    "attempts": 1
+  },
+  "chunk_024": {
+    "chunk": "chunk_024",
+    "rows": 25,
+    "seconds": 61.2,
+    "attempts": 1
+  },
+  "chunk_025": {
+    "chunk": "chunk_025",
+    "rows": 25,
+    "seconds": 75.0,
+    "attempts": 1
+  },
+  "chunk_026": {
+    "chunk": "chunk_026",
+    "rows": 25,
+    "seconds": 63.4,
+    "attempts": 1
+  },
+  "chunk_027": {
+    "chunk": "chunk_027",
+    "rows": 25,
+    "seconds": 135.9,
+    "attempts": 2
+  },
+  "chunk_028": {
+    "chunk": "chunk_028",
+    "rows": 25,
+    "seconds": 65.4,
+    "attempts": 1
+  },
+  "chunk_029": {
+    "chunk": "chunk_029",
+    "rows": 25,
+    "seconds": 70.3,
+    "attempts": 1
+  },
+  "chunk_030": {
+    "chunk": "chunk_030",
+    "rows": 25,
+    "seconds": 64.0,
+    "attempts": 1
+  },
+  "chunk_031": {
+    "chunk": "chunk_031",
+    "rows": 25,
+    "seconds": 52.7,
+    "attempts": 1
+  },
+  "chunk_032": {
+    "chunk": "chunk_032",
+    "rows": 25,
+    "seconds": 62.0,
+    "attempts": 1
+  },
+  "chunk_033": {
+    "chunk": "chunk_033",
+    "rows": 25,
+    "seconds": 63.8,
+    "attempts": 1
+  },
+  "chunk_034": {
+    "chunk": "chunk_034",
+    "rows": 25,
+    "seconds": 62.5,
+    "attempts": 1
+  },
+  "chunk_035": {
+    "chunk": "chunk_035",
+    "rows": 25,
+    "seconds": 80.6,
+    "attempts": 1
+  },
+  "chunk_036": {
+    "chunk": "chunk_036",
+    "rows": 25,
+    "seconds": 75.3,
+    "attempts": 1
+  },
+  "chunk_037": {
+    "chunk": "chunk_037",
+    "rows": 25,
+    "seconds": 63.1,
+    "attempts": 1
+  },
+  "chunk_038": {
+    "chunk": "chunk_038",
+    "rows": 25,
+    "seconds": 64.9,
+    "attempts": 1
+  },
+  "chunk_039": {
+    "chunk": "chunk_039",
+    "rows": 25,
+    "seconds": 58.2,
+    "attempts": 1
+  },
+  "chunk_040": {
+    "chunk": "chunk_040",
+    "rows": 25,
+    "seconds": 78.2,
+    "attempts": 1
+  },
+  "chunk_041": {
+    "chunk": "chunk_041",
+    "rows": 25,
+    "seconds": 65.7,
+    "attempts": 1
+  },
+  "chunk_042": {
+    "chunk": "chunk_042",
+    "rows": 25,
+    "seconds": 65.9,
+    "attempts": 1
+  },
+  "chunk_043": {
+    "chunk": "chunk_043",
+    "rows": 25,
+    "seconds": 59.8,
+    "attempts": 1
+  },
+  "chunk_044": {
+    "chunk": "chunk_044",
+    "rows": 25,
+    "seconds": 71.1,
+    "attempts": 1
+  },
+  "chunk_045": {
+    "chunk": "chunk_045",
+    "rows": 25,
+    "seconds": 66.9,
+    "attempts": 1
+  },
+  "chunk_046": {
+    "chunk": "chunk_046",
+    "rows": 25,
+    "seconds": 65.1,
+    "attempts": 1
+  },
+  "chunk_047": {
+    "chunk": "chunk_047",
+    "rows": 25,
+    "seconds": 56.7,
+    "attempts": 1
+  },
+  "chunk_048": {
+    "chunk": "chunk_048",
+    "rows": 25,
+    "seconds": 61.6,
+    "attempts": 1
+  },
+  "chunk_049": {
+    "chunk": "chunk_049",
+    "rows": 25,
+    "seconds": 86.2,
+    "attempts": 1
+  },
+  "chunk_050": {
+    "chunk": "chunk_050",
+    "rows": 25,
+    "seconds": 62.0,
+    "attempts": 1
+  },
+  "chunk_051": {
+    "chunk": "chunk_051",
+    "rows": 25,
+    "seconds": 68.1,
+    "attempts": 1
+  },
+  "chunk_052": {
+    "chunk": "chunk_052",
+    "rows": 25,
+    "seconds": 71.4,
+    "attempts": 1
+  },
+  "chunk_053": {
+    "chunk": "chunk_053",
+    "rows": 25,
+    "seconds": 66.9,
+    "attempts": 1
+  },
+  "chunk_054": {
+    "chunk": "chunk_054",
+    "rows": 25,
+    "seconds": 83.5,
+    "attempts": 1
+  },
+  "chunk_055": {
+    "chunk": "chunk_055",
+    "rows": 25,
+    "seconds": 50.8,
+    "attempts": 1
+  },
+  "chunk_056": {
+    "chunk": "chunk_056",
+    "rows": 25,
+    "seconds": 74.9,
+    "attempts": 1
+  },
+  "chunk_057": {
+    "chunk": "chunk_057",
+    "rows": 25,
+    "seconds": 170.1,
+    "attempts": 1
+  },
+  "chunk_058": {
+    "chunk": "chunk_058",
+    "rows": 25,
+    "seconds": 144.3,
+    "attempts": 2
+  },
+  "chunk_059": {
+    "chunk": "chunk_059",
+    "rows": 25,
+    "seconds": 55.9,
+    "attempts": 1
+  },
+  "chunk_060": {
+    "chunk": "chunk_060",
+    "rows": 25,
+    "seconds": 46.8,
+    "attempts": 1
+  },
+  "chunk_061": {
+    "chunk": "chunk_061",
+    "rows": 25,
+    "seconds": 65.9,
+    "attempts": 1
+  },
+  "chunk_062": {
+    "chunk": "chunk_062",
+    "rows": 25,
+    "seconds": 50.4,
+    "attempts": 1
+  },
+  "chunk_063": {
+    "chunk": "chunk_063",
+    "rows": 25,
+    "seconds": 76.4,
+    "attempts": 1
+  },
+  "chunk_064": {
+    "chunk": "chunk_064",
+    "rows": 25,
+    "seconds": 51.1,
+    "attempts": 1
+  },
+  "chunk_065": {
+    "chunk": "chunk_065",
+    "rows": 25,
+    "seconds": 42.6,
+    "attempts": 1
+  },
+  "chunk_066": {
+    "chunk": "chunk_066",
+    "rows": 25,
+    "seconds": 51.8,
+    "attempts": 1
+  },
+  "chunk_067": {
+    "chunk": "chunk_067",
+    "rows": 25,
+    "seconds": 103.4,
+    "attempts": 2
+  },
+  "chunk_068": {
+    "chunk": "chunk_068",
+    "rows": 25,
+    "seconds": 65.5,
+    "attempts": 1
+  },
+  "chunk_069": {
+    "chunk": "chunk_069",
+    "rows": 25,
+    "seconds": 45.3,
+    "attempts": 1
+  },
+  "chunk_070": {
+    "chunk": "chunk_070",
+    "rows": 25,
+    "seconds": 68.7,
+    "attempts": 1
+  },
+  "chunk_071": {
+    "chunk": "chunk_071",
+    "rows": 25,
+    "seconds": 91.4,
+    "attempts": 2
+  },
+  "chunk_072": {
+    "chunk": "chunk_072",
+    "rows": 25,
+    "seconds": 56.1,
+    "attempts": 1
+  },
+  "chunk_073": {
+    "chunk": "chunk_073",
+    "rows": 25,
+    "seconds": 50.2,
+    "attempts": 1
+  },
+  "chunk_074": {
+    "chunk": "chunk_074",
+    "rows": 25,
+    "seconds": 44.5,
+    "attempts": 1
+  },
+  "chunk_075": {
+    "chunk": "chunk_075",
+    "rows": 25,
+    "seconds": 55.6,
+    "attempts": 1
+  },
+  "chunk_076": {
+    "chunk": "chunk_076",
+    "rows": 25,
+    "seconds": 60.2,
+    "attempts": 1
+  },
+  "chunk_077": {
+    "chunk": "chunk_077",
+    "rows": 25,
+    "seconds": 48.5,
+    "attempts": 1
+  },
+  "chunk_078": {
+    "chunk": "chunk_078",
+    "rows": 25,
+    "seconds": 47.4,
+    "attempts": 1
+  },
+  "chunk_079": {
+    "chunk": "chunk_079",
+    "rows": 25,
+    "seconds": 47.6,
+    "attempts": 1
+  },
+  "chunk_080": {
+    "chunk": "chunk_080",
+    "rows": 25,
+    "seconds": 51.5,
+    "attempts": 1
+  },
+  "chunk_081": {
+    "chunk": "chunk_081",
+    "rows": 25,
+    "seconds": 43.6,
+    "attempts": 1
+  },
+  "chunk_082": {
+    "chunk": "chunk_082",
+    "rows": 25,
+    "seconds": 47.2,
+    "attempts": 1
+  },
+  "chunk_083": {
+    "chunk": "chunk_083",
+    "rows": 25,
+    "seconds": 126.2,
+    "attempts": 2
+  },
+  "chunk_084": {
+    "chunk": "chunk_084",
+    "rows": 25,
+    "seconds": 44.7,
+    "attempts": 1
+  },
+  "chunk_085": {
+    "chunk": "chunk_085",
+    "rows": 25,
+    "seconds": 55.0,
+    "attempts": 1
+  },
+  "chunk_086": {
+    "chunk": "chunk_086",
+    "rows": 25,
+    "seconds": 54.2,
+    "attempts": 1
+  },
+  "chunk_087": {
+    "chunk": "chunk_087",
+    "rows": 25,
+    "seconds": 46.1,
+    "attempts": 1
+  },
+  "chunk_088": {
+    "chunk": "chunk_088",
+    "rows": 25,
+    "seconds": 52.8,
+    "attempts": 1
+  },
+  "chunk_089": {
+    "chunk": "chunk_089",
+    "rows": 25,
+    "seconds": 48.6,
+    "attempts": 1
+  },
+  "chunk_090": {
+    "chunk": "chunk_090",
+    "rows": 25,
+    "seconds": 103.6,
+    "attempts": 2
+  },
+  "chunk_091": {
+    "chunk": "chunk_091",
+    "rows": 25,
+    "seconds": 43.4,
+    "attempts": 1
+  },
+  "chunk_092": {
+    "chunk": "chunk_092",
+    "rows": 25,
+    "seconds": 89.4,
+    "attempts": 2
+  },
+  "chunk_093": {
+    "chunk": "chunk_093",
+    "rows": 25,
+    "seconds": 39.6,
+    "attempts": 1
+  },
+  "chunk_094": {
+    "chunk": "chunk_094",
+    "rows": 25,
+    "seconds": 53.2,
+    "attempts": 1
+  },
+  "chunk_095": {
+    "chunk": "chunk_095",
+    "rows": 25,
+    "seconds": 34.9,
+    "attempts": 1
+  },
+  "chunk_096": {
+    "chunk": "chunk_096",
+    "rows": 25,
+    "seconds": 39.9,
+    "attempts": 1
+  },
+  "chunk_097": {
+    "chunk": "chunk_097",
+    "rows": 15,
+    "seconds": 62.3,
+    "attempts": 2
+  }
+}

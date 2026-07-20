@@ -1,0 +1,50 @@
+{
+  "chunk_000": {
+    "chunk": "chunk_000",
+    "rows": 25,
+    "seconds": 40.3,
+    "attempts": 1
+  },
+  "chunk_001": {
+    "chunk": "chunk_001",
+    "rows": 25,
+    "seconds": 40.7,
+    "attempts": 1
+  },
+  "chunk_002": {
+    "chunk": "chunk_002",
+    "rows": 25,
+    "seconds": 47.7,
+    "attempts": 1
+  },
+  "chunk_003": {
+    "chunk": "chunk_003",
+    "rows": 25,
+    "seconds": 72.6,
+    "attempts": 1
+  },
+  "chunk_004": {
+    "chunk": "chunk_004",
+    "rows": 25,
+    "seconds": 43.7,
+    "attempts": 1
+  },
+  "chunk_005": {
+    "chunk": "chunk_005",
+    "rows": 25,
+    "seconds": 168.2,
+    "attempts": 2
+  },
+  "chunk_006": {
+    "chunk": "chunk_006",
+    "rows": 25,
+    "seconds": 44.3,
+    "attempts": 1
+  },
+  "chunk_007": {
+    "chunk": "chunk_007",
+    "rows": 25,
+    "seconds": 43.1,
+    "attempts": 1
+  }
+}

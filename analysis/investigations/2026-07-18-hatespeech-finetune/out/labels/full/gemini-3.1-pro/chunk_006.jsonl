@@ -1,0 +1,25 @@
+{"post_id": "2078004078810890489", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Ordinary ethnic-bloc electoral arithmetic, no attack.", "warnings": []}
+{"post_id": "2075139725547995443", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Discussion of a personal political feud, 'hate' used in an everyday sense.", "warnings": []}
+{"post_id": "2074503344391954770", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Political banter comparing local politicians.", "warnings": []}
+{"post_id": "2071239463120855043", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Reporting on political criticism between leaders.", "warnings": []}
+{"post_id": "2074252162993996241", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Ordinary football banter.", "warnings": []}
+{"post_id": "2078092629145956698", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Political criticism regarding US politics.", "warnings": []}
+{"post_id": "2074562206927143078", "label": "neither", "flags": [], "target_group": null, "confidence": "medium", "rationale": "Political discussion involving specific politicians.", "warnings": []}
+{"post_id": "2072380903171453420", "label": "neither", "flags": [], "target_group": null, "confidence": "medium", "rationale": "'loser' is a mild personal insult, not reaching the threshold for offensive.", "warnings": []}
+{"post_id": "2076600062436577612", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Detailed political commentary on alliances and politician interests.", "warnings": []}
+{"post_id": "2077596654211867129", "label": "neither", "flags": [], "target_group": null, "confidence": "medium", "rationale": "Sarcastic political comment not targeting a protected group in a hateful way.", "warnings": []}
+{"post_id": "2075262037043593493", "label": "neither", "flags": [], "target_group": null, "confidence": "low", "rationale": "Spanish language sports tweet, unrelated to Kenyan context.", "warnings": []}
+{"post_id": "2076332167227949124", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Strong political criticism of a politician and reporting of political violence.", "warnings": []}
+{"post_id": "2076390672538685791", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Quoting a leader condemning political violence.", "warnings": []}
+{"post_id": "2077516451636736260", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Sports commentary about media pressure.", "warnings": []}
+{"post_id": "2075250091938730027", "label": "offensive", "flags": [], "target_group": null, "confidence": "high", "rationale": "Calling named politicians 'garbage' is personal abuse, not group-based.", "warnings": []}
+{"post_id": "2077332368617271739", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Sports news headline.", "warnings": []}
+{"post_id": "2075233833029337356", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Political opinion on party loyalty.", "warnings": []}
+{"post_id": "2075549524148338750", "label": "offensive", "flags": [], "target_group": null, "confidence": "medium", "rationale": "'school of thieves' applied to police is an abusive institutional attack, not based on a protected characteristic.", "warnings": []}
+{"post_id": "2074325600966263215", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Criticism of wealthy individuals.", "warnings": []}
+{"post_id": "2074028984052908212", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Ordinary political criticism regarding power hunger and greed.", "warnings": []}
+{"post_id": "2074350046779166929", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "US political argument.", "warnings": []}
+{"post_id": "2073638950346887473", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Banter comparing comments to clueless politicians.", "warnings": []}
+{"post_id": "2074802917744214143", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "News reporting of a politician criticizing the government.", "warnings": []}
+{"post_id": "2074550511244615824", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Political strategy and opinion regarding an election.", "warnings": []}
+{"post_id": "2074427098005999926", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Quoting a politician's assessment of citizen dissatisfaction.", "warnings": []}

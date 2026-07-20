@@ -1,0 +1,27 @@
+{
+  "targets": {
+    "p_hate_top": 1200,
+    "p_offensive_top": 800,
+    "nli_tail": 150,
+    "random_control": 300
+  },
+  "scored_pool": 76197,
+  "pool_with_meta": 76197,
+  "pool_missing_author": 0,
+  "pool_with_incitement": 69399,
+  "lexicon_in_pool": 45,
+  "nli_tail_in_pool": 9214,
+  "selected_raw": 2495,
+  "after_near_dedupe": 2495,
+  "after_author_cap": 2440,
+  "per_stratum": {
+    "p_hate_top": 1192,
+    "p_offensive_top": 770,
+    "random_control": 283,
+    "nli_tail": 150,
+    "lexicon": 45
+  },
+  "authors": 1762,
+  "max_per_author": 10,
+  "p_hate_min_selected": 0.21061164140701294
+}

@@ -1,0 +1,121 @@
+prompt: label_v2.md
+2440 rows -> full
+stratum
+p_hate_top         1192
+p_offensive_top     770
+random_control      283
+nli_tail            150
+lexicon              45
+98 chunks of 25
+
+cursor-sonnet-4.5 (sonnet-4.5): 98 of 98 chunks to run
+  [cursor-sonnet-4.5/chunk_003] ok, 25 rows, 50s
+  [cursor-sonnet-4.5/chunk_001] ok, 25 rows, 58s
+  [cursor-sonnet-4.5/chunk_000] ok, 25 rows, 73s
+  [cursor-sonnet-4.5/chunk_002] ok, 25 rows, 86s
+  [cursor-sonnet-4.5/chunk_004] ok, 25 rows, 58s
+  [cursor-sonnet-4.5/chunk_005] ok, 25 rows, 51s
+  [cursor-sonnet-4.5/chunk_006] ok, 25 rows, 43s
+  [cursor-sonnet-4.5/chunk_007] ok, 25 rows, 49s
+  [cursor-sonnet-4.5/chunk_008] ok, 25 rows, 56s
+  [cursor-sonnet-4.5/chunk_010] ok, 25 rows, 48s
+  [cursor-sonnet-4.5/chunk_009] ok, 25 rows, 62s
+  [cursor-sonnet-4.5/chunk_011] ok, 25 rows, 63s
+  [cursor-sonnet-4.5/chunk_013] ok, 25 rows, 54s
+  [cursor-sonnet-4.5/chunk_012] ok, 25 rows, 60s
+  [cursor-sonnet-4.5/chunk_014] ok, 25 rows, 68s
+  [cursor-sonnet-4.5/chunk_015] ok, 25 rows, 59s
+  [cursor-sonnet-4.5/chunk_017] ok, 25 rows, 47s
+  [cursor-sonnet-4.5/chunk_016] ok, 25 rows, 65s
+  [cursor-sonnet-4.5/chunk_018] ok, 25 rows, 62s
+  [cursor-sonnet-4.5/chunk_019] ok, 25 rows, 63s
+  [cursor-sonnet-4.5/chunk_020] ok, 25 rows, 67s
+  [cursor-sonnet-4.5/chunk_021] ok, 25 rows, 79s
+  [cursor-sonnet-4.5/chunk_023] ok, 25 rows, 59s
+  [cursor-sonnet-4.5/chunk_022] attempt 1: post_id mismatch: got 0, want 25
+  [cursor-sonnet-4.5/chunk_024] ok, 25 rows, 61s
+  [cursor-sonnet-4.5/chunk_025] ok, 25 rows, 75s
+  [cursor-sonnet-4.5/chunk_026] ok, 25 rows, 63s
+  [cursor-sonnet-4.5/chunk_022] ok, 25 rows, 161s
+  [cursor-sonnet-4.5/chunk_027] attempt 1: post_id mismatch: got 0, want 25
+  [cursor-sonnet-4.5/chunk_028] ok, 25 rows, 65s
+  [cursor-sonnet-4.5/chunk_029] ok, 25 rows, 70s
+  [cursor-sonnet-4.5/chunk_030] ok, 25 rows, 64s
+  [cursor-sonnet-4.5/chunk_027] ok, 25 rows, 136s
+  [cursor-sonnet-4.5/chunk_031] ok, 25 rows, 53s
+  [cursor-sonnet-4.5/chunk_032] ok, 25 rows, 62s
+  [cursor-sonnet-4.5/chunk_033] ok, 25 rows, 64s
+  [cursor-sonnet-4.5/chunk_034] ok, 25 rows, 62s
+  [cursor-sonnet-4.5/chunk_035] ok, 25 rows, 81s
+  [cursor-sonnet-4.5/chunk_036] ok, 25 rows, 75s
+  [cursor-sonnet-4.5/chunk_037] ok, 25 rows, 63s
+  [cursor-sonnet-4.5/chunk_038] ok, 25 rows, 65s
+  [cursor-sonnet-4.5/chunk_039] ok, 25 rows, 58s
+  [cursor-sonnet-4.5/chunk_041] ok, 25 rows, 66s
+  [cursor-sonnet-4.5/chunk_040] ok, 25 rows, 78s
+  [cursor-sonnet-4.5/chunk_042] ok, 25 rows, 66s
+  [cursor-sonnet-4.5/chunk_043] ok, 25 rows, 60s
+  [cursor-sonnet-4.5/chunk_044] ok, 25 rows, 71s
+  [cursor-sonnet-4.5/chunk_046] ok, 25 rows, 65s
+  [cursor-sonnet-4.5/chunk_045] ok, 25 rows, 67s
+  [cursor-sonnet-4.5/chunk_047] ok, 25 rows, 57s
+  [cursor-sonnet-4.5/chunk_048] ok, 25 rows, 62s
+  [cursor-sonnet-4.5/chunk_050] ok, 25 rows, 62s
+  [cursor-sonnet-4.5/chunk_051] ok, 25 rows, 68s
+  [cursor-sonnet-4.5/chunk_049] ok, 25 rows, 86s
+  [cursor-sonnet-4.5/chunk_052] ok, 25 rows, 71s
+  [cursor-sonnet-4.5/chunk_053] ok, 25 rows, 67s
+  [cursor-sonnet-4.5/chunk_055] ok, 25 rows, 51s
+  [cursor-sonnet-4.5/chunk_054] ok, 25 rows, 83s
+  [cursor-sonnet-4.5/chunk_056] ok, 25 rows, 75s
+  [cursor-sonnet-4.5/chunk_058] attempt 1: post_id mismatch: got 0, want 25
+  [cursor-sonnet-4.5/chunk_059] ok, 25 rows, 56s
+  [cursor-sonnet-4.5/chunk_060] ok, 25 rows, 47s
+  [cursor-sonnet-4.5/chunk_058] ok, 25 rows, 144s
+  [cursor-sonnet-4.5/chunk_061] ok, 25 rows, 66s
+  [cursor-sonnet-4.5/chunk_057] ok, 25 rows, 170s
+  [cursor-sonnet-4.5/chunk_062] ok, 25 rows, 50s
+  [cursor-sonnet-4.5/chunk_064] ok, 25 rows, 51s
+  [cursor-sonnet-4.5/chunk_065] ok, 25 rows, 43s
+  [cursor-sonnet-4.5/chunk_066] ok, 25 rows, 52s
+  [cursor-sonnet-4.5/chunk_063] ok, 25 rows, 76s
+  [cursor-sonnet-4.5/chunk_067] attempt 1: post_id mismatch: got 0, want 25
+  [cursor-sonnet-4.5/chunk_069] ok, 25 rows, 45s
+  [cursor-sonnet-4.5/chunk_068] ok, 25 rows, 66s
+  [cursor-sonnet-4.5/chunk_070] ok, 25 rows, 69s
+  [cursor-sonnet-4.5/chunk_071] attempt 1: post_id mismatch: got 24, want 25
+  [cursor-sonnet-4.5/chunk_067] ok, 25 rows, 103s
+  [cursor-sonnet-4.5/chunk_072] ok, 25 rows, 56s
+  [cursor-sonnet-4.5/chunk_073] ok, 25 rows, 50s
+  [cursor-sonnet-4.5/chunk_074] ok, 25 rows, 45s
+  [cursor-sonnet-4.5/chunk_071] ok, 25 rows, 91s
+  [cursor-sonnet-4.5/chunk_075] ok, 25 rows, 56s
+  [cursor-sonnet-4.5/chunk_076] ok, 25 rows, 60s
+  [cursor-sonnet-4.5/chunk_078] ok, 25 rows, 47s
+  [cursor-sonnet-4.5/chunk_077] ok, 25 rows, 49s
+  [cursor-sonnet-4.5/chunk_079] ok, 25 rows, 48s
+  [cursor-sonnet-4.5/chunk_081] ok, 25 rows, 44s
+  [cursor-sonnet-4.5/chunk_082] ok, 25 rows, 47s
+  [cursor-sonnet-4.5/chunk_080] ok, 25 rows, 51s
+  [cursor-sonnet-4.5/chunk_084] ok, 25 rows, 45s
+  [cursor-sonnet-4.5/chunk_085] ok, 25 rows, 55s
+  [cursor-sonnet-4.5/chunk_083] attempt 1: post_id mismatch: got 0, want 25
+  [cursor-sonnet-4.5/chunk_086] ok, 25 rows, 54s
+  [cursor-sonnet-4.5/chunk_087] ok, 25 rows, 46s
+  [cursor-sonnet-4.5/chunk_089] ok, 25 rows, 49s
+  [cursor-sonnet-4.5/chunk_088] ok, 25 rows, 53s
+  [cursor-sonnet-4.5/chunk_083] ok, 25 rows, 126s
+  [cursor-sonnet-4.5/chunk_090] attempt 1: post_id mismatch: got 0, want 25
+  [cursor-sonnet-4.5/chunk_093] ok, 25 rows, 40s
+  [cursor-sonnet-4.5/chunk_091] ok, 25 rows, 43s
+  [cursor-sonnet-4.5/chunk_092] attempt 1: post_id mismatch: got 0, want 25
+  [cursor-sonnet-4.5/chunk_095] ok, 25 rows, 35s
+  [cursor-sonnet-4.5/chunk_090] ok, 25 rows, 104s
+  [cursor-sonnet-4.5/chunk_092] ok, 25 rows, 89s
+  [cursor-sonnet-4.5/chunk_094] ok, 25 rows, 53s
+  [cursor-sonnet-4.5/chunk_096] ok, 25 rows, 40s
+  [cursor-sonnet-4.5/chunk_097] attempt 1: post_id mismatch: got 0, want 15
+  [cursor-sonnet-4.5/chunk_097] ok, 15 rows, 62s
+cursor-sonnet-4.5: 98 ok, 0 parked, 27.2 min wall
+  per chunk: mean 65s, max 170s
+  throughput: 90 posts/min

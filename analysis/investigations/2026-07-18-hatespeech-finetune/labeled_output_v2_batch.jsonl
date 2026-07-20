@@ -1,0 +1,25 @@
+{"post_id": "2077814857550684347", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Casual question to a politician asking if pressure is okay - ordinary banter."}
+{"post_id": "2078291108572897369", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Counter-accusation of electoral theft - political criticism without protected characteristic."}
+{"post_id": "2077465886072480210", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Request for electoral prediction about UDA candidate - ordinary political commentary."}
+{"post_id": "2075671769202225195", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "News report of opposition accusations of a mole - factual political reporting."}
+{"post_id": "2076490546739384768", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Health news about Ebola preparedness - no political attack."}
+{"post_id": "2075248092996120755", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Electoral commentary dismissing rigging claims - political banter comparing constituencies."}
+{"post_id": "2073139382018592814", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Electoral timeline discussion with ballot-box opposition to Ruto - legitimate political criticism."}
+{"post_id": "2073748579441660084", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Political news announcement about MP exit from party."}
+{"post_id": "2074750543885447234", "label": "offensive", "flags": [], "target_group": null, "confidence": "high", "rationale": "'wajinga wachache' (a few stupid people) - personal insult of critics, not group-based."}
+{"post_id": "2074529699179458967", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Electoral complaint to IEBC about voter registration - criticism of institution."}
+{"post_id": "2077869843076857922", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Economic policy commentary about job markets and career planning."}
+{"post_id": "2074545826861375563", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "'Babu ni mtu wa watu' (Babu is a man of the people) - positive political praise."}
+{"post_id": "2078385547731456018", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "News report about website hacking and ransom demand."}
+{"post_id": "2077977546780553262", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Electoral prediction citing statistics - ordinary political commentary."}
+{"post_id": "2075302500622532920", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Political forecast about campaign attacks - analytical commentary on future politics."}
+{"post_id": "2076613663486890330", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "News broadcast announcement about IEBC briefing on by-election."}
+{"post_id": "2076982512669143378", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Social commentary lamenting loss of university funding compared to Ruto's era."}
+{"post_id": "2075807294277730473", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Financial news about stock market performance and investor returns."}
+{"post_id": "2072225548638503066", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Condemnation of alleged political patronage death, calling for accountability."}
+{"post_id": "2077697846359314805", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Personal disappointment about Morara praising Matiangi - criticism of individual politicians."}
+{"post_id": "2074560423412519311", "label": "neither", "flags": [], "target_group": null, "confidence": "medium", "rationale": "Cryptic prediction about visiting someone - unclear but no identifiable attack."}
+{"post_id": "2074563035537236192", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Question about Uhuru elevating Sifuna - political inquiry without attack."}
+{"post_id": "2075215661115007064", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Mourning announcement praising deceased as patriot and adviser."}
+{"post_id": "2075308392365920307", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "Personal statement about age comparison - no political content."}
+{"post_id": "2076947839708512722", "label": "neither", "flags": [], "target_group": null, "confidence": "high", "rationale": "News report in Swahili about MP calling for minister's dismissal if party not dissolved."}

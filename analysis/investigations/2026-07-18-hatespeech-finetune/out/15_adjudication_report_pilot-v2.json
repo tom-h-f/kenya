@@ -1,0 +1,26 @@
+{
+  "tag": "pilot-v2",
+  "adjudicator": "Claude Opus 4.6 (Thinking)",
+  "prompt_version": "v2",
+  "disputed": 41,
+  "adjudicated": 41,
+  "resolution_kind": {
+    "majority": 35,
+    "median_severity": 6
+  },
+  "resolved_labels": {
+    "offensive": 18,
+    "neither": 13,
+    "hate": 10
+  },
+  "sided_with_gemini": 24,
+  "sided_with_claude": 11,
+  "sided_with_neither": 6,
+  "final_labelled": 200,
+  "final_counts": {
+    "neither": 97,
+    "offensive": 68,
+    "hate": 35
+  },
+  "final_positives": 103
+}

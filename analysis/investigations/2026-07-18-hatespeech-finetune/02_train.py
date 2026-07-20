@@ -5,7 +5,7 @@
 #     "pyarrow>=18",
 #     "scikit-learn>=1.4",
 #     "torch>=2.4",
-#     "transformers>=4.48",
+#     "transformers>=4.56",
 #     "accelerate>=1.0",
 # ]
 # ///
@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import time
 
 import numpy as np
@@ -81,24 +82,77 @@ class PaddingCollator:
 
 
 class WeightedTrainer(Trainer):
-    def __init__(self, *args, class_weights=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        class_weights=None,
+        focal_gamma=None,
+        label_smoothing=0.0,
+        llrd=None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.class_weights = class_weights
+        self.focal_gamma = focal_gamma
+        self.label_smoothing = label_smoothing
+        self.llrd = llrd
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
         sample_weight = inputs.pop("sample_weight", None)
         outputs = model(**inputs)
-        loss = torch.nn.functional.cross_entropy(
-            outputs.logits,
-            labels,
-            weight=self.class_weights.to(outputs.logits.device),
-            reduction="none",
-        )
+        logits = outputs.logits
+        if self.focal_gamma is not None:
+            ce = torch.nn.functional.cross_entropy(logits, labels, reduction="none")
+            pt = torch.exp(-ce)
+            loss = (1.0 - pt) ** self.focal_gamma * ce
+        else:
+            weight = (
+                self.class_weights.to(logits.device)
+                if self.class_weights is not None
+                else None
+            )
+            loss = torch.nn.functional.cross_entropy(
+                logits,
+                labels,
+                weight=weight,
+                reduction="none",
+                label_smoothing=self.label_smoothing,
+            )
         if sample_weight is not None:
             loss = loss * sample_weight
         loss = loss.mean()
         return (loss, outputs) if return_outputs else loss
+
+    def create_optimizer(self):
+        if self.llrd is None:
+            return super().create_optimizer()
+        n_layers = self.model.config.num_hidden_layers
+        layer_re = re.compile(r"encoder\.layer\.(\d+)\.")
+        no_decay = ("bias", "LayerNorm.weight")
+        buckets: dict[tuple[float, float], list] = {}
+        for name, p in self.model.named_parameters():
+            if not p.requires_grad:
+                continue
+            m = layer_re.search(name)
+            if m:
+                depth = int(m.group(1)) + 1
+            elif "embeddings" in name:
+                depth = 0
+            else:
+                depth = n_layers + 1
+            lr = self.args.learning_rate * self.llrd ** (n_layers + 1 - depth)
+            wd = 0.0 if any(nd in name for nd in no_decay) else self.args.weight_decay
+            buckets.setdefault((lr, wd), []).append(p)
+        groups = [
+            {"params": ps, "lr": lr, "weight_decay": wd}
+            for (lr, wd), ps in buckets.items()
+        ]
+        opt_cls, opt_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+        opt_kwargs.pop("lr", None)
+        self.optimizer = opt_cls(groups, **opt_kwargs)
+        print(f"llrd={self.llrd}: {len(groups)} param groups over {n_layers} layers")
+        return self.optimizer
 
 
 def compute_metrics(eval_pred):
@@ -117,36 +171,74 @@ def main() -> None:
     ap.add_argument("--tag", default=None, help="suffix for out/model-<tag>")
     ap.add_argument("--agreement-min", type=float, default=0.0)
     ap.add_argument("--weight-by-agreement", action="store_true")
-    ap.add_argument("--extra-data", default=None, help="parquet appended to train")
+    ap.add_argument("--extra-data", default=None,
+                    help="parquet(s) appended to train, comma-separated")
+    ap.add_argument("--extra-repeat", default=None,
+                    help="oversample factor per --extra-data file, "
+                         "comma-separated (default 1 for all)")
+    ap.add_argument("--no-base-train", action="store_true",
+                    help="drop the base train split, use only --extra-data")
+    ap.add_argument("--val-split", default="val")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--epochs", type=int, default=4)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=2e-5)
     ap.add_argument("--max-len", type=int, default=128)
+    ap.add_argument("--grad-accum", type=int, default=1)
+    ap.add_argument("--label-smoothing", type=float, default=0.0)
+    ap.add_argument("--focal-gamma", type=float, default=None,
+                    help="focal loss, replaces class weights")
+    ap.add_argument("--llrd", type=float, default=None,
+                    help="layer-wise lr decay factor, e.g. 0.9")
+    ap.add_argument("--seed", type=int, default=SEED)
+    ap.add_argument("--warmup-ratio", type=float, default=0.1)
+    ap.add_argument("--patience", type=int, default=2)
+    ap.add_argument("--grad-checkpoint", action="store_true")
+    ap.add_argument("--no-class-weights", action="store_true",
+                    help="plain unweighted CE (focal already implies this)")
     args = ap.parse_args()
+    if args.focal_gamma is not None and args.label_smoothing > 0:
+        ap.error("--focal-gamma and --label-smoothing are mutually exclusive")
 
-    train, val = load_split("train"), load_split("val")
-    if args.agreement_min > 0:
-        before = len(train)
-        train = train[train["agreement"] >= args.agreement_min]
-        print(f"agreement >= {args.agreement_min}: {before} -> {len(train)} train rows")
+    import pandas as pd
+
+    val = load_split(args.val_split)
+    if args.no_base_train:
+        train = pd.DataFrame(columns=["text", "label", "agreement"])
+        print("base train split dropped (--no-base-train)")
+    else:
+        train = load_split("train")
+        if args.agreement_min > 0:
+            before = len(train)
+            train = train[train["agreement"] >= args.agreement_min]
+            print(
+                f"agreement >= {args.agreement_min}: {before} -> {len(train)} train rows"
+            )
     if args.extra_data:
-        import pandas as pd
-
-        extra = pd.read_parquet(args.extra_data)
-        train = pd.concat(
-            [train, extra[["text", "label", "agreement"]]], ignore_index=True
+        paths = [p for p in args.extra_data.split(",") if p]
+        reps = (
+            [int(x) for x in args.extra_repeat.split(",")]
+            if args.extra_repeat
+            else [1] * len(paths)
         )
-        print(f"+{len(extra)} extra rows from {args.extra_data} -> {len(train)}")
-    full_steps = math.ceil(len(train) / args.batch_size) * args.epochs
+        if len(reps) == 1:
+            reps = reps * len(paths)
+        if len(reps) != len(paths):
+            ap.error("--extra-repeat must have one value, or one per --extra-data file")
+        for path, rep in zip(paths, reps):
+            extra = pd.read_parquet(path)[["text", "label", "agreement"]]
+            train = pd.concat([train] + [extra] * rep, ignore_index=True)
+            print(f"+{len(extra)} x{rep} rows from {path} -> {len(train)}")
+    train["label"] = train["label"].astype(int)
+    full_steps = (
+        math.ceil(len(train) / (args.batch_size * args.grad_accum)) * args.epochs
+    )
     if not args.full:
-        import pandas as pd
-
         train = pd.concat(
-            g.sample(min(len(g), 400), random_state=SEED)
+            g.sample(min(len(g), 400), random_state=args.seed)
             for _, g in train.groupby("label")
         )
-        val = val.sample(300, random_state=SEED)
+        val = val.sample(min(300, len(val)), random_state=args.seed)
         args.epochs = 1
     if args.tag:
         out_dir = OUT / f"model-{args.tag}"
@@ -158,22 +250,32 @@ def main() -> None:
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     model = AutoModelForSequenceClassification.from_pretrained(
-        args.model, num_labels=3, id2label=ID2LABEL, label2id=LABEL2ID
+        args.model,
+        num_labels=3,
+        id2label=ID2LABEL,
+        label2id=LABEL2ID,
+        dtype=torch.float32,
     )
 
     counts = train["label"].value_counts().sort_index()
-    weights = torch.tensor(
-        (len(train) / (3 * counts)).values, dtype=torch.float32
-    )
-    print(f"class weights: {weights.tolist()}")
+    if args.no_class_weights:
+        weights = None
+        print("class weights: disabled (plain CE)")
+    else:
+        weights = torch.tensor(
+            (len(train) / (3 * counts)).values, dtype=torch.float32
+        )
+        print(f"class weights: {weights.tolist()}")
 
     targs = TrainingArguments(
         output_dir=str(out_dir / "checkpoints"),
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size * 2,
+        gradient_accumulation_steps=args.grad_accum,
+        gradient_checkpointing=args.grad_checkpoint,
         learning_rate=args.lr,
-        warmup_ratio=0.1,
+        warmup_ratio=args.warmup_ratio,
         weight_decay=0.01,
         eval_strategy="epoch",
         save_strategy="epoch",
@@ -182,7 +284,7 @@ def main() -> None:
         metric_for_best_model="macro_f1",
         greater_is_better=True,
         logging_steps=50,
-        seed=SEED,
+        seed=args.seed,
         fp16=dev == "cuda",
         report_to=[],
     )
@@ -197,7 +299,10 @@ def main() -> None:
         processing_class=tokenizer,
         compute_metrics=compute_metrics,
         class_weights=weights,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
+        focal_gamma=args.focal_gamma,
+        label_smoothing=args.label_smoothing,
+        llrd=args.llrd,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=args.patience)],
     )
 
     t0 = time.time()
@@ -210,7 +315,9 @@ def main() -> None:
     print(f"val macro-F1: {final['eval_macro_f1']:.4f} ({elapsed:.0f}s)")
 
     if not args.full:
-        steps = math.ceil(len(train) / args.batch_size) * args.epochs
+        steps = (
+            math.ceil(len(train) / (args.batch_size * args.grad_accum)) * args.epochs
+        )
         per_step = elapsed / steps
         print(
             f"~{per_step:.2f}s/step -> projected --full "

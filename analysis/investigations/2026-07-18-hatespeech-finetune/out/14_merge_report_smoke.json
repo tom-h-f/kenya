@@ -1,0 +1,79 @@
+{
+  "tag": "smoke",
+  "prompt_version": "v1",
+  "labellers": [
+    "gemini-3.1-pro",
+    "claude-sonnet-4.6"
+  ],
+  "batch_rows": 50,
+  "labelled_by_both": 25,
+  "missing": 25,
+  "agreement_rate": 0.88,
+  "kappa_overall": 0.7754,
+  "kappa_per_class": {
+    "hate": 0.4681,
+    "offensive": 0.8162,
+    "neither": 0.8344
+  },
+  "label_counts": {
+    "gemini": {
+      "neither": 16,
+      "offensive": 8,
+      "hate": 1
+    },
+    "claude": {
+      "neither": 14,
+      "offensive": 8,
+      "hate": 3
+    }
+  },
+  "confusion": {
+    "hate": {
+      "hate": 1,
+      "neither": 1,
+      "offensive": 1
+    },
+    "neither": {
+      "hate": 0,
+      "neither": 14,
+      "offensive": 0
+    },
+    "offensive": {
+      "hate": 0,
+      "neither": 1,
+      "offensive": 7
+    }
+  },
+  "accepted": 22,
+  "confirmed_positives": 8,
+  "confirmed_hate": 1,
+  "per_stratum": {
+    "p_hate_top": {
+      "n": 13,
+      "accepted": 11,
+      "positive_rate": 0.2727,
+      "hate_rate": 0.0909
+    },
+    "p_offensive_top": {
+      "n": 7,
+      "accepted": 6,
+      "positive_rate": 0.8333,
+      "hate_rate": 0.0
+    },
+    "random_control": {
+      "n": 4,
+      "accepted": 4,
+      "positive_rate": 0.0,
+      "hate_rate": 0.0
+    },
+    "nli_tail": {
+      "n": 1,
+      "accepted": 1,
+      "positive_rate": 0.0,
+      "hate_rate": 0.0
+    }
+  },
+  "warnings_flagged": 0,
+  "adjudication_queue": 3,
+  "adjudication_hate_involved": 2
+}

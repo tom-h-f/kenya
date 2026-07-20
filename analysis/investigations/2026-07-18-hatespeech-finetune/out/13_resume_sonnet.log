@@ -1,0 +1,468 @@
+prompt: label_v2.md
+2440 rows -> full
+stratum
+p_hate_top         1192
+p_offensive_top     770
+random_control      283
+nli_tail            150
+lexicon              45
+98 chunks of 25
+
+gemini-3.1-pro (Gemini 3.1 Pro (Low)): 0 of 98 chunks to run
+
+claude-sonnet-4.6 (Claude Sonnet 4.6 (Thinking)): 89 of 98 chunks to run
+  [claude-sonnet-4.6/chunk_009] ok, 25 rows, 45s
+  [claude-sonnet-4.6/chunk_012] ok, 25 rows, 45s
+  [claude-sonnet-4.6/chunk_011] ok, 25 rows, 73s
+  [claude-sonnet-4.6/chunk_010] ok, 25 rows, 81s
+  [claude-sonnet-4.6/chunk_013] ok, 25 rows, 45s
+  [claude-sonnet-4.6/chunk_014] ok, 25 rows, 71s
+  [claude-sonnet-4.6/chunk_015] ok, 25 rows, 45s
+  [claude-sonnet-4.6/chunk_016] ok, 25 rows, 43s
+  [claude-sonnet-4.6/chunk_017] ok, 25 rows, 46s
+  [claude-sonnet-4.6/chunk_019] attempt 1: Expecting ',' delimiter: line 1 column 117 (char 116)
+  [claude-sonnet-4.6/chunk_020] attempt 1: Extra data: line 1 column 135 (char 134)
+  [claude-sonnet-4.6/chunk_021] ok, 25 rows, 44s
+  [claude-sonnet-4.6/chunk_018] ok, 25 rows, 75s
+  [claude-sonnet-4.6/chunk_019] ok, 25 rows, 94s
+  [claude-sonnet-4.6/chunk_022] ok, 25 rows, 42s
+  [claude-sonnet-4.6/chunk_020] attempt 2: Expecting value: line 1 column 1 (char 0)
+  [claude-sonnet-4.6/chunk_023] ok, 25 rows, 47s
+  [claude-sonnet-4.6/chunk_025] ok, 25 rows, 47s
+  [claude-sonnet-4.6/chunk_020] ok, 25 rows, 149s
+  [claude-sonnet-4.6/chunk_024] ok, 25 rows, 71s
+  [claude-sonnet-4.6/chunk_026] ok, 25 rows, 44s
+  [claude-sonnet-4.6/chunk_027] ok, 25 rows, 47s
+  [claude-sonnet-4.6/chunk_028] ok, 25 rows, 50s
+  [claude-sonnet-4.6/chunk_030] ok, 25 rows, 46s
+  [claude-sonnet-4.6/chunk_029] ok, 25 rows, 49s
+  [claude-sonnet-4.6/chunk_031] ok, 25 rows, 46s
+  [claude-sonnet-4.6/chunk_033] ok, 25 rows, 47s
+  [claude-sonnet-4.6/chunk_034] ok, 25 rows, 45s
+  [claude-sonnet-4.6/chunk_032] ok, 25 rows, 76s
+  [claude-sonnet-4.6/chunk_038] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m36s.
+
+  [claude-sonnet-4.6/chunk_035] ok, 25 rows, 44s
+  [claude-sonnet-4.6/chunk_038] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m30s.
+
+  [claude-sonnet-4.6/chunk_039] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m29s.
+
+  [claude-sonnet-4.6/chunk_038] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m25s.
+
+  [claude-sonnet-4.6/chunk_038] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_039] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m24s.
+
+  [claude-sonnet-4.6/chunk_037] ok, 25 rows, 43s
+  [claude-sonnet-4.6/chunk_040] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m19s.
+
+  [claude-sonnet-4.6/chunk_039] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m18s.
+
+  [claude-sonnet-4.6/chunk_039] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_041] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m16s.
+
+  [claude-sonnet-4.6/chunk_036] ok, 25 rows, 52s
+  [claude-sonnet-4.6/chunk_040] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m13s.
+
+  [claude-sonnet-4.6/chunk_042] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m12s.
+
+  [claude-sonnet-4.6/chunk_041] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m10s.
+
+  [claude-sonnet-4.6/chunk_040] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m8s.
+
+  [claude-sonnet-4.6/chunk_040] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_043] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m8s.
+
+  [claude-sonnet-4.6/chunk_042] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m7s.
+
+  [claude-sonnet-4.6/chunk_041] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m4s.
+
+  [claude-sonnet-4.6/chunk_041] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_044] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m2s.
+
+  [claude-sonnet-4.6/chunk_043] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m2s.
+
+  [claude-sonnet-4.6/chunk_042] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h51m2s.
+
+  [claude-sonnet-4.6/chunk_042] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_045] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m59s.
+
+  [claude-sonnet-4.6/chunk_043] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m57s.
+
+  [claude-sonnet-4.6/chunk_043] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_044] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m57s.
+
+  [claude-sonnet-4.6/chunk_046] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m57s.
+
+  [claude-sonnet-4.6/chunk_045] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m53s.
+
+  [claude-sonnet-4.6/chunk_047] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m51s.
+
+  [claude-sonnet-4.6/chunk_046] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m51s.
+
+  [claude-sonnet-4.6/chunk_044] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m51s.
+
+  [claude-sonnet-4.6/chunk_044] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_045] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m47s.
+
+  [claude-sonnet-4.6/chunk_045] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_047] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m46s.
+
+  [claude-sonnet-4.6/chunk_048] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m45s.
+
+  [claude-sonnet-4.6/chunk_046] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m45s.
+
+  [claude-sonnet-4.6/chunk_046] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_049] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m42s.
+
+  [claude-sonnet-4.6/chunk_050] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m40s.
+
+  [claude-sonnet-4.6/chunk_047] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m40s.
+
+  [claude-sonnet-4.6/chunk_047] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_048] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m39s.
+
+  [claude-sonnet-4.6/chunk_049] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m36s.
+
+  [claude-sonnet-4.6/chunk_051] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m35s.
+
+  [claude-sonnet-4.6/chunk_050] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m34s.
+
+  [claude-sonnet-4.6/chunk_048] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m34s.
+
+  [claude-sonnet-4.6/chunk_048] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_049] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m30s.
+
+  [claude-sonnet-4.6/chunk_049] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_050] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m29s.
+
+  [claude-sonnet-4.6/chunk_050] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_051] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m29s.
+
+  [claude-sonnet-4.6/chunk_052] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m29s.
+
+  [claude-sonnet-4.6/chunk_053] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m25s.
+
+  [claude-sonnet-4.6/chunk_052] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m23s.
+
+  [claude-sonnet-4.6/chunk_054] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m23s.
+
+  [claude-sonnet-4.6/chunk_051] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m23s.
+
+  [claude-sonnet-4.6/chunk_051] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_053] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m20s.
+
+  [claude-sonnet-4.6/chunk_054] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m18s.
+
+  [claude-sonnet-4.6/chunk_055] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m18s.
+
+  [claude-sonnet-4.6/chunk_052] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m17s.
+
+  [claude-sonnet-4.6/chunk_052] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_053] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m14s.
+
+  [claude-sonnet-4.6/chunk_053] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_055] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m13s.
+
+  [claude-sonnet-4.6/chunk_054] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m12s.
+
+  [claude-sonnet-4.6/chunk_054] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_056] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m12s.
+
+  [claude-sonnet-4.6/chunk_057] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m8s.
+
+  [claude-sonnet-4.6/chunk_055] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m7s.
+
+  [claude-sonnet-4.6/chunk_055] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_058] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m7s.
+
+  [claude-sonnet-4.6/chunk_056] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m6s.
+
+  [claude-sonnet-4.6/chunk_059] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m2s.
+
+  [claude-sonnet-4.6/chunk_058] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m1s.
+
+  [claude-sonnet-4.6/chunk_056] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m1s.
+
+  [claude-sonnet-4.6/chunk_056] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_057] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h50m1s.
+
+  [claude-sonnet-4.6/chunk_059] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m56s.
+
+  [claude-sonnet-4.6/chunk_057] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m56s.
+
+  [claude-sonnet-4.6/chunk_060] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m56s.
+
+  [claude-sonnet-4.6/chunk_057] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_058] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m56s.
+
+  [claude-sonnet-4.6/chunk_058] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_059] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m50s.
+
+  [claude-sonnet-4.6/chunk_059] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_060] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m50s.
+
+  [claude-sonnet-4.6/chunk_062] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m50s.
+
+  [claude-sonnet-4.6/chunk_061] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m50s.
+
+  [claude-sonnet-4.6/chunk_063] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m45s.
+
+  [claude-sonnet-4.6/chunk_061] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m45s.
+
+  [claude-sonnet-4.6/chunk_062] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m45s.
+
+  [claude-sonnet-4.6/chunk_060] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m44s.
+
+  [claude-sonnet-4.6/chunk_060] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_063] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m40s.
+
+  [claude-sonnet-4.6/chunk_061] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m39s.
+
+  [claude-sonnet-4.6/chunk_061] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_062] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m39s.
+
+  [claude-sonnet-4.6/chunk_062] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_064] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m39s.
+
+  [claude-sonnet-4.6/chunk_063] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m34s.
+
+  [claude-sonnet-4.6/chunk_063] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_065] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m34s.
+
+  [claude-sonnet-4.6/chunk_066] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m33s.
+
+  [claude-sonnet-4.6/chunk_064] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m33s.
+
+  [claude-sonnet-4.6/chunk_067] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m29s.
+
+  [claude-sonnet-4.6/chunk_065] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m29s.
+
+  [claude-sonnet-4.6/chunk_066] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m28s.
+
+  [claude-sonnet-4.6/chunk_064] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m28s.
+
+  [claude-sonnet-4.6/chunk_064] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_065] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m24s.
+
+  [claude-sonnet-4.6/chunk_065] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_067] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m23s.
+
+  [claude-sonnet-4.6/chunk_068] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m23s.
+
+  [claude-sonnet-4.6/chunk_066] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m23s.
+
+  [claude-sonnet-4.6/chunk_066] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_067] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m18s.
+
+  [claude-sonnet-4.6/chunk_067] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_068] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m18s.
+
+  [claude-sonnet-4.6/chunk_069] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m18s.
+
+  [claude-sonnet-4.6/chunk_070] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m17s.
+
+  [claude-sonnet-4.6/chunk_069] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m12s.
+
+  [claude-sonnet-4.6/chunk_071] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m12s.
+
+  [claude-sonnet-4.6/chunk_068] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m12s.
+
+  [claude-sonnet-4.6/chunk_068] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_070] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m11s.
+
+  [claude-sonnet-4.6/chunk_071] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m6s.
+
+  [claude-sonnet-4.6/chunk_072] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m6s.
+
+  [claude-sonnet-4.6/chunk_069] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m6s.
+
+  [claude-sonnet-4.6/chunk_069] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_070] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m6s.
+
+  [claude-sonnet-4.6/chunk_070] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_072] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m1s.
+
+  [claude-sonnet-4.6/chunk_073] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m0s.
+
+  [claude-sonnet-4.6/chunk_074] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m0s.
+
+  [claude-sonnet-4.6/chunk_071] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h49m0s.
+
+  [claude-sonnet-4.6/chunk_071] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_075] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m55s.
+
+  [claude-sonnet-4.6/chunk_072] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m55s.
+
+  [claude-sonnet-4.6/chunk_072] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_073] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m55s.
+
+  [claude-sonnet-4.6/chunk_074] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m55s.
+
+  [claude-sonnet-4.6/chunk_076] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m50s.
+
+  [claude-sonnet-4.6/chunk_075] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m50s.
+
+  [claude-sonnet-4.6/chunk_073] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m49s.
+
+  [claude-sonnet-4.6/chunk_073] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_074] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m49s.
+
+  [claude-sonnet-4.6/chunk_074] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_076] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m45s.
+
+  [claude-sonnet-4.6/chunk_075] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m44s.
+
+  [claude-sonnet-4.6/chunk_075] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_077] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m44s.
+
+  [claude-sonnet-4.6/chunk_078] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m44s.
+
+  [claude-sonnet-4.6/chunk_076] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m39s.
+
+  [claude-sonnet-4.6/chunk_076] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_079] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m39s.
+
+  [claude-sonnet-4.6/chunk_077] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m38s.
+
+  [claude-sonnet-4.6/chunk_078] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m38s.
+
+  [claude-sonnet-4.6/chunk_079] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m33s.
+
+  [claude-sonnet-4.6/chunk_080] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m33s.
+
+  [claude-sonnet-4.6/chunk_077] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m33s.
+
+  [claude-sonnet-4.6/chunk_077] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_078] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m32s.
+
+  [claude-sonnet-4.6/chunk_078] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_079] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m28s.
+
+  [claude-sonnet-4.6/chunk_079] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_081] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m27s.
+
+  [claude-sonnet-4.6/chunk_080] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m27s.
+
+  [claude-sonnet-4.6/chunk_082] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m27s.
+
+  [claude-sonnet-4.6/chunk_081] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m22s.
+
+  [claude-sonnet-4.6/chunk_080] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m22s.
+
+  [claude-sonnet-4.6/chunk_080] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_083] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m22s.
+
+  [claude-sonnet-4.6/chunk_082] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m21s.
+
+  [claude-sonnet-4.6/chunk_081] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m17s.
+
+  [claude-sonnet-4.6/chunk_081] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_083] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m17s.
+
+  [claude-sonnet-4.6/chunk_084] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m17s.
+
+  [claude-sonnet-4.6/chunk_082] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m16s.
+
+  [claude-sonnet-4.6/chunk_082] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_084] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m12s.
+
+  [claude-sonnet-4.6/chunk_083] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m11s.
+
+  [claude-sonnet-4.6/chunk_083] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_085] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m11s.
+
+  [claude-sonnet-4.6/chunk_086] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m11s.
+
+  [claude-sonnet-4.6/chunk_087] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m6s.
+
+  [claude-sonnet-4.6/chunk_085] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m6s.
+
+  [claude-sonnet-4.6/chunk_084] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m6s.
+
+  [claude-sonnet-4.6/chunk_084] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_086] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m5s.
+
+  [claude-sonnet-4.6/chunk_085] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m1s.
+
+  [claude-sonnet-4.6/chunk_085] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_087] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m0s.
+
+  [claude-sonnet-4.6/chunk_088] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h48m0s.
+
+  [claude-sonnet-4.6/chunk_086] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m59s.
+
+  [claude-sonnet-4.6/chunk_086] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_089] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m55s.
+
+  [claude-sonnet-4.6/chunk_087] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m55s.
+
+  [claude-sonnet-4.6/chunk_087] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_088] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m55s.
+
+  [claude-sonnet-4.6/chunk_090] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m53s.
+
+  [claude-sonnet-4.6/chunk_089] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m50s.
+
+  [claude-sonnet-4.6/chunk_088] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m50s.
+
+  [claude-sonnet-4.6/chunk_088] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_091] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m50s.
+
+  [claude-sonnet-4.6/chunk_090] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m47s.
+
+  [claude-sonnet-4.6/chunk_089] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m44s.
+
+  [claude-sonnet-4.6/chunk_089] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_092] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m44s.
+
+  [claude-sonnet-4.6/chunk_091] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m44s.
+
+  [claude-sonnet-4.6/chunk_090] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m42s.
+
+  [claude-sonnet-4.6/chunk_090] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_093] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m39s.
+
+  [claude-sonnet-4.6/chunk_091] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m39s.
+
+  [claude-sonnet-4.6/chunk_091] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_092] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m39s.
+
+  [claude-sonnet-4.6/chunk_094] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m36s.
+
+  [claude-sonnet-4.6/chunk_095] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m33s.
+
+  [claude-sonnet-4.6/chunk_093] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m33s.
+
+  [claude-sonnet-4.6/chunk_092] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m33s.
+
+  [claude-sonnet-4.6/chunk_092] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_094] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m30s.
+
+  [claude-sonnet-4.6/chunk_095] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m28s.
+
+  [claude-sonnet-4.6/chunk_096] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m27s.
+
+  [claude-sonnet-4.6/chunk_093] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m27s.
+
+  [claude-sonnet-4.6/chunk_093] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_094] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m25s.
+
+  [claude-sonnet-4.6/chunk_094] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_095] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m22s.
+
+  [claude-sonnet-4.6/chunk_095] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_097] attempt 1: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m22s.
+
+  [claude-sonnet-4.6/chunk_096] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m21s.
+
+  [claude-sonnet-4.6/chunk_097] attempt 2: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m16s.
+
+  [claude-sonnet-4.6/chunk_096] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m16s.
+
+  [claude-sonnet-4.6/chunk_096] PARKED after 3 attempts
+  [claude-sonnet-4.6/chunk_097] attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h47m11s.
+
+  [claude-sonnet-4.6/chunk_097] PARKED after 3 attempts
+claude-sonnet-4.6: 29 ok, 60 parked, 11.2 min wall
+  per chunk: mean 57s, max 149s
+  throughput: 65 posts/min

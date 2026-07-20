@@ -1,0 +1,7 @@
+{
+  "pulled": 118417,
+  "after_clean_minlen": 117528,
+  "after_exact_dedupe": 81313,
+  "eval_overlap_dropped": 4,
+  "after_near_dedupe": 76197
+}

@@ -1,64 +1,57 @@
-# 2026-07-18 hate-speech fine-tune
+# Kenya hate-speech classifier
 
-Fine-tunes `cardiffnlp/twitter-xlm-roberta-base` on `HateSpeech_Kenya.csv`
-(repo root, untracked) into a 3-class classifier: **neither / offensive /
-hate**. Training-only investigation; `04_infer.py::predict` is the seam for
-later `kma` pipeline wiring (see `kma/incitement.py` notes on the joint
-lexicon+NLI rule this is meant to upgrade).
+3-class (neither / offensive / hate) classifier for Kenyan political tweets,
+built to complement the lexicon+NLI incitement rule in `kma/incitement.py`.
 
-## Dataset
+**For current status and what to do next, read `STATE.md`.** This file is the
+map of scripts and how to run them.
 
-48,076 tweets, Davidson-style annotation (~3 annotator votes per row in the
-`hate_speech` / `offensive_language` / `neither` count columns).
+## Docs
 
-Class mapping - verified from annotator-count means, NOT the Davidson paper
-ordering:
+- `STATE.md` - where the project is, the open question, the roadmap. Start here.
+- `findings.md` - Plan D (DAPT + afro-xlmr-large) and round-2 results.
+- `findings-plan-a.md` - the 2026 labelling effort and reliability analysis.
+- `archive/` - superseded planning briefs.
 
-| Class | meaning   | rows   |
-|-------|-----------|--------|
-| 0     | neither   | 36,352 |
-| 1     | offensive | 8,543  |
-| 2     | hate      | 3,181  |
+## Scripts (standalone PEP 723; `uv run <script>`)
 
-Caveats:
-- Provenance unconfirmed (looks like 2013-election-era Kenya tweets):
-  vocabulary drift vs the 2026 corpus - spot-check transfer before trusting.
-- `USERNAME_n` placeholders are normalised to `@user` in prep.
-- A few off-topic rows (e.g. Malay tweets caught by a "masai" keyword
-  collision) left in as noise.
+Pipeline order. Numeric prefix = rough sequence; scripts import each other by
+prefix (e.g. `03_eval` calls `04_infer.predict`).
 
-## Run (local, M4 Pro / MPS)
+| script | does |
+|---|---|
+| `_common.py` | shared: label maps (0=neither/1=offensive/2=hate), device, splits |
+| `00_prep.py` | clean + stratified split of `HateSpeech_Kenya.csv`; MinHash near-dup helpers |
+| `01_baseline.py` | TF-IDF + logreg macro-F1 floor |
+| `02_train.py` | fine-tune. Flags: `--model --extra-data(,) --extra-repeat --agreement-min --focal-gamma --no-class-weights --llrd --seed --val-split --grad-accum --no-base-train` |
+| `03_eval.py` | test report, confusion png, hate-threshold sweep |
+| `04_infer.py` | score a CSV; `predict()` is the pipeline seam |
+| `07_siblings.py` | AfriHate Swahili intake |
+| `08_export_corpus.py` | R2 -> `dapt_corpus.parquet` (tac2, needs R2 creds) |
+| `09_dapt.py` | domain-adaptive MLM pretraining |
+| `10_push_hf.py` | push a model dir to private HF |
+| `11_hate_sweep.py` | sub-argmax hate-threshold sweep |
+| `12_score_corpus.py` / `12_mine_candidates.py` | score full corpus, mine label candidates |
+| `13_label_drive.py` | dual-CLI (agy + cursor) labelling, resumable |
+| `14_label_merge.py` | merge labellers, kappa, adjudication queue, blind-check sheet |
+| `15_adjudicate.py` | third-model blind adjudication of disagreements |
+| `16_gold_split.py` | gold / challenge / train split assignment |
+| `17_prep_round2.py` | Plan A labels -> round-2 train/val/gold/challenge parquets |
+| `18_blind_check.py` | the human gate: `make` a sheet, `score` it |
+| `modal_train.py` | run any of the above on a Modal A100 |
+| `run_*.sh` | batch recipes (d = Plan D ladder, r2 = round 2) |
+
+## GPU runs (Modal)
 
 ```sh
-cd analysis/investigations/2026-07-18-hatespeech-finetune
-uv run 00_prep.py          # clean + stratified 80/10/10 split
-uv run 01_baseline.py      # TF-IDF + logreg macro-F1 floor
-uv run 02_train.py         # sub-minute smoke run (1k rows, 1 epoch)
-uv run 02_train.py --full  # real run -> out/model
-uv run 03_eval.py          # test report, confusion png, threshold sweep
-uv run 04_infer.py --csv some_posts.csv --column text
+uv run modal run modal_train.py --cmd "python 09_dapt.py --full"          # sync
+uv run modal run --detach modal_train.py --cmd "bash run_r2_batch.sh" --spawn  # detached
 ```
 
-## Run (Google Colab, T4/A100)
+Volume `hatespeech-finetune` holds all parquets and model outputs. Local
+smokes run on MPS (sample mode, sub-minute); real training goes to Modal.
 
-Upload this directory plus `HateSpeech_Kenya.csv` into the same folder, then:
+## Class mapping
 
-```
-!pip install -q pandas pyarrow scikit-learn torch transformers accelerate matplotlib
-!python 00_prep.py && python 01_baseline.py
-!python 02_train.py --full
-!python 03_eval.py
-```
-
-Device (CUDA/MPS/CPU) is autodetected; fp16 enabled on CUDA only.
-
-## Outputs (`out/`)
-
-- `train|val|test.parquet` - splits (seed 42, stratified)
-- `01_baseline.json` - floor macro-F1
-- `model/` (+ `model-sample/` from smoke) - checkpoint + `train_log.json`
-- `03_metrics.json`, `03_confusion.png`, `03_errors.csv`,
-  `03_hate_thresholds.csv` - precision/recall per flag threshold for triage
-
-Primary metric: macro-F1 (11:3:1 class imbalance; weighted cross-entropy in
-training).
+0 = neither, 1 = offensive, 2 = hate. Verified from annotator-count means,
+**not** the Davidson paper ordering.
