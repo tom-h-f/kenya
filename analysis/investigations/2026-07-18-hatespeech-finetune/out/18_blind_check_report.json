@@ -2,42 +2,42 @@
   "n": 120,
   "arbitration": {
     "n": 42,
-    "human_sided_primary": 13,
-    "human_sided_secondary": 16,
-    "human_sided_neither": 13,
+    "human_sided_primary": 15,
+    "human_sided_secondary": 20,
+    "human_sided_neither": 7,
     "primary_soft_secondary_hate": {
-      "successes": 13,
+      "successes": 17,
       "n": 30,
-      "rate": 0.4333,
+      "rate": 0.5667,
       "ci95": [
-        0.2738,
-        0.608
+        0.392,
+        0.7262
       ]
     },
-    "relabel_gate_pass": false
+    "relabel_gate_pass": true
   },
   "consensus": {
     "n": 78,
     "overall": {
-      "successes": 43,
+      "successes": 53,
       "n": 78,
-      "rate": 0.5513,
+      "rate": 0.6795,
       "ci95": [
-        0.4411,
-        0.6567
+        0.5696,
+        0.7725
       ]
     },
     "hate_rows": {
-      "successes": 12,
+      "successes": 17,
       "n": 18,
-      "rate": 0.6667,
+      "rate": 0.9444,
       "ci95": [
-        0.4375,
-        0.8372
+        0.7424,
+        0.9901
       ]
     },
-    "missed_hate": 11,
-    "over_called_hate": 6,
+    "missed_hate": 3,
+    "over_called_hate": 1,
     "by_pool": {
       "agree_coded": {
         "n": 24,
@@ -45,74 +45,74 @@
       },
       "agree_hate": {
         "n": 18,
-        "agreement": 0.6667
+        "agreement": 0.9444
       },
       "random_agreed": {
         "n": 36,
-        "agreement": 0.4167
+        "agreement": 0.5556
       }
     }
   },
   "per_labeller": {
     "label_gemini": {
-      "exact_agreement": 0.4667,
+      "exact_agreement": 0.5667,
       "hate": {
-        "true_positive": 16,
-        "false_negative": 24,
-        "false_positive": 14,
-        "precision": 0.5333,
-        "recall": 0.4
+        "true_positive": 23,
+        "false_negative": 20,
+        "false_positive": 7,
+        "precision": 0.7667,
+        "recall": 0.5349
       },
       "confusion": {
         "neither": {
           "neither": 32,
-          "offensive": 16,
-          "hate": 18
+          "offensive": 15,
+          "hate": 19
         },
         "offensive": {
           "neither": 10,
-          "offensive": 8,
-          "hate": 6
+          "offensive": 13,
+          "hate": 1
         },
         "hate": {
           "neither": 4,
-          "offensive": 10,
-          "hate": 16
+          "offensive": 3,
+          "hate": 23
         }
       }
     },
     "label_cursor": {
-      "exact_agreement": 0.4917,
+      "exact_agreement": 0.6083,
       "hate": {
-        "true_positive": 25,
-        "false_negative": 15,
-        "false_positive": 23,
-        "precision": 0.5208,
-        "recall": 0.625
+        "true_positive": 34,
+        "false_negative": 9,
+        "false_positive": 14,
+        "precision": 0.7083,
+        "recall": 0.7907
       },
       "confusion": {
         "neither": {
           "neither": 30,
-          "offensive": 11,
-          "hate": 8
+          "offensive": 12,
+          "hate": 7
         },
         "offensive": {
           "neither": 12,
-          "offensive": 4,
-          "hate": 7
+          "offensive": 9,
+          "hate": 2
         },
         "hate": {
           "neither": 4,
-          "offensive": 19,
-          "hate": 25
+          "offensive": 10,
+          "hate": 34
         }
       }
     }
   },
   "gates": {
-    "primary_split_relabel": false,
+    "primary_split_relabel": true,
     "consensus_overall": false,
-    "consensus_hate": false
+    "consensus_hate": true
   },
   "decision": "calibration_required"
 }

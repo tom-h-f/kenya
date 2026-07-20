@@ -95,6 +95,33 @@ def write_recode_files(source: Path, archive: Path, output: Path) -> None:
     prepare_recode_frame(original).to_csv(output, index=False)
 
 
+def apply_targeting_adjudication(df: pd.DataFrame) -> pd.DataFrame:
+    """Enforce the selected protected-target boundary without losing provenance."""
+    result = df.copy()
+    if "human_label_pre_adjudication" not in result:
+        result["human_label_pre_adjudication"] = result["human_label"]
+    if "human_adjudication" not in result:
+        result["human_adjudication"] = ""
+    result["human_adjudication"] = (
+        result["human_adjudication"].fillna("").astype(str).str.strip()
+    )
+
+    targeted = (
+        result["human_ethnic_targeting"].astype(str).str.strip().str.lower() == "true"
+    )
+    promote = targeted & result["human_label"].ne("hate")
+    demote = ~targeted & result["human_label"].eq("hate")
+    result.loc[promote, "human_label"] = "hate"
+    result.loc[promote, "human_adjudication"] = "protected_target_to_hate"
+    result.loc[demote, "human_label"] = "offensive"
+    result.loc[demote, "human_adjudication"] = "non_target_hate_to_offensive"
+    return result
+
+
+def adjudication_queue(df: pd.DataFrame) -> pd.DataFrame:
+    return df[df["human_adjudication"].fillna("").ne("")].copy()
+
+
 def record_annotation(
     df: pd.DataFrame,
     index: int,
@@ -125,11 +152,12 @@ def record_annotation(
 def completed_mask(df: pd.DataFrame) -> pd.Series:
     flags_complete = pd.Series(True, index=df.index)
     for flag in FLAGS:
-        flags_complete &= df[f"human_{flag}"].isin(["true", "false"])
+        col = df[f"human_{flag}"].astype(str).str.lower().str.strip()
+        flags_complete &= col.isin(["true", "false"])
     return (
         df["human_label"].isin(LABELS)
-        & df["human_confidence"].isin(["high", "medium", "low"])
-        & df["human_rationale"].ne("")
+        & df["human_confidence"].astype(str).str.lower().str.strip().isin(["high", "medium", "low"])
+        & df["human_rationale"].fillna("").astype(str).str.strip().ne("")
         & flags_complete
     )
 
@@ -155,18 +183,23 @@ def parse_flags(value: str) -> set[str]:
     return flags
 
 
-def prompt_annotation(text: str) -> tuple[str, set[str], str, str, bool] | None:
+def prompt_annotation(text: str, default_label: str = "") -> tuple[str, set[str], str, str, bool] | None:
     translation_used = False
     while True:
-        choice = input(
-            "Class: [1/n] neither | [2/o] offensive | [3/h] hate | "
-            "[t] translate | [r] rubric | [b] back | [q] quit: "
-        ).strip().lower()
+        prompt_text = "Class: [1/n] neither | [2/o] offensive | [3/h] hate | "
+        if default_label:
+            prompt_text += f"[Enter] keep {default_label} | "
+        prompt_text += "[t] translate | [r] rubric | [b] back | [q] quit: "
+
+        choice = input(prompt_text).strip().lower()
         choices = {
             "1": "neither", "n": "neither", "neither": "neither",
             "2": "offensive", "o": "offensive", "offensive": "offensive",
             "3": "hate", "h": "hate", "hate": "hate",
         }
+        if choice == "" and default_label:
+            label = default_label
+            break
         if choice in choices:
             label = choices[choice]
             break
@@ -200,15 +233,29 @@ def prompt_annotation(text: str) -> tuple[str, set[str], str, str, bool] | None:
         "l": "low", "low": "low",
     }
     while True:
-        confidence = confidence_choices.get(
-            input("Confidence [h]igh/[m]edium/[l]ow: ").strip().lower()
-        )
+        conf_input = input("Confidence [h]igh/[m]edium/[l]ow [Enter for high]: ").strip().lower()
+        if conf_input == "":
+            confidence = "high"
+            break
+        confidence = confidence_choices.get(conf_input)
         if confidence:
             break
         print("Invalid confidence.")
 
     while True:
-        rationale = input("One-sentence rationale (quote the operative phrase): ").strip()
+        default_rationale = ""
+        if label == "neither":
+            default_rationale = "No hate or offensive speech."
+
+        prompt_rat = "One-sentence rationale (quote the operative phrase)"
+        if default_rationale:
+            prompt_rat += f" [Enter for '{default_rationale}']"
+        prompt_rat += ": "
+
+        rationale = input(prompt_rat).strip()
+        if rationale == "" and default_rationale:
+            rationale = default_rationale
+            break
         if rationale:
             break
         print("Rationale is required.")
@@ -222,6 +269,11 @@ def main() -> None:
         "--prepare-recode",
         action="store_true",
         help="preserve the completed sheet and create a blank calibrated copy",
+    )
+    parser.add_argument(
+        "--adjudicate-targeting",
+        action="store_true",
+        help="derive the hate boundary from the completed human targeting flag",
     )
     parser.add_argument("--archive", default=str(CALIBRATION_V1_PATH))
     parser.add_argument("--output", default=str(CALIBRATION_PATH))
@@ -241,6 +293,20 @@ def main() -> None:
         return
 
     original = pd.read_csv(sheet_path, dtype={"post_id": str})
+    if args.adjudicate_targeting:
+        prepared = prepare_recode_frame(original)
+        if not completed_mask(prepared).all():
+            sys.exit("cannot adjudicate an incomplete calibration sheet")
+        adjudicated = apply_targeting_adjudication(prepared)
+        changed = int(
+            adjudicated["human_label"].ne(prepared["human_label"]).sum()
+        )
+        adjudicated.to_csv(sheet_path, index=False)
+        queue_path = sheet_path.with_name(f"{sheet_path.stem}_contradictions.csv")
+        adjudication_queue(adjudicated).to_csv(queue_path, index=False)
+        print(f"adjudicated {changed} contradictory class labels in {sheet_path}")
+        print(f"wrote contradiction audit: {queue_path}")
+        return
     if requires_recode_preparation(original):
         sys.exit(
             "completed legacy sheet detected; preserve it first with "
@@ -286,9 +352,11 @@ def main() -> None:
         post_id = row["post_id"]
         text = row["text"]
         current_label = row["human_label"]
+        v1_label = row.get("human_label_v1", "")
 
         print("\n" + "=" * 60)
         print(f"Post {idx + 1} of {total}  (Index: {idx})  [ID: {post_id}]")
+        print(f"Previous Label: {v1_label or '[none]'}")
         print(f"Current Label: {current_label or '[none]'}")
         print("-" * 60)
         print("Original Text:")
@@ -296,7 +364,7 @@ def main() -> None:
         print("=" * 60)
 
         try:
-            annotation = prompt_annotation(text)
+            annotation = prompt_annotation(text, default_label=v1_label)
         except EOFError:
             print(f"\nSaved progress. {int(completed_mask(df).sum())}/{total} complete.")
             return

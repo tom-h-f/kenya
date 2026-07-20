@@ -108,3 +108,34 @@ def test_completed_legacy_sheet_requires_explicit_recode_preparation() -> None:
 
     assert module.requires_recode_preparation(legacy)
     assert not module.requires_recode_preparation(prepared)
+
+
+def test_targeting_adjudication_derives_hate_boundary_and_preserves_prior_class() -> None:
+    module = load_label_cli_module()
+    frame = pd.DataFrame(
+        {
+            "human_label": ["offensive", "hate", "neither"],
+            "human_ethnic_targeting": [True, False, False],
+        }
+    )
+
+    result = module.apply_targeting_adjudication(frame)
+
+    assert result["human_label_pre_adjudication"].tolist() == [
+        "offensive",
+        "hate",
+        "neither",
+    ]
+    assert result["human_label"].tolist() == ["hate", "offensive", "neither"]
+    assert result["human_adjudication"].tolist() == [
+        "protected_target_to_hate",
+        "non_target_hate_to_offensive",
+        "",
+    ]
+
+    queue = module.adjudication_queue(result)
+
+    assert queue["human_adjudication"].tolist() == [
+        "protected_target_to_hate",
+        "non_target_hate_to_offensive",
+    ]
