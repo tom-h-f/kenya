@@ -1,17 +1,118 @@
 {
   "n": 120,
-  "overall_agreement": 0.5513,
-  "hate_agreement": 0.6667,
-  "gate_overall_pass": false,
-  "gate_hate_pass": false,
-  "missed_hate": 11,
-  "over_called_hate": 6,
-  "by_pool": {
-    "agree_coded": 0.6667,
-    "agree_hate": 0.6667,
-    "random_agreed": 0.4167,
-    "split_gem_hard": 0.0,
-    "split_gem_soft": 0.0
+  "arbitration": {
+    "n": 42,
+    "human_sided_primary": 13,
+    "human_sided_secondary": 16,
+    "human_sided_neither": 13,
+    "primary_soft_secondary_hate": {
+      "successes": 13,
+      "n": 30,
+      "rate": 0.4333,
+      "ci95": [
+        0.2738,
+        0.608
+      ]
+    },
+    "relabel_gate_pass": false
   },
-  "verdict": "labels are too conservative on hate -> widen the prompt (v3), relabel"
+  "consensus": {
+    "n": 78,
+    "overall": {
+      "successes": 43,
+      "n": 78,
+      "rate": 0.5513,
+      "ci95": [
+        0.4411,
+        0.6567
+      ]
+    },
+    "hate_rows": {
+      "successes": 12,
+      "n": 18,
+      "rate": 0.6667,
+      "ci95": [
+        0.4375,
+        0.8372
+      ]
+    },
+    "missed_hate": 11,
+    "over_called_hate": 6,
+    "by_pool": {
+      "agree_coded": {
+        "n": 24,
+        "agreement": 0.6667
+      },
+      "agree_hate": {
+        "n": 18,
+        "agreement": 0.6667
+      },
+      "random_agreed": {
+        "n": 36,
+        "agreement": 0.4167
+      }
+    }
+  },
+  "per_labeller": {
+    "label_gemini": {
+      "exact_agreement": 0.4667,
+      "hate": {
+        "true_positive": 16,
+        "false_negative": 24,
+        "false_positive": 14,
+        "precision": 0.5333,
+        "recall": 0.4
+      },
+      "confusion": {
+        "neither": {
+          "neither": 32,
+          "offensive": 16,
+          "hate": 18
+        },
+        "offensive": {
+          "neither": 10,
+          "offensive": 8,
+          "hate": 6
+        },
+        "hate": {
+          "neither": 4,
+          "offensive": 10,
+          "hate": 16
+        }
+      }
+    },
+    "label_cursor": {
+      "exact_agreement": 0.4917,
+      "hate": {
+        "true_positive": 25,
+        "false_negative": 15,
+        "false_positive": 23,
+        "precision": 0.5208,
+        "recall": 0.625
+      },
+      "confusion": {
+        "neither": {
+          "neither": 30,
+          "offensive": 11,
+          "hate": 8
+        },
+        "offensive": {
+          "neither": 12,
+          "offensive": 4,
+          "hate": 7
+        },
+        "hate": {
+          "neither": 4,
+          "offensive": 19,
+          "hate": 25
+        }
+      }
+    }
+  },
+  "gates": {
+    "primary_split_relabel": false,
+    "consensus_overall": false,
+    "consensus_hate": false
+  },
+  "decision": "calibration_required"
 }

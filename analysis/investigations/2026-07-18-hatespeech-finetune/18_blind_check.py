@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+from statistics import NormalDist
 
 import pandas as pd
 
@@ -124,6 +126,77 @@ def hate_axis_errors(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return missed, over
 
 
+def wilson_interval(successes: int, total: int, confidence: float = 0.95) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion."""
+    if total <= 0:
+        return float("nan"), float("nan")
+    z = NormalDist().inv_cdf(0.5 + confidence / 2)
+    observed = successes / total
+    denominator = 1 + z * z / total
+    centre = (observed + z * z / (2 * total)) / denominator
+    margin = (
+        z
+        * math.sqrt(observed * (1 - observed) / total + z * z / (4 * total * total))
+        / denominator
+    )
+    return centre - margin, centre + margin
+
+
+def consensus_pool_agreement(df: pd.DataFrame) -> dict[str, dict[str, float | int]]:
+    """Agreement by pool where a consensus label actually exists."""
+    scorable = df[df["label"].notna() & (df["label"] != "")].copy()
+    scorable["agree"] = scorable["human_label"] == scorable["label"]
+    return {
+        str(name): {
+            "n": int(len(group)),
+            "agreement": round(float(group["agree"].mean()), 4),
+        }
+        for name, group in scorable.groupby("pool")
+    }
+
+
+def labeller_metrics(df: pd.DataFrame, column: str) -> dict:
+    """Exact and hate-axis agreement for one labeller against the human."""
+    human_hate = df["human_label"] == "hate"
+    model_hate = df[column] == "hate"
+    true_positive = int((human_hate & model_hate).sum())
+    false_negative = int((human_hate & ~model_hate).sum())
+    false_positive = int((~human_hate & model_hate).sum())
+    precision_denominator = true_positive + false_positive
+    recall_denominator = true_positive + false_negative
+    confusion = pd.crosstab(df[column], df["human_label"]).reindex(
+        index=LABELS, columns=LABELS, fill_value=0
+    )
+    return {
+        "exact_agreement": round(float((df[column] == df["human_label"]).mean()), 4),
+        "hate": {
+            "true_positive": true_positive,
+            "false_negative": false_negative,
+            "false_positive": false_positive,
+            "precision": round(
+                true_positive / precision_denominator if precision_denominator else 0.0, 4
+            ),
+            "recall": round(
+                true_positive / recall_denominator if recall_denominator else 0.0, 4
+            ),
+        },
+        "confusion": {
+            str(model): {str(human): int(value) for human, value in row.items()}
+            for model, row in confusion.to_dict(orient="index").items()
+        },
+    }
+
+
+def interval_report(successes: int, total: int) -> dict:
+    low, high = wilson_interval(successes, total)
+    return {
+        "successes": int(successes),
+        "n": int(total),
+        "rate": round(successes / total, 4) if total else None,
+        "ci95": [round(low, 4), round(high, 4)] if total else None,
+    }
+
+
 def cmd_make(args: argparse.Namespace) -> None:
     df = pd.read_parquet(args.labels)
     if "split" in df and not args.include_gold:
@@ -175,30 +248,49 @@ def cmd_score(args: argparse.Namespace) -> None:
     if bad:
         raise SystemExit(f"unrecognised labels: {bad}. Use: {LABELS}")
 
+    arbitration = None
+    per_labeller = {}
     cols = label_columns(df)
     if cols:
         pcol, scol = cols
+        per_labeller = {
+            pcol: labeller_metrics(df, pcol),
+            scol: labeller_metrics(df, scol),
+        }
         split = df[df[pcol] != df[scol]]
         if len(split):
-            gem = (split["human_label"] == split[pcol]).sum()
-            son = (split["human_label"] == split[scol]).sum()
+            gem = int((split["human_label"] == split[pcol]).sum())
+            son = int((split["human_label"] == split[scol]).sum())
             neither_side = len(split) - gem - son
             print(f"=== disagreement arbitration ({len(split)} rows) ===")
             print(f"  human sided with Gemini (the training labeller): {gem}")
             print(f"  human sided with the second labeller:            {son}")
             print(f"  human agreed with neither:                       {neither_side}")
             soft = split[(split[pcol] != "hate") & (split[scol] == "hate")]
+            soft_report = None
             if len(soft):
-                human_hate = (soft["human_label"] == "hate").sum()
+                human_hate = int((soft["human_label"] == "hate").sum())
+                soft_report = interval_report(human_hate, len(soft))
+                low, high = soft_report["ci95"]
                 print(f"\n  On the {len(soft)} rows Gemini called not-hate and Sonnet "
                       f"called hate,\n  the human called {human_hate} of them hate "
-                      f"({human_hate / len(soft):.0%}).")
-                print("  >50% means the TRAINING LABELS ARE TOO CONSERVATIVE - "
-                      "prompt v3 + relabel.")
+                      f"({human_hate / len(soft):.0%}, 95% CI {low:.0%}-{high:.0%}).")
+                print("  Predeclared relabel gate (>50%): "
+                      f"{'PASS' if human_hate / len(soft) > 0.5 else 'FAIL'}")
+            arbitration = {
+                "n": int(len(split)),
+                "human_sided_primary": gem,
+                "human_sided_secondary": son,
+                "human_sided_neither": int(neither_side),
+                "primary_soft_secondary_hate": soft_report,
+                "relabel_gate_pass": bool(
+                    soft_report is not None and soft_report["rate"] > 0.5
+                ),
+            }
             print()
 
     scorable = df[df["label"].notna() & (df["label"] != "")]
-    df["agree"] = df["human_label"] == df["label"]
+    df["agree"] = df["label"].notna() & (df["human_label"] == df["label"])
     overall = scorable["human_label"].eq(scorable["label"]).mean()
     hate_rows = scorable[scorable["label"] == "hate"]
     hate_agree = (
@@ -207,46 +299,64 @@ def cmd_score(args: argparse.Namespace) -> None:
     )
     print(f"=== consensus gates (on the {len(scorable)} rows both labellers agreed) ===")
 
+    overall_report = interval_report(
+        int(scorable["human_label"].eq(scorable["label"]).sum()), len(scorable)
+    )
+    hate_report = interval_report(
+        int(hate_rows["human_label"].eq(hate_rows["label"]).sum()), len(hate_rows)
+    )
     print(f"overall agreement: {overall:.3f}  (gate {GATE_OVERALL}) "
           f"{'PASS' if overall >= GATE_OVERALL else 'FAIL'}")
     print(f"hate-row agreement: {hate_agree:.3f}  (gate {GATE_HATE}) "
           f"{'PASS' if hate_agree >= GATE_HATE else 'FAIL'}  n={len(hate_rows)}")
 
-    print("\nby pool:")
-    for name, g in df.groupby("pool"):
-        print(f"  {name:14s} n={len(g):3d}  agreement {g['agree'].mean():.3f}")
+    by_pool = consensus_pool_agreement(df)
+    print("\nby consensus pool:")
+    for name, metrics in by_pool.items():
+        print(f"  {name:14s} n={metrics['n']:3d}  agreement {metrics['agreement']:.3f}")
 
-    print("\nconfusion (rows = labeller, cols = human):")
+    print("\nconsensus confusion (rows = consensus, cols = human):")
     print(pd.crosstab(df["label"], df["human_label"]).to_string())
 
-    # The directional question: is the labeller too soft on coded hate?
     missed, over = hate_axis_errors(df)
-    print(f"\nlabeller MISSED hate (human=hate, labeller=not): {len(missed)}")
-    print(f"labeller OVER-called hate (labeller=hate, human=not): {len(over)}")
-    verdict = (
-        "labels are too conservative on hate -> widen the prompt (v3), relabel"
-        if len(missed) > len(over) + 2
-        else "labels are too aggressive on hate -> tighten the prompt"
-        if len(over) > len(missed) + 2
-        else "no systematic hate-axis bias detected"
-    )
-    print(f"VERDICT: {verdict}")
+    print(f"\nconsensus MISSED hate (human=hate, consensus=not): {len(missed)}")
+    print(f"consensus OVER-called hate (consensus=hate, human=not): {len(over)}")
 
-    if len(missed):
-        print("\nmissed-hate examples (these define prompt v3):")
-        for _, r in missed.head(8).iterrows():
-            print(f"  [{r['label']}] {r['text'][:110]}")
+    if per_labeller:
+        print("\nper labeller:")
+        for column, metrics in per_labeller.items():
+            hate = metrics["hate"]
+            print(
+                f"  {column}: exact={metrics['exact_agreement']:.3f} "
+                f"hate P/R={hate['precision']:.3f}/{hate['recall']:.3f} "
+                f"FN={hate['false_negative']} FP={hate['false_positive']}"
+            )
+
+    gate_results = {
+        "primary_split_relabel": arbitration["relabel_gate_pass"] if arbitration else None,
+        "consensus_overall": bool(overall >= GATE_OVERALL),
+        "consensus_hate": bool(hate_agree >= GATE_HATE),
+    }
+    print("\nPREDECLARED GATES:")
+    for name, passed in gate_results.items():
+        status = "N/A" if passed is None else "PASS" if passed else "FAIL"
+        print(f"  {name}: {status}")
+    print("DECISION: calibration required; no automatic relabel or flag-head promotion")
 
     report = {
         "n": len(df),
-        "overall_agreement": round(float(overall), 4),
-        "hate_agreement": round(float(hate_agree), 4),
-        "gate_overall_pass": bool(overall >= GATE_OVERALL),
-        "gate_hate_pass": bool(hate_agree >= GATE_HATE),
-        "missed_hate": len(missed),
-        "over_called_hate": len(over),
-        "by_pool": {k: round(float(g["agree"].mean()), 4) for k, g in df.groupby("pool")},
-        "verdict": verdict,
+        "arbitration": arbitration,
+        "consensus": {
+            "n": int(len(scorable)),
+            "overall": overall_report,
+            "hate_rows": hate_report,
+            "missed_hate": int(len(missed)),
+            "over_called_hate": int(len(over)),
+            "by_pool": by_pool,
+        },
+        "per_labeller": per_labeller,
+        "gates": gate_results,
+        "decision": "calibration_required",
     }
     (OUT / "18_blind_check_report.json").write_text(json.dumps(report, indent=2))
     df.to_csv(OUT / "blind_check_coded_scored.csv", index=False)
