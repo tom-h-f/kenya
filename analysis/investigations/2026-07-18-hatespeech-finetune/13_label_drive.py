@@ -57,7 +57,7 @@ def build_cmd(cli: str, model: str, prompt: str, timeout: str) -> list[str]:
         return ["agy", "-p", prompt, "--model", model, "--print-timeout", timeout]
     if cli == "cursor":
         return ["agent", "-p", "--trust", "--model", model,
-                "--output-format", "text", prompt]
+                "--mode", "ask", "--output-format", "text", prompt]
     raise ValueError(f"unknown cli: {cli}")
 
 
