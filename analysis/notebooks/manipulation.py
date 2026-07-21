@@ -26,31 +26,29 @@ def _():
     def load(name):
         return pd.read_csv(OUT / name)
 
-    return alt, load, mo, pd, styled, viz
+    return alt, load, mo, pd, styled
 
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        # Manipulation sweep
+    mo.md("""
+    # Manipulation sweep
 
-        A single-window read of the 2026-07 manipulation sweep
-        (`investigations/2026-07-17-manipulation-sweep`). Every panel is drawn
-        from a committed artifact in that folder's `out/`, so the notebook
-        renders without touching R2.
+    A single-window read of the 2026-07 manipulation sweep
+    (`investigations/2026-07-17-manipulation-sweep`). Every panel is drawn
+    from a committed artifact in that folder's `out/`, so the notebook
+    renders without touching R2.
 
-        **These are triage signals, not verdicts.** Capture is a sample, not a
-        census; coordination and cohort structure are evidence of *similarity*,
-        not proof of malice; a suspicion score is not a bot label. Read the
-        source posts before repeating any of this.
-        """
-    )
+    **These are triage signals, not verdicts.** Capture is a sample, not a
+    census; coordination and cohort structure are evidence of *similarity*,
+    not proof of malice; a suspicion score is not a bot label. Read the
+    source posts before repeating any of this.
+    """)
     return
 
 
 @app.cell
-def _(load, mo, viz):
+def _(load, mo):
     _conv = load("09_convergence.csv")
     _flagged = load("10_flagged.csv")
     _bursts = load("03_paste_bursts.csv")
@@ -87,18 +85,16 @@ def _(load, mo, viz):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## 1. The "84.1% election violence" cascade
+    mo.md("""
+    ## 1. The "84.1% election violence" cascade
 
-        A precise-sounding statistic ("Kenya faces an 84.1% chance of
-        election-related violence", attributed to the Kofi Annan Foundation)
-        was posted by several accounts inside one hour, then amplified by a
-        retweet burst. Multiple *originals* of one decimal-precision scare stat
-        in an hour is a seeding pattern, not organic pickup. Whether the
-        foundation published any such figure is a concrete fact-check.
-        """
-    )
+    A precise-sounding statistic ("Kenya faces an 84.1% chance of
+    election-related violence", attributed to the Kofi Annan Foundation)
+    was posted by several accounts inside one hour, then amplified by a
+    retweet burst. Multiple *originals* of one decimal-precision scare stat
+    in an hour is a seeding pattern, not organic pickup. Whether the
+    foundation published any such figure is a concrete fact-check.
+    """)
     return
 
 
@@ -152,21 +148,19 @@ def _(alt, pd, styled):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## 2. Coordinated paste bursts
+    mo.md("""
+    ## 2. Coordinated paste bursts
 
-        Near-duplicate text posted by three or more distinct authors inside a
-        60-minute window (from `coordination.content_clusters`, then ordered by
-        time to find who seeds). Bar length is the number of distinct authors;
-        colour is how tight the burst was.
-        """
-    )
+    Near-duplicate text posted by three or more distinct authors inside a
+    60-minute window (from `coordination.content_clusters`, then ordered by
+    time to find who seeds). Bar length is the number of distinct authors;
+    colour is how tight the burst was.
+    """)
     return
 
 
 @app.cell
-def _(alt, load, pd, styled):
+def _(alt, load, styled):
     _b = load("03_paste_bursts.csv").copy()
     _b["label"] = _b["seed_handle"] + " -- " + _b["text"].str.slice(0, 46) + "..."
     _b = _b.sort_values("n_authors", ascending=False).head(12)
@@ -200,18 +194,16 @@ def _(alt, load, pd, styled):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## 3. Habitual first repliers
+    mo.md("""
+    ## 3. Habitual first repliers
 
-        For every reply to a captured parent post, its rank in the thread's
-        arrival order becomes a percentile. A genuine audience replies at
-        random positions, so the mean percentile is ~0.5. Accounts far below
-        that (negative z vs the uniform null) are *systematically early* across
-        many different targets - a watch-and-pounce pattern. Every account
-        shown also sits in an SVN-validated coordination cluster.
-        """
-    )
+    For every reply to a captured parent post, its rank in the thread's
+    arrival order becomes a percentile. A genuine audience replies at
+    random positions, so the mean percentile is ~0.5. Accounts far below
+    that (negative z vs the uniform null) are *systematically early* across
+    many different targets - a watch-and-pounce pattern. Every account
+    shown also sits in an SVN-validated coordination cluster.
+    """)
     return
 
 
@@ -243,21 +235,19 @@ def _(alt, load, styled):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## 4. Convergence matrix
+    mo.md("""
+    ## 4. Convergence matrix
 
-        The deliverable ranking: accounts flagged by two or more *independent*
-        lenses. A filled cell is a hit on that lens. Lenses share the capture,
-        not their features, so multiple hits raise triage priority - they do
-        not prove inauthenticity.
-        """
-    )
+    The deliverable ranking: accounts flagged by two or more *independent*
+    lenses. A filled cell is a hit on that lens. Lenses share the capture,
+    not their features, so multiple hits raise triage priority - they do
+    not prove inauthenticity.
+    """)
     return
 
 
 @app.cell
-def _(alt, load, pd, styled):
+def _(alt, load, styled):
     _c = load("09_convergence.csv")
     _lenses = ["coord_cluster", "fast_replier", "seeder", "awakened",
                "regular", "fringe_seed", "suspicion"]
@@ -298,16 +288,14 @@ def _(alt, load, pd, styled):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## 5. Incitement over time
+    mo.md("""
+    ## 5. Incitement over time
 
-        Daily count of lexicon-confirmed coded-term posts (madoadoa, nyoka,
-        kwekwe, ...) that also clear the NLI bar, split by category. Volume is
-        low - this is a targeted triage lane, not a mass phenomenon. The
-        larger, structurally-more-dangerous signal is the NLI-only tail below.
-        """
-    )
+    Daily count of lexicon-confirmed coded-term posts (madoadoa, nyoka,
+    kwekwe, ...) that also clear the NLI bar, split by category. Volume is
+    low - this is a targeted triage lane, not a mass phenomenon. The
+    larger, structurally-more-dangerous signal is the NLI-only tail below.
+    """)
     return
 
 
@@ -345,17 +333,15 @@ def _(alt, load, styled):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## 6. Incitement scores: lexicon hits vs everything else
+    mo.md("""
+    ## 6. Incitement scores: lexicon hits vs everything else
 
-        Each flagged post placed by its two strongest NLI scores. Lexicon-hit
-        posts (red) cluster high on dehumanisation; the NLI-only tail (grey)
-        stretches along the violence-call axis - accusation-driven
-        fear-priming that carries no coded term, which is why the lexicon alone
-        cannot see it.
-        """
-    )
+    Each flagged post placed by its two strongest NLI scores. Lexicon-hit
+    posts (red) cluster high on dehumanisation; the NLI-only tail (grey)
+    stretches along the violence-call axis - accusation-driven
+    fear-priming that carries no coded term, which is why the lexicon alone
+    cannot see it.
+    """)
     return
 
 
@@ -399,14 +385,12 @@ def _(alt, load, pd, styled):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ### Flagged posts (read these)
+    mo.md("""
+    ### Flagged posts (read these)
 
-        The 14 lexicon+NLI posts, and the top of the NLI-only tail. This is the
-        human-review queue; the charts above are only its shape.
-        """
-    )
+    The 14 lexicon+NLI posts, and the top of the NLI-only tail. This is the
+    human-review queue; the charts above are only its shape.
+    """)
     return
 
 
@@ -432,14 +416,12 @@ def _(load, mo):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ---
-        Source: `investigations/2026-07-17-manipulation-sweep/findings.md` and
-        the `out/` artifacts. Re-generate any panel by re-running the matching
-        `NN_*.py --full`. Caveats in the header apply to every panel.
-        """
-    )
+    mo.md("""
+    ---
+    Source: `investigations/2026-07-17-manipulation-sweep/findings.md` and
+    the `out/` artifacts. Re-generate any panel by re-running the matching
+    `NN_*.py --full`. Caveats in the header apply to every panel.
+    """)
     return
 
 
