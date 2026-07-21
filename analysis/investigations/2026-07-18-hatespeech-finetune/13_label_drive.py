@@ -25,10 +25,13 @@ retrying them would just burn spend on a model that meant what it said.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -67,6 +70,46 @@ def build_cmd(cli: str, model: str, prompt: str, timeout: str) -> list[str]:
 
 VALID_LABELS = {"hate", "offensive", "neither"}
 VALID_FLAGS = {"dehumanisation", "violence_call", "ethnic_targeting", "coded_language"}
+VALID_CONFIDENCE = {"high", "medium", "low"}
+REQUIRED_RESPONSE_FIELDS = {"confidence", "rationale", "target_group"}
+
+
+def run_manifest(
+    *,
+    tag: str,
+    prompt_path: Path,
+    labellers: list[str],
+    input_name: str,
+    rows: int,
+    created_at: datetime | None = None,
+    chunk_size: int = CHUNK_SIZE,
+    concurrency: int = 4,
+) -> dict:
+    """Build a serialisable run manifest without writing run state."""
+    match = re.fullmatch(r"label_(v[0-9]+)\.md", prompt_path.name)
+    if match is None:
+        raise ValueError(f"cannot derive prompt version from {prompt_path.name!r}")
+    created_at = created_at or datetime.now(timezone.utc)
+    if created_at.tzinfo is None:
+        raise ValueError("created_at must be timezone-aware")
+    created_utc = created_at.astimezone(timezone.utc)
+    input_path = Path(input_name)
+    return {
+        "tag": tag,
+        "created_at": created_utc.isoformat().replace("+00:00", "Z"),
+        "input_path": str(input_path),
+        "input_name": input_path.name,
+        "rows": rows,
+        "prompt_filename": prompt_path.name,
+        "prompt_version": match.group(1),
+        "prompt_sha256": hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
+        "labellers": {
+            name: {"cli": LABELLERS[name][0], "model": LABELLERS[name][1]}
+            for name in labellers
+        },
+        "chunk_size": chunk_size,
+        "concurrency": concurrency,
+    }
 
 
 def stratified_sample(df: pd.DataFrame, n: int) -> pd.DataFrame:
@@ -120,6 +163,25 @@ def parse_response(raw: str, expected_ids: list[str]) -> list[dict]:
         flags = r.get("flags") or []
         if not isinstance(flags, list) or set(flags) - VALID_FLAGS:
             raise ValueError(f"bad flags {flags!r}")
+        missing = REQUIRED_RESPONSE_FIELDS - r.keys()
+        if missing:
+            raise ValueError(f"missing fields: {', '.join(sorted(missing))}")
+        if r["confidence"] not in VALID_CONFIDENCE:
+            raise ValueError(f"bad confidence {r['confidence']!r}")
+        if not isinstance(r["rationale"], str) or not r["rationale"].strip():
+            raise ValueError(f"bad rationale {r['rationale']!r}")
+        target_group = r["target_group"]
+        if target_group is not None and (
+            not isinstance(target_group, str) or not target_group.strip()
+        ):
+            raise ValueError(f"bad target_group {target_group!r}")
+        ethnic_targeting = "ethnic_targeting" in flags
+        if (r["label"] == "hate") != ethnic_targeting:
+            raise ValueError(
+                "hate label and ethnic_targeting flag must appear together"
+            )
+        if target_group is not None and not ethnic_targeting:
+            raise ValueError("target_group requires ethnic_targeting")
         warnings = []
         if r["label"] == "neither" and "violence_call" in flags:
             warnings.append("neither_with_violence_call")
@@ -185,7 +247,8 @@ def main() -> None:
         raise SystemExit(f"{prompt_path} missing")
     print(f"prompt: {prompt_path.name}")
 
-    df = pd.read_parquet(OUT / args.input)
+    input_path = OUT / args.input
+    df = pd.read_parquet(input_path)
     if args.pilot:
         df = stratified_sample(df, args.pilot)
     print(f"{len(df)} rows -> {args.tag}")
@@ -199,8 +262,22 @@ def main() -> None:
     df.to_parquet(root / "batch.parquet", index=False)
     print(f"{len(chunks)} chunks of {CHUNK_SIZE}")
 
-    for labeller in args.labellers.split(","):
-        cli, model = LABELLERS[labeller]
+    labeller_names = args.labellers.split(",")
+    selected_labellers = {name: LABELLERS[name] for name in labeller_names}
+    manifest_path = root / "manifest.json"
+    if not manifest_path.exists():
+        manifest = run_manifest(
+            tag=args.tag,
+            prompt_path=prompt_path,
+            labellers=labeller_names,
+            input_name=str(input_path),
+            rows=len(df),
+            chunk_size=CHUNK_SIZE,
+            concurrency=args.concurrency,
+        )
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+
+    for labeller, (cli, model) in selected_labellers.items():
         out_dir, failed_dir = root / labeller, root / "failed"
         state_path = root / f"state-{labeller}.json"
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
