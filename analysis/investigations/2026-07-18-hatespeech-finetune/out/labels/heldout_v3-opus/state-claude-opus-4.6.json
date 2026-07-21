@@ -1,0 +1,26 @@
+{
+  "chunk_000": {
+    "chunk": "chunk_000",
+    "failed": true,
+    "error": "attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 141h26m59s.\n",
+    "seconds": 16.9
+  },
+  "chunk_001": {
+    "chunk": "chunk_001",
+    "failed": true,
+    "error": "attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 141h26m58s.\n",
+    "seconds": 17.5
+  },
+  "chunk_002": {
+    "chunk": "chunk_002",
+    "failed": true,
+    "error": "attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 141h26m58s.\n",
+    "seconds": 17.6
+  },
+  "chunk_003": {
+    "chunk": "chunk_003",
+    "failed": true,
+    "error": "attempt 3: agy exit 1: Error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 141h26m58s.\n",
+    "seconds": 17.2
+  }
+}

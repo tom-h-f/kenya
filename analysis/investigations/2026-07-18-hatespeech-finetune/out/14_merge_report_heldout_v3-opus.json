@@ -1,0 +1,57 @@
+{
+  "tag": "heldout_v3-opus",
+  "prompt_version": "v3",
+  "labellers": [
+    "claude-opus-code"
+  ],
+  "single_labeller": true,
+  "batch_rows": 93,
+  "labelled_by_both": 93,
+  "missing": 0,
+  "agreement_rate": null,
+  "kappa_overall": null,
+  "reliability_caveat": "Single labeller: no agreement or kappa can be computed and no row was adjudicated. Every label rests on one model's judgement. The pilot's kappa 0.665 was measured on a two-labeller design that was not used here and does not validate these labels.",
+  "label_counts": {
+    "claude": {
+      "offensive": 42,
+      "hate": 27,
+      "neither": 24
+    }
+  },
+  "accepted": 93,
+  "confirmed_positives": 69,
+  "confirmed_hate": 27,
+  "per_stratum": {
+    "split_primary_soft": {
+      "n": 28,
+      "accepted": 28,
+      "positive_rate": 0.6786,
+      "hate_rate": 0.4286
+    },
+    "agree_offensive": {
+      "n": 14,
+      "accepted": 14,
+      "positive_rate": 1.0,
+      "hate_rate": 0.0
+    },
+    "random_remaining": {
+      "n": 28,
+      "accepted": 28,
+      "positive_rate": 0.5357,
+      "hate_rate": 0.0357
+    },
+    "agree_hate": {
+      "n": 14,
+      "accepted": 14,
+      "positive_rate": 1.0,
+      "hate_rate": 0.7143
+    },
+    "split_primary_hard": {
+      "n": 9,
+      "accepted": 9,
+      "positive_rate": 0.7778,
+      "hate_rate": 0.4444
+    }
+  },
+  "warnings_flagged": 0
+}

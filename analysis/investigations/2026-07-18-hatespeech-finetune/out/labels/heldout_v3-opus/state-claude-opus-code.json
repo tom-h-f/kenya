@@ -1,0 +1,26 @@
+{
+  "chunk_000": {
+    "chunk": "chunk_000",
+    "rows": 25,
+    "seconds": 185.8,
+    "attempts": 1
+  },
+  "chunk_001": {
+    "chunk": "chunk_001",
+    "rows": 25,
+    "seconds": 194.9,
+    "attempts": 1
+  },
+  "chunk_002": {
+    "chunk": "chunk_002",
+    "rows": 25,
+    "seconds": 186.3,
+    "attempts": 2
+  },
+  "chunk_003": {
+    "chunk": "chunk_003",
+    "rows": 18,
+    "seconds": 159.7,
+    "attempts": 1
+  }
+}

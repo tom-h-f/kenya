@@ -16,6 +16,506 @@
     "split_primary_hard": 9
   },
   "seed": 43,
-  "human_labels_complete": false,
-  "v3_labels_complete": false
+  "human_labels_complete": true,
+  "v3_labels_complete": true,
+  "human_class_counts": {
+    "offensive": 42,
+    "hate": 27,
+    "neither": 24
+  },
+  "human_flag_support": {
+    "dehumanisation": 6,
+    "violence_call": 6,
+    "ethnic_targeting": 27,
+    "coded_language": 8
+  },
+  "flag_support_gate": {
+    "confidence": 0.95,
+    "half_width": 0.2,
+    "required_positive_support": 21,
+    "pass": {
+      "dehumanisation": false,
+      "violence_call": false,
+      "ethnic_targeting": true,
+      "coded_language": false
+    }
+  },
+  "scores": {
+    "gemini": {
+      "classes": {
+        "exact_agreement": 0.7097,
+        "macro_f1": 0.6944,
+        "hate": {
+          "support": 27,
+          "predicted": 24,
+          "precision": 0.625,
+          "recall": 0.5556,
+          "f1": 0.5882
+        },
+        "per_class": {
+          "neither": {
+            "support": 24,
+            "predicted": 34,
+            "precision": 0.5882,
+            "recall": 0.8333,
+            "f1": 0.6897
+          },
+          "offensive": {
+            "support": 42,
+            "predicted": 35,
+            "precision": 0.8857,
+            "recall": 0.7381,
+            "f1": 0.8052
+          },
+          "hate": {
+            "support": 27,
+            "predicted": 24,
+            "precision": 0.625,
+            "recall": 0.5556,
+            "f1": 0.5882
+          }
+        },
+        "confusion": {
+          "neither": {
+            "neither": 20,
+            "offensive": 4,
+            "hate": 10
+          },
+          "offensive": {
+            "neither": 2,
+            "offensive": 31,
+            "hate": 2
+          },
+          "hate": {
+            "neither": 2,
+            "offensive": 7,
+            "hate": 15
+          }
+        }
+      },
+      "flags": {
+        "dehumanisation": {
+          "support": 6,
+          "predicted": 3,
+          "precision": 1.0,
+          "recall": 0.5,
+          "f1": 0.6667,
+          "exact_agreement": 0.9677
+        },
+        "violence_call": {
+          "support": 6,
+          "predicted": 7,
+          "precision": 0.8571,
+          "recall": 1.0,
+          "f1": 0.9231,
+          "exact_agreement": 0.9892
+        },
+        "ethnic_targeting": {
+          "support": 27,
+          "predicted": 20,
+          "precision": 0.7,
+          "recall": 0.5185,
+          "f1": 0.5957,
+          "exact_agreement": 0.7957
+        },
+        "coded_language": {
+          "support": 8,
+          "predicted": 7,
+          "precision": 0.4286,
+          "recall": 0.375,
+          "f1": 0.4,
+          "exact_agreement": 0.9032
+        }
+      },
+      "by_pool": {
+        "agree_hate": {
+          "n": 14,
+          "class_agreement": 0.7143
+        },
+        "agree_offensive": {
+          "n": 14,
+          "class_agreement": 1.0
+        },
+        "random_remaining": {
+          "n": 28,
+          "class_agreement": 0.8571
+        },
+        "split_primary_hard": {
+          "n": 9,
+          "class_agreement": 0.4444
+        },
+        "split_primary_soft": {
+          "n": 28,
+          "class_agreement": 0.5
+        }
+      },
+      "gates": {
+        "class_agreement": false,
+        "hate_precision": false,
+        "hate_recall": false
+      }
+    },
+    "cursor": {
+      "classes": {
+        "exact_agreement": 0.6774,
+        "macro_f1": 0.6525,
+        "hate": {
+          "support": 27,
+          "predicted": 44,
+          "precision": 0.5227,
+          "recall": 0.8519,
+          "f1": 0.6479
+        },
+        "per_class": {
+          "neither": {
+            "support": 24,
+            "predicted": 13,
+            "precision": 0.7692,
+            "recall": 0.4167,
+            "f1": 0.5405
+          },
+          "offensive": {
+            "support": 42,
+            "predicted": 36,
+            "precision": 0.8333,
+            "recall": 0.7143,
+            "f1": 0.7692
+          },
+          "hate": {
+            "support": 27,
+            "predicted": 44,
+            "precision": 0.5227,
+            "recall": 0.8519,
+            "f1": 0.6479
+          }
+        },
+        "confusion": {
+          "neither": {
+            "neither": 10,
+            "offensive": 1,
+            "hate": 2
+          },
+          "offensive": {
+            "neither": 4,
+            "offensive": 30,
+            "hate": 2
+          },
+          "hate": {
+            "neither": 10,
+            "offensive": 11,
+            "hate": 23
+          }
+        }
+      },
+      "flags": {
+        "dehumanisation": {
+          "support": 6,
+          "predicted": 4,
+          "precision": 0.75,
+          "recall": 0.5,
+          "f1": 0.6,
+          "exact_agreement": 0.957
+        },
+        "violence_call": {
+          "support": 6,
+          "predicted": 9,
+          "precision": 0.5556,
+          "recall": 0.8333,
+          "f1": 0.6667,
+          "exact_agreement": 0.9462
+        },
+        "ethnic_targeting": {
+          "support": 27,
+          "predicted": 43,
+          "precision": 0.5349,
+          "recall": 0.8519,
+          "f1": 0.6571,
+          "exact_agreement": 0.7419
+        },
+        "coded_language": {
+          "support": 8,
+          "predicted": 5,
+          "precision": 0.6,
+          "recall": 0.375,
+          "f1": 0.4615,
+          "exact_agreement": 0.9247
+        }
+      },
+      "by_pool": {
+        "agree_hate": {
+          "n": 14,
+          "class_agreement": 0.7143
+        },
+        "agree_offensive": {
+          "n": 14,
+          "class_agreement": 1.0
+        },
+        "random_remaining": {
+          "n": 28,
+          "class_agreement": 0.8214
+        },
+        "split_primary_hard": {
+          "n": 9,
+          "class_agreement": 0.4444
+        },
+        "split_primary_soft": {
+          "n": 28,
+          "class_agreement": 0.4286
+        }
+      },
+      "gates": {
+        "class_agreement": false,
+        "hate_precision": false,
+        "hate_recall": true
+      }
+    },
+    "v3_gemini": {
+      "classes": {
+        "exact_agreement": 0.8065,
+        "macro_f1": 0.7862,
+        "hate": {
+          "support": 27,
+          "predicted": 21,
+          "precision": 0.8095,
+          "recall": 0.6296,
+          "f1": 0.7083
+        },
+        "per_class": {
+          "neither": {
+            "support": 24,
+            "predicted": 33,
+            "precision": 0.6364,
+            "recall": 0.875,
+            "f1": 0.7368
+          },
+          "offensive": {
+            "support": 42,
+            "predicted": 39,
+            "precision": 0.9487,
+            "recall": 0.881,
+            "f1": 0.9136
+          },
+          "hate": {
+            "support": 27,
+            "predicted": 21,
+            "precision": 0.8095,
+            "recall": 0.6296,
+            "f1": 0.7083
+          }
+        },
+        "confusion": {
+          "neither": {
+            "neither": 21,
+            "offensive": 3,
+            "hate": 9
+          },
+          "offensive": {
+            "neither": 1,
+            "offensive": 37,
+            "hate": 1
+          },
+          "hate": {
+            "neither": 2,
+            "offensive": 2,
+            "hate": 17
+          }
+        }
+      },
+      "flags": {
+        "dehumanisation": {
+          "support": 6,
+          "predicted": 7,
+          "precision": 0.8571,
+          "recall": 1.0,
+          "f1": 0.9231,
+          "exact_agreement": 0.9892
+        },
+        "violence_call": {
+          "support": 6,
+          "predicted": 7,
+          "precision": 0.8571,
+          "recall": 1.0,
+          "f1": 0.9231,
+          "exact_agreement": 0.9892
+        },
+        "ethnic_targeting": {
+          "support": 27,
+          "predicted": 21,
+          "precision": 0.8095,
+          "recall": 0.6296,
+          "f1": 0.7083,
+          "exact_agreement": 0.8495
+        },
+        "coded_language": {
+          "support": 8,
+          "predicted": 6,
+          "precision": 0.6667,
+          "recall": 0.5,
+          "f1": 0.5714,
+          "exact_agreement": 0.9355
+        }
+      },
+      "by_pool": {
+        "agree_hate": {
+          "n": 14,
+          "class_agreement": 0.8571
+        },
+        "agree_offensive": {
+          "n": 14,
+          "class_agreement": 1.0
+        },
+        "random_remaining": {
+          "n": 28,
+          "class_agreement": 0.9643
+        },
+        "split_primary_hard": {
+          "n": 9,
+          "class_agreement": 0.6667
+        },
+        "split_primary_soft": {
+          "n": 28,
+          "class_agreement": 0.5714
+        }
+      },
+      "gates": {
+        "class_agreement": false,
+        "hate_precision": true,
+        "hate_recall": false
+      }
+    },
+    "v3_cursor": {
+      "classes": {
+        "exact_agreement": 0.7742,
+        "macro_f1": 0.757,
+        "hate": {
+          "support": 27,
+          "predicted": 40,
+          "precision": 0.6,
+          "recall": 0.8889,
+          "f1": 0.7164
+        },
+        "per_class": {
+          "neither": {
+            "support": 24,
+            "predicted": 17,
+            "precision": 0.8235,
+            "recall": 0.5833,
+            "f1": 0.6829
+          },
+          "offensive": {
+            "support": 42,
+            "predicted": 36,
+            "precision": 0.9444,
+            "recall": 0.8095,
+            "f1": 0.8718
+          },
+          "hate": {
+            "support": 27,
+            "predicted": 40,
+            "precision": 0.6,
+            "recall": 0.8889,
+            "f1": 0.7164
+          }
+        },
+        "confusion": {
+          "neither": {
+            "neither": 14,
+            "offensive": 0,
+            "hate": 3
+          },
+          "offensive": {
+            "neither": 2,
+            "offensive": 34,
+            "hate": 0
+          },
+          "hate": {
+            "neither": 8,
+            "offensive": 8,
+            "hate": 24
+          }
+        }
+      },
+      "flags": {
+        "dehumanisation": {
+          "support": 6,
+          "predicted": 7,
+          "precision": 0.8571,
+          "recall": 1.0,
+          "f1": 0.9231,
+          "exact_agreement": 0.9892
+        },
+        "violence_call": {
+          "support": 6,
+          "predicted": 8,
+          "precision": 0.625,
+          "recall": 0.8333,
+          "f1": 0.7143,
+          "exact_agreement": 0.957
+        },
+        "ethnic_targeting": {
+          "support": 27,
+          "predicted": 40,
+          "precision": 0.6,
+          "recall": 0.8889,
+          "f1": 0.7164,
+          "exact_agreement": 0.7957
+        },
+        "coded_language": {
+          "support": 8,
+          "predicted": 9,
+          "precision": 0.4444,
+          "recall": 0.5,
+          "f1": 0.4706,
+          "exact_agreement": 0.9032
+        }
+      },
+      "by_pool": {
+        "agree_hate": {
+          "n": 14,
+          "class_agreement": 0.7857
+        },
+        "agree_offensive": {
+          "n": 14,
+          "class_agreement": 0.9286
+        },
+        "random_remaining": {
+          "n": 28,
+          "class_agreement": 0.8929
+        },
+        "split_primary_hard": {
+          "n": 9,
+          "class_agreement": 0.7778
+        },
+        "split_primary_soft": {
+          "n": 28,
+          "class_agreement": 0.5714
+        }
+      },
+      "gates": {
+        "class_agreement": false,
+        "hate_precision": false,
+        "hate_recall": true
+      }
+    }
+  },
+  "v3_interlabeller": {
+    "class_agreement": 0.6989,
+    "agreed_n": 65,
+    "agreed_human_accuracy": 0.9231
+  },
+  "decision": {
+    "relabel_2440": "not_approved",
+    "flag_head_pilot": "insufficient_human_positive_support",
+    "v3_gate_pass": {
+      "v3_gemini": false,
+      "v3_cursor": false
+    }
+  },
+  "reference": {
+    "kind": "human_validated",
+    "prelabel_source": "claude-opus-code",
+    "independent": false,
+    "blind": false,
+    "caveat": "Human validation followed Opus prelabelling; agreement may be anchoring-biased."
+  }
 }
