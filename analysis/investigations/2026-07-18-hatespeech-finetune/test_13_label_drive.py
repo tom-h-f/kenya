@@ -99,6 +99,7 @@ def test_run_manifest_captures_reproducible_provenance(tmp_path: Path) -> None:
         labellers=["claude-opus-4.6"],
         input_name="/source/label_batch_001.parquet",
         rows=125,
+        row_ids=["post-1", "post-2"],
         created_at=created_at,
         chunk_size=25,
         concurrency=4,
@@ -110,6 +111,7 @@ def test_run_manifest_captures_reproducible_provenance(tmp_path: Path) -> None:
         "input_path": "/source/label_batch_001.parquet",
         "input_name": "label_batch_001.parquet",
         "rows": 125,
+        "row_ids_sha256": hashlib.sha256(b'["post-1","post-2"]').hexdigest(),
         "prompt_filename": "label_v4.md",
         "prompt_version": "v4",
         "prompt_sha256": hashlib.sha256(prompt_bytes).hexdigest(),
@@ -122,6 +124,69 @@ def test_run_manifest_captures_reproducible_provenance(tmp_path: Path) -> None:
         "chunk_size": 25,
         "concurrency": 4,
     }
+
+
+def manifest_identity() -> dict:
+    return {
+        "tag": "test-run",
+        "created_at": "2026-07-21T12:34:56Z",
+        "input_path": "/source/label_batch_001.parquet",
+        "input_name": "label_batch_001.parquet",
+        "rows": 1,
+        "row_ids_sha256": "row-hash",
+        "prompt_filename": "label_v4.md",
+        "prompt_version": "v4",
+        "prompt_sha256": "prompt-hash",
+        "labellers": {
+            "claude-opus-4.6": {
+                "cli": "agy",
+                "model": "Claude Opus 4.6 (Thinking)",
+            }
+        },
+        "chunk_size": 25,
+        "concurrency": 4,
+    }
+
+
+def test_validate_run_manifest_accepts_matching_resume() -> None:
+    module = load_label_drive_module()
+    existing = manifest_identity()
+    current = {**existing, "created_at": "2026-07-21T13:00:00Z"}
+
+    module.validate_run_manifest(existing, current)
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    [
+        ("input_path", "/source/other.parquet"),
+        ("rows", 2),
+        ("row_ids_sha256", "different-row-hash"),
+        ("prompt_filename", "label_v5.md"),
+        ("prompt_version", "v5"),
+        ("prompt_sha256", "different-prompt-hash"),
+        (
+            "labellers",
+            {
+                "claude-opus-4.6": {
+                    "cli": "agy",
+                    "model": "Claude Opus 4.6 (Low)",
+                }
+            },
+        ),
+        ("chunk_size", 50),
+        ("concurrency", 8),
+    ],
+)
+def test_validate_run_manifest_rejects_changed_identity(
+    field: str, changed: object
+) -> None:
+    module = load_label_drive_module()
+    existing = manifest_identity()
+    current = {**existing, field: changed}
+
+    with pytest.raises(ValueError, match=field):
+        module.validate_run_manifest(existing, current)
 
 
 def test_main_writes_manifest_before_labelling(
@@ -175,3 +240,127 @@ def test_main_writes_manifest_before_labelling(
     )
 
     module.main()
+
+
+def test_main_rejects_conflicting_manifest_before_model_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_label_drive_module()
+    out = tmp_path / "out"
+    prompt_dir = tmp_path / "prompts"
+    prompt_dir.mkdir()
+    prompt_path = prompt_dir / "label_v4.md"
+    prompt_path.write_bytes(b"prompt v4")
+    df = pd.DataFrame(
+        [{"post_id": "post-1", "text": "text", "stratum": "sample"}]
+    )
+    root = out / "labels" / "test-run"
+    root.mkdir(parents=True)
+    existing = module.run_manifest(
+        tag="test-run",
+        prompt_path=prompt_path,
+        labellers=["claude-opus-4.6"],
+        input_name=str(out / "different.parquet"),
+        rows=1,
+        row_ids=["post-1"],
+        concurrency=4,
+    )
+    (root / "manifest.json").write_text(json.dumps(existing))
+    model_called = False
+
+    def label_chunk(*args, **kwargs):
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run")
+
+    monkeypatch.setattr(module, "OUT", out)
+    monkeypatch.setattr(module, "PROMPT_DIR", prompt_dir)
+    monkeypatch.setattr(module.pd, "read_parquet", lambda _: df)
+    monkeypatch.setattr(module, "label_chunk", label_chunk)
+    monkeypatch.setattr(
+        module,
+        "write_chunks",
+        lambda _df, _path: pytest.fail("chunks must not change on conflict"),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "13_label_drive.py",
+            "--tag",
+            "test-run",
+            "--labellers",
+            "claude-opus-4.6",
+            "--prompt-version",
+            "v4",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="input_path"):
+        module.main()
+
+    assert model_called is False
+
+
+def test_main_resumes_when_manifest_identity_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_label_drive_module()
+    out = tmp_path / "out"
+    prompt_dir = tmp_path / "prompts"
+    prompt_dir.mkdir()
+    prompt_path = prompt_dir / "label_v4.md"
+    prompt_path.write_bytes(b"prompt v4")
+    df = pd.DataFrame(
+        [{"post_id": "post-1", "text": "text", "stratum": "sample"}]
+    )
+    chunk = tmp_path / "chunk_000.jsonl"
+    chunk.write_text('{"post_id":"post-1","text":"text"}')
+    root = out / "labels" / "test-run"
+    root.mkdir(parents=True)
+    existing = module.run_manifest(
+        tag="test-run",
+        prompt_path=prompt_path,
+        labellers=["claude-opus-4.6"],
+        input_name=str(out / "label_batch_001.parquet"),
+        rows=1,
+        row_ids=["post-1"],
+        created_at=datetime(2026, 7, 21, 12, 34, 56, tzinfo=timezone.utc),
+        concurrency=4,
+    )
+    manifest_path = root / "manifest.json"
+    manifest_text = json.dumps(existing, indent=2) + "\n"
+    manifest_path.write_text(manifest_text)
+    model_called = False
+
+    def label_chunk(*args, **kwargs):
+        nonlocal model_called
+        model_called = True
+        return {"chunk": "chunk_000", "rows": 1, "seconds": 0.1, "attempts": 1}
+
+    monkeypatch.setattr(module, "OUT", out)
+    monkeypatch.setattr(module, "PROMPT_DIR", prompt_dir)
+    monkeypatch.setattr(module.pd, "read_parquet", lambda _: df)
+    monkeypatch.setattr(module, "write_chunks", lambda _df, _path: [chunk])
+    monkeypatch.setattr(module, "label_chunk", label_chunk)
+    monkeypatch.setattr(
+        pd.DataFrame,
+        "to_parquet",
+        lambda self, path, index: Path(path).write_bytes(b"batch"),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "13_label_drive.py",
+            "--tag",
+            "test-run",
+            "--labellers",
+            "claude-opus-4.6",
+            "--prompt-version",
+            "v4",
+        ],
+    )
+
+    module.main()
+
+    assert model_called is True
+    assert manifest_path.read_text() == manifest_text

@@ -72,6 +72,19 @@ VALID_LABELS = {"hate", "offensive", "neither"}
 VALID_FLAGS = {"dehumanisation", "violence_call", "ethnic_targeting", "coded_language"}
 VALID_CONFIDENCE = {"high", "medium", "low"}
 REQUIRED_RESPONSE_FIELDS = {"confidence", "rationale", "target_group"}
+IMMUTABLE_MANIFEST_FIELDS = (
+    "tag",
+    "input_path",
+    "input_name",
+    "rows",
+    "row_ids_sha256",
+    "prompt_filename",
+    "prompt_version",
+    "prompt_sha256",
+    "labellers",
+    "chunk_size",
+    "concurrency",
+)
 
 
 def run_manifest(
@@ -81,6 +94,7 @@ def run_manifest(
     labellers: list[str],
     input_name: str,
     rows: int,
+    row_ids: list[str],
     created_at: datetime | None = None,
     chunk_size: int = CHUNK_SIZE,
     concurrency: int = 4,
@@ -94,12 +108,18 @@ def run_manifest(
         raise ValueError("created_at must be timezone-aware")
     created_utc = created_at.astimezone(timezone.utc)
     input_path = Path(input_name)
+    row_ids_bytes = json.dumps(
+        [str(row_id) for row_id in row_ids],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
     return {
         "tag": tag,
         "created_at": created_utc.isoformat().replace("+00:00", "Z"),
         "input_path": str(input_path),
         "input_name": input_path.name,
         "rows": rows,
+        "row_ids_sha256": hashlib.sha256(row_ids_bytes).hexdigest(),
         "prompt_filename": prompt_path.name,
         "prompt_version": match.group(1),
         "prompt_sha256": hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
@@ -110,6 +130,16 @@ def run_manifest(
         "chunk_size": chunk_size,
         "concurrency": concurrency,
     }
+
+
+def validate_run_manifest(existing: dict, current: dict) -> None:
+    """Reject a resume if any recorded run-identity field has changed."""
+    for field in IMMUTABLE_MANIFEST_FIELDS:
+        if existing.get(field) != current.get(field):
+            raise ValueError(
+                f"manifest conflict for {field}: "
+                f"existing={existing.get(field)!r}, current={current.get(field)!r}"
+            )
 
 
 def stratified_sample(df: pd.DataFrame, n: int) -> pd.DataFrame:
@@ -254,28 +284,31 @@ def main() -> None:
     print(f"{len(df)} rows -> {args.tag}")
     print(df["stratum"].value_counts().to_string())
 
+    labeller_names = args.labellers.split(",")
+    selected_labellers = {name: LABELLERS[name] for name in labeller_names}
     root = OUT / "labels" / args.tag
+    manifest_path = root / "manifest.json"
+    manifest = run_manifest(
+        tag=args.tag,
+        prompt_path=prompt_path,
+        labellers=labeller_names,
+        input_name=str(input_path),
+        rows=len(df),
+        row_ids=df["post_id"].tolist(),
+        chunk_size=CHUNK_SIZE,
+        concurrency=args.concurrency,
+    )
+    if manifest_path.exists():
+        validate_run_manifest(json.loads(manifest_path.read_text()), manifest)
+    else:
+        root.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+
     chunks = write_chunks(df, OUT / "chunks" / args.tag)
     if args.limit_chunks:
         chunks = chunks[: args.limit_chunks]
-    root.mkdir(parents=True, exist_ok=True)
     df.to_parquet(root / "batch.parquet", index=False)
     print(f"{len(chunks)} chunks of {CHUNK_SIZE}")
-
-    labeller_names = args.labellers.split(",")
-    selected_labellers = {name: LABELLERS[name] for name in labeller_names}
-    manifest_path = root / "manifest.json"
-    if not manifest_path.exists():
-        manifest = run_manifest(
-            tag=args.tag,
-            prompt_path=prompt_path,
-            labellers=labeller_names,
-            input_name=str(input_path),
-            rows=len(df),
-            chunk_size=CHUNK_SIZE,
-            concurrency=args.concurrency,
-        )
-        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
     for labeller, (cli, model) in selected_labellers.items():
         out_dir, failed_dir = root / labeller, root / "failed"
