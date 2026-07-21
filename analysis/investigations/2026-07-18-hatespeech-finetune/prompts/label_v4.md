@@ -39,12 +39,13 @@ post. Collective contempt is hate even without a violence call.
 threatening language without an identifiable protected-group target. This
 includes personal abuse of politicians, abuse of parties or political
 supporters, generic threats, and coded menace aimed at an individual,
-institution, movement, or unspecified enemy.
+institution, movement, or unspecified enemy. Abusive, degrading, vulgar, or
+threatening satire or banter aimed at a non-protected target is `offensive`.
 
 **neither** - Political criticism without abuse; calls to remove a government
 through voting or lawful action; reporting or condemnation of harmful speech;
-neutral electoral arithmetic; factual or historical discussion; and satire or
-banter that does not attack a protected group.
+neutral electoral arithmetic; factual or historical discussion; and
+non-abusive satire or banter that does not attack, degrade, or threaten anyone.
 
 Apply this decision sequence:
 

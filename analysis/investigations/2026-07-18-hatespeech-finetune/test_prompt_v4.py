@@ -135,6 +135,16 @@ def test_v4_has_one_consistent_quotation_and_endorsement_rule() -> None:
     assert "is not the quoted speaker's stance" not in prompt
 
 
+def test_v4_distinguishes_non_abusive_from_offensive_satire() -> None:
+    prompt = " ".join(read_prompt().split())
+
+    assert "non-abusive satire or banter" in prompt
+    assert (
+        "Abusive, degrading, vulgar, or threatening satire or banter aimed at "
+        "a non-protected target is `offensive`"
+    ) in prompt
+
+
 def test_v4_example_outputs_are_valid_and_taxonomy_consistent() -> None:
     pairs = example_pairs(read_prompt())
     outputs = [output for _, output in pairs]
