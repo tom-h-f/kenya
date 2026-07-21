@@ -16,10 +16,7 @@ output is schema- and ID-validated before it is skipped.
 
 Validation is strict about structure (exact schema, ordered string IDs, typed
 fields, and label/flag consistency) and those failures are retried then parked
-in out/labels/<tag>/failed/. Flag-consistency oddities (`neither` carrying
-`violence_call`) are recorded per row as `warnings` rather than retried -
-they are a labelling signal for the merge step, not a transport error, and
-retrying them would just burn spend on a model that meant what it said.
+in out/labels/<tag>/failed/.
 """
 
 from __future__ import annotations
@@ -39,6 +36,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.ipc as pa_ipc
 
 from _common import OUT, SEED
 
@@ -83,6 +82,7 @@ RESPONSE_FIELDS = {
     "confidence",
     "rationale",
 }
+FENCE_RE = re.compile(r"```(?:jsonl?)?", re.IGNORECASE)
 IMMUTABLE_MANIFEST_FIELDS = (
     "tag",
     "rows",
@@ -98,23 +98,30 @@ IMMUTABLE_MANIFEST_FIELDS = (
 
 
 def batch_sha256(df: pd.DataFrame) -> str:
-    """Hash every selected value with canonical column and row ordering."""
-    columns = sorted(df.columns)
-    records = json.loads(
-        df.loc[:, columns].to_json(
-            orient="records",
-            date_format="iso",
-            date_unit="ns",
-            double_precision=15,
-            force_ascii=False,
-        )
+    """Hash dataframe schema and exact values as deterministic Arrow IPC."""
+    arrays = [
+        pa.array(df.iloc[:, index], from_pandas=False)
+        for index in range(len(df.columns))
+    ]
+    metadata = {
+        b"pandas_dtypes": json.dumps(
+            [str(dtype) for dtype in df.dtypes],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    }
+    schema = pa.schema(
+        [
+            pa.field(str(name), array.type)
+            for name, array in zip(df.columns, arrays, strict=True)
+        ],
+        metadata=metadata,
     )
-    payload = json.dumps(
-        {"columns": columns, "records": records},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode()
-    return hashlib.sha256(payload).hexdigest()
+    table = pa.Table.from_arrays(arrays, schema=schema)
+    sink = pa.BufferOutputStream()
+    with pa_ipc.new_stream(sink, schema) as writer:
+        writer.write_table(table)
+    return hashlib.sha256(sink.getvalue().to_pybytes()).hexdigest()
 
 
 def _fsync_directory(path: Path) -> None:
@@ -231,6 +238,19 @@ def validate_run_manifest(existing: dict, current: dict) -> None:
             )
 
 
+def validate_new_run_root(root: Path) -> None:
+    """Reject artifacts that predate a verifiable manifest."""
+    manifest_path = root / "manifest.json"
+    if manifest_path.exists() or not root.exists():
+        return
+    artifacts = sorted(path.name for path in root.iterdir())
+    if artifacts:
+        raise ValueError(
+            f"unverifiable provenance in {root}: manifest.json is missing "
+            f"but artifacts exist: {artifacts}"
+        )
+
+
 def stratified_sample(df: pd.DataFrame, n: int) -> pd.DataFrame:
     """Proportional-by-stratum subsample, at least one row per stratum."""
     frac = n / len(df)
@@ -271,15 +291,23 @@ def parse_response(
     check below still fails loudly if any row is missing, extra or malformed.
     """
     rows = []
-    for line in raw.splitlines():
+    for line_number, line in enumerate(raw.splitlines(), start=1):
         line = line.strip()
-        if not line.startswith("{"):
+        if not line or FENCE_RE.fullmatch(line):
             continue
-        rows.append(json.loads(line))
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"invalid JSONL on line {line_number}: {exc.msg}"
+            ) from exc
+        if not isinstance(row, dict):
+            raise ValueError(
+                f"invalid JSONL on line {line_number}: expected one JSON object"
+            )
+        rows.append(row)
 
     for r in rows:
-        if not isinstance(r, dict):
-            raise ValueError(f"response row must be an object, got {type(r).__name__}")
         expected_fields = RESPONSE_FIELDS | ({"warnings"} if allow_warnings else set())
         missing = expected_fields - r.keys()
         extra = r.keys() - expected_fields
@@ -312,6 +340,18 @@ def parse_response(
             not isinstance(target_group, str) or not target_group.strip()
         ):
             raise ValueError(f"bad target_group {target_group!r}")
+        if r["label"] == "neither":
+            disallowed = {
+                "dehumanisation",
+                "violence_call",
+                "ethnic_targeting",
+            } & set(flags)
+            if disallowed:
+                raise ValueError(
+                    f"neither cannot carry flags {sorted(disallowed)!r}"
+                )
+        if r["label"] == "hate" and target_group is None:
+            raise ValueError("hate requires a non-null target_group")
         ethnic_targeting = "ethnic_targeting" in flags
         if (r["label"] == "hate") != ethnic_targeting:
             raise ValueError(
@@ -433,6 +473,7 @@ def main() -> None:
     lock_path = OUT / "labels" / f".{args.tag}.lock"
     with tag_lock(lock_path):
         manifest_path = root / "manifest.json"
+        validate_new_run_root(root)
         manifest = run_manifest(
             tag=args.tag,
             prompt_path=prompt_path,

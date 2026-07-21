@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-from types import SimpleNamespace
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -137,6 +139,83 @@ def test_parse_response_rejects_reordered_ids() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "explanation\n" + json.dumps(valid_response()),
+        json.dumps(valid_response()) + "\ntrailing prose",
+        "[]",
+        "{not json}",
+        json.dumps(valid_response()) + " " + json.dumps(valid_response()),
+        "```unexpected\n" + json.dumps(valid_response()) + "\n```",
+    ],
+    ids=[
+        "leading-prose",
+        "trailing-prose",
+        "array",
+        "malformed-json",
+        "multiple-objects-one-line",
+        "unknown-fence",
+    ],
+)
+def test_parse_response_rejects_non_jsonl_content(raw: str) -> None:
+    module = load_label_drive_module()
+
+    with pytest.raises(ValueError, match="JSONL"):
+        module.parse_response(raw, ["post-1"])
+
+
+def test_parse_response_allows_blank_lines_and_json_fences() -> None:
+    module = load_label_drive_module()
+    raw = f"\n```json\n{json.dumps(valid_response())}\n```\n"
+
+    rows = module.parse_response(raw, ["post-1"])
+
+    assert [row["post_id"] for row in rows] == ["post-1"]
+
+
+@pytest.mark.parametrize(
+    ("response", "error"),
+    [
+        (
+            valid_response(
+                label="neither",
+                flags=["dehumanisation"],
+                target_group=None,
+            ),
+            "neither.*dehumanisation",
+        ),
+        (
+            valid_response(
+                label="neither",
+                flags=["violence_call"],
+                target_group=None,
+            ),
+            "neither.*violence_call",
+        ),
+        (
+            valid_response(
+                label="neither",
+                flags=["ethnic_targeting"],
+                target_group="Luo",
+            ),
+            "neither.*ethnic_targeting",
+        ),
+        (
+            valid_response(target_group=None),
+            "hate.*target_group",
+        ),
+    ],
+)
+def test_parse_response_enforces_complete_prompt_invariants(
+    response: dict, error: str
+) -> None:
+    module = load_label_drive_module()
+
+    with pytest.raises(ValueError, match=error):
+        module.parse_response(json.dumps(response), ["post-1"])
+
+
 def test_label_chunk_sends_sensitive_content_only_through_stdin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -229,6 +308,64 @@ def test_tag_lock_rejects_concurrent_holder_and_releases(tmp_path: Path) -> None
         pass
 
 
+def test_tag_lock_rejects_holder_in_another_process(tmp_path: Path) -> None:
+    module = load_label_drive_module()
+    module_path = Path(__file__).with_name("13_label_drive.py")
+    lock_path = tmp_path / "cross-process.lock"
+    code = """
+import importlib.util
+import sys
+import time
+from pathlib import Path
+
+module_path = Path(sys.argv[1])
+sys.path.insert(0, str(module_path.parent))
+spec = importlib.util.spec_from_file_location("label_drive_child", module_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with module.tag_lock(Path(sys.argv[2])):
+    print("locked", flush=True)
+    time.sleep(30)
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", code, str(module_path), str(lock_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "locked"
+        with pytest.raises(RuntimeError, match="already locked"):
+            with module.tag_lock(lock_path):
+                pass
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+
+def test_new_run_root_must_be_absent_or_empty(tmp_path: Path) -> None:
+    module = load_label_drive_module()
+    absent = tmp_path / "absent"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    module.validate_new_run_root(absent)
+    module.validate_new_run_root(empty)
+
+
+def test_new_run_root_rejects_artifacts_without_manifest(tmp_path: Path) -> None:
+    module = load_label_drive_module()
+    root = tmp_path / "test-run"
+    root.mkdir()
+    (root / "batch.parquet").write_bytes(b"partial")
+
+    with pytest.raises(ValueError, match="unverifiable provenance"):
+        module.validate_new_run_root(root)
+
+    assert not (root / "manifest.json").exists()
+
+
 def test_atomic_write_preserves_target_when_replace_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -302,7 +439,7 @@ def test_run_manifest_captures_reproducible_provenance(tmp_path: Path) -> None:
     }
 
 
-def test_batch_hash_covers_content_and_canonical_column_order() -> None:
+def test_batch_hash_covers_content_and_column_order() -> None:
     module = load_label_drive_module()
     batch = pd.DataFrame(
         [
@@ -318,9 +455,35 @@ def test_batch_hash_covers_content_and_canonical_column_order() -> None:
     changed_text = batch.assign(text="changed")
     changed_metadata = batch.assign(metadata="m2")
 
-    assert module.batch_sha256(batch) == module.batch_sha256(reordered)
+    assert module.batch_sha256(batch) != module.batch_sha256(reordered)
     assert module.batch_sha256(batch) != module.batch_sha256(changed_text)
     assert module.batch_sha256(batch) != module.batch_sha256(changed_metadata)
+
+
+def test_batch_hash_preserves_exact_float64_bits() -> None:
+    module = load_label_drive_module()
+    lower = pd.DataFrame({"value": [1.0000000000000002]})
+    upper = pd.DataFrame({"value": [1.0000000000000004]})
+
+    assert module.batch_sha256(lower) != module.batch_sha256(upper)
+
+
+def test_batch_hash_distinguishes_null_from_nan_when_represented() -> None:
+    module = load_label_drive_module()
+    nan_value = pd.DataFrame({"value": pd.Series([float("nan")], dtype=object)})
+    null_value = pd.DataFrame({"value": pd.Series([None], dtype=object)})
+
+    assert module.batch_sha256(nan_value) != module.batch_sha256(null_value)
+
+
+def test_batch_hash_includes_dtype_and_row_order() -> None:
+    module = load_label_drive_module()
+    integers = pd.DataFrame({"value": pd.Series([1, 2], dtype="int64")})
+    nullable = pd.DataFrame({"value": pd.Series([1, 2], dtype="Int64")})
+    reversed_rows = integers.iloc[::-1].reset_index(drop=True)
+
+    assert module.batch_sha256(integers) != module.batch_sha256(nullable)
+    assert module.batch_sha256(integers) != module.batch_sha256(reversed_rows)
 
 
 def manifest_identity() -> dict:
