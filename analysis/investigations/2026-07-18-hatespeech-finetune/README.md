@@ -38,8 +38,17 @@ prefix (e.g. `03_eval` calls `04_infer.predict`).
 | `16_gold_split.py` | gold / challenge / train split assignment |
 | `17_prep_round2.py` | Plan A labels -> round-2 train/val/gold/challenge parquets |
 | `18_blind_check.py` | the human gate: `make` a sheet, `score` it |
+| `19_label_cli.py` | calibrated human labelling: protected-target rubric, flags, confidence, provenance |
+| `20_heldout.py` | make/score the fresh prompt-v3 heldout and enforce promotion gates |
 | `modal_train.py` | run any of the above on a Modal A100 |
 | `run_*.sh` | batch recipes (d = Plan D ladder, r2 = round 2) |
+
+Prompt-v3 heldout scoring records whether the reference was independent or
+model-assisted; the provenance argument is required:
+
+```sh
+uv run 20_heldout.py score --reference-provenance opus-assisted-human
+```
 
 ## GPU runs (Modal)
 

@@ -440,3 +440,66 @@ split_gem_soft (of 178 available), 12 split_gem_hard (of 39), 18 agree_hate,
 24 agree_coded, 36 random_agreed. Verified to leak nothing; scorer verified
 end-to-end. `18_blind_check.py` now discovers labeller columns dynamically
 (excluding `label_source`) so it works with either second labeller.
+
+## Human calibration and prompt v3 (2026-07-21)
+
+The first human pass exposed a taxonomy problem rather than a simple
+conservative/aggressive slider. Prompt v2 defined hate as protected-group
+attack but labelled targetless coded violence as hate in its examples. A
+calibrated recode therefore made the boundary explicit:
+
+- `hate` if and only if an identifiable protected group is attacked;
+- generic abuse, threats, or coded violence are `offensive`;
+- violence, dehumanisation, protected targeting, and coded language remain
+  independent flags.
+
+The 120-row calibration is preserved in
+`out/blind_check_coded_calibration_v1.csv`; the adjudicated version and its
+18-row contradiction audit are
+`out/blind_check_coded_calibration.csv` and
+`out/blind_check_coded_calibration_contradictions.csv`.
+
+After adjudication, the original headline gate changed from 13/30 to **17/30
+(56.7%, 95% Wilson CI 39%-73%)** Gemini-not-hate/Cursor-hate rows called hate.
+Consensus hate agreement passed (17/18), but overall consensus agreement still
+failed (53/78, 67.9% versus the 85% gate). This justified testing a corrected
+prompt, not immediately relabelling the corpus.
+
+### Fresh prompt-v3 heldout
+
+`20_heldout.py` generated 93 fresh rows after excluding calibration and
+existing gold IDs. The size is the smallest worst-case 95% Wilson interval
+with half-width <=10 percentage points. Pools deliberately stress previous
+disagreements, so these are challenge-weighted diagnostics, not corpus
+prevalence estimates.
+
+The reference was **Opus-prelabelled and then human-validated**. It is not
+independent or blind and may be anchoring-biased. Do not describe it as an
+independent human gold set.
+
+| labeller/prompt | exact | macro-F1 | hate P | hate R | hate F1 |
+|---|---:|---:|---:|---:|---:|
+| Gemini v2 | 0.710 | 0.694 | 0.625 | 0.556 | 0.588 |
+| Cursor v2 | 0.677 | 0.652 | 0.523 | 0.852 | 0.648 |
+| **Gemini v3** | **0.806** | **0.786** | **0.809** | 0.630 | 0.708 |
+| **Cursor v3** | **0.774** | **0.757** | 0.600 | **0.889** | 0.716 |
+
+Prompt v3 improved exact agreement by 9.6 points for Gemini and 9.7 for
+Cursor, and macro-F1 by 9.2 and 10.5 points. The governing gates were exact
+agreement >=0.85 and hate precision/recall >=0.70:
+
+- Gemini v3 failed exact agreement and hate recall.
+- Cursor v3 failed exact agreement and hate precision.
+- Neither model is approved to relabel the 2,440 rows.
+
+The v3 labellers agreed on 65/93 rows (69.9%); those agreed rows matched the
+validated reference 92.3% of the time. This makes agreement filtering a useful
+future direction, but 30% abstention is too high to call the pipeline ready.
+
+Flag support was dehumanisation 6, violence 6, protected targeting 27, and
+coded language 8. Only protected targeting meets the declared worst-case 95%
+CI half-width <=20-point support floor. A four-flag head is therefore not
+approved.
+
+Artifacts: `prompts/label_v3.md`, `out/heldout_v3_human.csv`,
+`out/heldout_v3_scored.csv`, and `out/20_heldout_report.json`.
