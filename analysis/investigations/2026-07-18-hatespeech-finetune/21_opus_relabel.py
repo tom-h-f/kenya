@@ -11,7 +11,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
+import os
+import re
+import tempfile
+from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +36,67 @@ FLAGS = (
     "coded_language",
 )
 CONFIDENCE = ("high", "medium", "low")
-LABEL_COLUMNS = ("post_id", "label", "flags", "confidence")
+SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+@lru_cache(maxsize=1)
+def producer_contract():
+    """Load the numbered producer module as the validation source of truth."""
+    path = Path(__file__).with_name("13_label_drive.py")
+    spec = importlib.util.spec_from_file_location("_opus_label_drive_contract", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load label producer contract from {path}")
+    contract = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(contract)
+    return contract
+
+
+def validate_path_component(value: str, name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or value in {".", ".."}
+        or Path(value).is_absolute()
+        or SAFE_COMPONENT_RE.fullmatch(value) is None
+    ):
+        raise ValueError(
+            f"unsafe {name} {value!r}: expected one alphanumeric path component "
+            "containing only letters, digits, '.', '_' or '-'"
+        )
+    return value
+
+
+def ensure_outputs_available(paths: tuple[Path, ...], force: bool) -> None:
+    existing = [str(path) for path in paths if path.exists()]
+    if existing and not force:
+        raise FileExistsError(
+            f"output files already exist: {existing}; pass --force to replace "
+            "the complete output set"
+        )
+
+
+@contextmanager
+def atomic_target(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    os.close(descriptor)
+    temporary = Path(name)
+    try:
+        yield temporary
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    with atomic_target(path) as temporary:
+        temporary.write_text(content)
+
+
+def atomic_write_parquet(frame: pd.DataFrame, path: Path) -> None:
+    with atomic_target(path) as temporary:
+        frame.to_parquet(temporary, index=False)
 
 
 def require_columns(df: pd.DataFrame, columns: tuple[str, ...], context: str) -> None:
@@ -157,8 +224,8 @@ def _json_default(value: Any) -> Any:
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    atomic_write_text(
+        path,
         json.dumps(
             payload,
             indent=2,
@@ -166,45 +233,103 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
             ensure_ascii=False,
             default=_json_default,
         )
-        + "\n"
+        + "\n",
     )
 
 
-def read_label_chunks(directory: Path) -> pd.DataFrame:
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def read_label_chunks(
+    directory: Path,
+    expected_ids: list[str] | None = None,
+    *,
+    chunk_size: int | None = None,
+) -> pd.DataFrame:
     files = sorted(directory.glob("chunk_*.jsonl"))
     if not files:
         raise ValueError(f"no label chunks found in {directory}")
+    if expected_ids is not None and chunk_size is not None:
+        expected_names = [
+            f"chunk_{offset // chunk_size:03d}.jsonl"
+            for offset in range(0, len(expected_ids), chunk_size)
+        ]
+        actual_names = [path.name for path in files]
+        if actual_names != expected_names:
+            raise ValueError(
+                f"{directory}: chunk file mismatch: "
+                f"got={actual_names}, expected={expected_names}"
+            )
     rows: list[dict[str, Any]] = []
-    for path in files:
+    validated_chunks: list[dict[str, Any]] = []
+    for file_index, path in enumerate(files):
+        file_rows: list[dict[str, Any]] = []
         for line_number, line in enumerate(path.read_text().splitlines(), start=1):
             if not line.strip():
                 continue
             try:
-                row = json.loads(line)
+                row = json.loads(line, object_pairs_hook=_reject_duplicate_keys)
             except json.JSONDecodeError as exc:
                 raise ValueError(
                     f"{path}:{line_number}: malformed JSON: {exc.msg}"
                 ) from exc
+            except ValueError as exc:
+                raise ValueError(f"{path}:{line_number}: {exc}") from exc
             if not isinstance(row, dict):
                 raise ValueError(f"{path}:{line_number}: labelled row must be an object")
+            post_id = row.get("post_id")
+            confidence = row.get("confidence")
+            if (
+                "confidence" in row
+                and (
+                    not isinstance(confidence, str)
+                    or confidence not in CONFIDENCE
+                )
+            ):
+                raise ValueError(
+                    f"{path}:{line_number} post_id={post_id!r}: "
+                    f"bad confidence {confidence!r}"
+                )
             rows.append(row)
-    frame = pd.DataFrame(rows)
-    require_columns(frame, LABEL_COLUMNS, str(directory))
-    if frame.empty:
+            file_rows.append(row)
+        if expected_ids is not None and chunk_size is not None:
+            start = file_index * chunk_size
+            wanted = expected_ids[start : start + chunk_size]
+            try:
+                validated_chunks.extend(
+                    producer_contract().parse_response(
+                        "\n".join(
+                            json.dumps(row, ensure_ascii=False) for row in file_rows
+                        ),
+                        wanted,
+                        allow_warnings=True,
+                    )
+                )
+            except ValueError as exc:
+                raise ValueError(f"{path}: invalid labelled output: {exc}") from exc
+    if not rows:
         raise ValueError(f"no labelled rows found in {directory}")
-    if any(not isinstance(value, str) for value in frame["post_id"]):
-        raise ValueError(f"{directory}: post IDs must be strings")
+    if expected_ids is not None and chunk_size is not None:
+        validated = validated_chunks
+    else:
+        got_ids = [row.get("post_id") for row in rows]
+        wanted_ids = expected_ids if expected_ids is not None else got_ids
+        try:
+            validated = producer_contract().parse_response(
+                "\n".join(json.dumps(row, ensure_ascii=False) for row in rows),
+                wanted_ids,
+                allow_warnings=True,
+            )
+        except ValueError as exc:
+            raise ValueError(f"{directory}: invalid labelled output: {exc}") from exc
+    frame = pd.DataFrame(validated)
     validate_unique_ids(frame, str(directory))
-    validate_labels(frame["label"], str(directory))
-    frame["flags"] = [
-        list(_normalise_flags(value, f"{directory} post_id={post_id}"))
-        for post_id, value in zip(frame["post_id"], frame["flags"], strict=True)
-    ]
-    unknown_confidence = sorted(set(frame["confidence"]) - set(CONFIDENCE))
-    if unknown_confidence:
-        raise ValueError(
-            f"{directory}: unknown confidence values: {unknown_confidence}"
-        )
     return frame
 
 
@@ -229,6 +354,104 @@ def load_manifest(root: Path) -> dict[str, Any]:
     return manifest
 
 
+def file_fingerprint(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "bytes": path.stat().st_size,
+    }
+
+
+def load_validated_run(
+    tag: str, labeller: str
+) -> tuple[Path, dict[str, Any], pd.DataFrame, pd.DataFrame]:
+    tag = validate_path_component(tag, "tag")
+    labeller = validate_path_component(labeller, "labeller")
+    root = OUT / "labels" / tag
+    manifest = load_manifest(root)
+    required_manifest = {
+        "tag",
+        "created_at",
+        "input_path",
+        "input_name",
+        "rows",
+        "input_sha256",
+        "prompt_filename",
+        "prompt_version",
+        "prompt_sha256",
+        "labellers",
+        "chunk_size",
+        "concurrency",
+    }
+    missing = sorted(required_manifest - manifest.keys())
+    if missing:
+        raise ValueError(f"run manifest missing required fields: {missing}")
+    if manifest["tag"] != tag:
+        raise ValueError(
+            f"manifest tag mismatch: got {manifest['tag']!r}, expected {tag!r}"
+        )
+    if Path(str(manifest["input_path"])).name != manifest["input_name"]:
+        raise ValueError(
+            "manifest input identity mismatch: input_path basename does not "
+            "match input_name"
+        )
+    labellers = manifest["labellers"]
+    if not isinstance(labellers, dict) or labeller not in labellers:
+        raise ValueError(f"requested labeller missing from manifest: {labeller!r}")
+    configured = producer_contract().LABELLERS.get(labeller)
+    if configured is not None:
+        expected_mapping = {"cli": configured[0], "model": configured[1]}
+        if labellers[labeller] != expected_mapping:
+            raise ValueError(
+                f"labeller mapping mismatch for {labeller!r}: "
+                f"got={labellers[labeller]!r}, expected={expected_mapping!r}"
+            )
+
+    batch_path = root / "batch.parquet"
+    if not batch_path.exists():
+        raise ValueError(f"run batch missing: {batch_path}")
+    batch = pd.read_parquet(batch_path)
+    require_columns(batch, ("post_id", "text", "stratum"), str(batch_path))
+    if any(not isinstance(value, str) for value in batch["post_id"]):
+        raise ValueError(f"{batch_path}: post IDs must be strings")
+    if any(not isinstance(value, str) for value in batch["text"]):
+        raise ValueError(f"{batch_path}: text values must be strings")
+    validate_unique_ids(batch, str(batch_path))
+    if (
+        not isinstance(manifest["rows"], int)
+        or isinstance(manifest["rows"], bool)
+        or manifest["rows"] != len(batch)
+    ):
+        raise ValueError(
+            f"manifest rows mismatch: got {manifest['rows']!r}, "
+            f"batch has {len(batch)}"
+        )
+    actual_hash = producer_contract().batch_sha256(batch)
+    if manifest["input_sha256"] != actual_hash:
+        raise ValueError(
+            "manifest batch hash mismatch: "
+            f"got {manifest['input_sha256']!r}, expected {actual_hash!r}"
+        )
+    chunk_size = manifest["chunk_size"]
+    if (
+        not isinstance(chunk_size, int)
+        or isinstance(chunk_size, bool)
+        or chunk_size <= 0
+    ):
+        raise ValueError(f"manifest has invalid chunk_size: {chunk_size!r}")
+    if chunk_size != producer_contract().CHUNK_SIZE:
+        raise ValueError(
+            f"manifest chunk_size mismatch: got {chunk_size}, "
+            f"expected {producer_contract().CHUNK_SIZE}"
+        )
+    labels = read_label_chunks(
+        root / labeller,
+        batch["post_id"].tolist(),
+        chunk_size=chunk_size,
+    )
+    return root, manifest, batch, labels
+
+
 def _read_reference(source: Path) -> pd.DataFrame:
     frame = pd.read_csv(source, dtype={"post_id": str})
     required = (
@@ -247,6 +470,25 @@ def _read_reference(source: Path) -> pd.DataFrame:
     return frame
 
 
+def validate_reference_matches_batch(
+    reference: pd.DataFrame, batch: pd.DataFrame
+) -> None:
+    require_matching_ids(
+        batch["post_id"], reference["post_id"], "calibration source"
+    )
+    comparison = batch[["post_id", "text"]].merge(
+        reference[["post_id", "text"]],
+        on="post_id",
+        validate="one_to_one",
+        suffixes=("_batch", "_source"),
+    )
+    changed = comparison.loc[
+        comparison["text_batch"] != comparison["text_source"], "post_id"
+    ].tolist()
+    if changed:
+        raise ValueError(f"calibration source text mismatch for post IDs: {changed}")
+
+
 def _reference_bool(value: Any, context: str) -> bool:
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
@@ -255,7 +497,27 @@ def _reference_bool(value: Any, context: str) -> bool:
     raise ValueError(f"{context}: expected true/false, got {value!r}")
 
 
-def make_calibration(source: Path) -> Path:
+def dataframe_csv(frame: pd.DataFrame) -> str:
+    serialised = frame.copy()
+    for column in serialised:
+        if serialised[column].map(
+            lambda value: isinstance(value, (list, tuple, np.ndarray, dict))
+        ).any():
+            serialised[column] = serialised[column].map(
+                lambda value: json.dumps(
+                    value.tolist() if isinstance(value, np.ndarray) else value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                if isinstance(value, (list, tuple, np.ndarray, dict))
+                else value
+            )
+    return serialised.to_csv(index=False)
+
+
+def make_calibration(source: Path, *, force: bool = False) -> Path:
+    destination = OUT / "opus_v4_calibration.parquet"
+    ensure_outputs_available((destination,), force)
     frame = _read_reference(source)
     human_columns = [column for column in frame if column.startswith("human_")]
     result = frame[["post_id", "text", *human_columns]].rename(
@@ -265,9 +527,7 @@ def make_calibration(source: Path) -> Path:
         }
     )
     result.insert(2, "stratum", "calibration")
-    destination = OUT / "opus_v4_calibration.parquet"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    result.to_parquet(destination, index=False)
+    atomic_write_parquet(result, destination)
     return destination
 
 
@@ -298,7 +558,18 @@ def _flag_metrics(
     return result
 
 
-def score_calibration(tag: str, labeller: str, source: Path) -> tuple[Path, Path]:
+def score_calibration(
+    tag: str,
+    labeller: str,
+    source: Path,
+    *,
+    force: bool = False,
+) -> tuple[Path, Path]:
+    tag = validate_path_component(tag, "tag")
+    labeller = validate_path_component(labeller, "labeller")
+    report_path = OUT / f"21_opus_calibration_{tag}.json"
+    mismatch_path = OUT / f"21_opus_calibration_{tag}_mismatches.csv"
+    ensure_outputs_available((report_path, mismatch_path), force)
     reference = _read_reference(source)
     reference["reference_flags"] = [
         [
@@ -308,9 +579,8 @@ def score_calibration(tag: str, labeller: str, source: Path) -> tuple[Path, Path
         ]
         for _, row in reference.iterrows()
     ]
-    root = OUT / "labels" / tag
-    labels = read_label_chunks(root / labeller)
-    require_matching_ids(reference["post_id"], labels["post_id"], "calibration")
+    root, manifest, batch, labels = load_validated_run(tag, labeller)
+    validate_reference_matches_batch(reference, batch)
     joined = reference.merge(labels, on="post_id", validate="one_to_one")
     class_metrics = score_reference(joined, "label", "human_label")
     flag_metrics = _flag_metrics(joined["reference_flags"], joined["flags"])
@@ -324,13 +594,11 @@ def score_calibration(tag: str, labeller: str, source: Path) -> tuple[Path, Path
         "flag_counts": flag_counts(joined["flags"]),
         "confidence_counts": _value_counts(joined["confidence"], CONFIDENCE),
         "provenance": {
-            "reference_source": str(source),
-            "run_manifest": load_manifest(root),
+            "reference_source": file_fingerprint(source),
+            "run_batch": file_fingerprint(root / "batch.parquet"),
+            "run_manifest": manifest,
         },
     }
-    report_path = OUT / f"21_opus_calibration_{tag}.json"
-    write_json(report_path, report)
-
     label_mismatch = joined["label"] != joined["human_label"]
     flag_mismatch = [
         set(reference_value) != set(predicted_value)
@@ -339,8 +607,9 @@ def score_calibration(tag: str, labeller: str, source: Path) -> tuple[Path, Path
         )
     ]
     mismatches = joined[label_mismatch | pd.Series(flag_mismatch, index=joined.index)]
-    mismatch_path = OUT / f"21_opus_calibration_{tag}_mismatches.csv"
-    mismatches.to_csv(mismatch_path, index=False)
+    mismatch_csv = dataframe_csv(mismatches)
+    write_json(report_path, report)
+    atomic_write_text(mismatch_path, mismatch_csv)
     return report_path, mismatch_path
 
 
@@ -358,7 +627,7 @@ def _baseline_provenance(frame: pd.DataFrame, path: Path) -> dict[str, Any]:
         if column in names or any(column.startswith(f"{name}_") for name in names):
             values = sorted(str(value) for value in frame[column].dropna().unique())
             columns[column] = values
-    return {"path": str(path), "columns": columns}
+    return {**file_fingerprint(path), "columns": columns}
 
 
 def _confidence_counts(frame: pd.DataFrame) -> dict[str, dict[str, int]]:
@@ -375,7 +644,33 @@ def _confidence_counts(frame: pd.DataFrame) -> dict[str, dict[str, int]]:
     }
 
 
-def compare_full(tag: str, labeller: str, baseline_path: Path) -> tuple[Path, Path]:
+def _stratum_key(value: Any) -> str:
+    if value is None or (
+        not isinstance(value, (list, tuple, dict, np.ndarray))
+        and bool(pd.isna(value))
+    ):
+        return "<null>"
+    if isinstance(value, str):
+        return (
+            f"<string:{json.dumps(value, ensure_ascii=False)}>"
+            if value.startswith("<")
+            else value
+        )
+    return f"<{type(value).__name__}:{value}>"
+
+
+def compare_full(
+    tag: str,
+    labeller: str,
+    baseline_path: Path,
+    *,
+    force: bool = False,
+) -> tuple[Path, Path]:
+    tag = validate_path_component(tag, "tag")
+    labeller = validate_path_component(labeller, "labeller")
+    report_path = OUT / f"21_opus_full_{tag}.json"
+    changed_path = OUT / f"21_opus_full_{tag}_changed.csv"
+    ensure_outputs_available((report_path, changed_path), force)
     baseline = pd.read_parquet(baseline_path)
     require_columns(baseline, ("post_id", "label", "flags"), str(baseline_path))
     baseline["post_id"] = baseline["post_id"].astype(str)
@@ -388,8 +683,7 @@ def compare_full(tag: str, labeller: str, baseline_path: Path) -> tuple[Path, Pa
         )
     ]
 
-    root = OUT / "labels" / tag
-    labels = read_label_chunks(root / labeller)
+    root, manifest, batch, labels = load_validated_run(tag, labeller)
     require_matching_ids(baseline["post_id"], labels["post_id"], "full comparison")
     joined = baseline.merge(
         labels,
@@ -400,15 +694,6 @@ def compare_full(tag: str, labeller: str, baseline_path: Path) -> tuple[Path, Pa
         sort=False,
     )
     if "stratum" not in joined:
-        batch_path = root / "batch.parquet"
-        if not batch_path.exists():
-            raise ValueError(
-                "full comparison: stratum missing from baseline and run batch"
-            )
-        batch = pd.read_parquet(batch_path)
-        require_columns(batch, ("post_id", "stratum"), str(batch_path))
-        batch["post_id"] = batch["post_id"].astype(str)
-        validate_unique_ids(batch, str(batch_path))
         require_matching_ids(joined["post_id"], batch["post_id"], "run batch")
         joined = joined.merge(
             batch[["post_id", "stratum"]],
@@ -425,15 +710,19 @@ def compare_full(tag: str, labeller: str, baseline_path: Path) -> tuple[Path, Pa
     ]
     joined["changed"] = joined["label_changed"] | joined["flags_changed"]
     changed_rows = int(joined["changed"].sum())
+    joined["_stratum_key"] = joined["stratum"].map(_stratum_key)
+    new_confidence_column = (
+        "confidence_new" if "confidence_new" in joined else "confidence"
+    )
     by_stratum = {
-        str(stratum): {
+        stratum: {
             "n": int(len(group)),
             "rows": int(group["changed"].sum()),
             "rate": float(group["changed"].mean()),
             "label_rows": int(group["label_changed"].sum()),
             "flag_rows": int(group["flags_changed"].sum()),
         }
-        for stratum, group in joined.groupby("stratum", sort=True, dropna=False)
+        for stratum, group in joined.groupby("_stratum_key", sort=True)
     }
     report = {
         "tag": tag,
@@ -449,7 +738,7 @@ def compare_full(tag: str, labeller: str, baseline_path: Path) -> tuple[Path, Pa
         },
         "confidence_counts": {
             "source": _confidence_counts(baseline),
-            "new": _value_counts(joined["confidence"], CONFIDENCE),
+            "new": _value_counts(joined[new_confidence_column], CONFIDENCE),
         },
         "label_movement": label_movement(
             joined["label_new"], joined["label_previous"]
@@ -465,13 +754,13 @@ def compare_full(tag: str, labeller: str, baseline_path: Path) -> tuple[Path, Pa
         },
         "provenance": {
             "source": _baseline_provenance(baseline, baseline_path),
-            "new": {"run_manifest": load_manifest(root)},
+            "new": {
+                "run_batch": file_fingerprint(root / "batch.parquet"),
+                "run_manifest": manifest,
+            },
         },
     }
-    report_path = OUT / f"21_opus_full_{tag}.json"
-    write_json(report_path, report)
-
-    changed = joined.loc[joined["changed"]].copy()
+    changed = joined.loc[joined["changed"]].drop(columns="_stratum_key").copy()
     changed = changed.rename(
         columns={
             "label_previous": "previous_label",
@@ -480,8 +769,9 @@ def compare_full(tag: str, labeller: str, baseline_path: Path) -> tuple[Path, Pa
             "flags_new": "new_flags",
         }
     )
-    changed_path = OUT / f"21_opus_full_{tag}_changed.csv"
-    changed.to_csv(changed_path, index=False)
+    changed_csv = dataframe_csv(changed)
+    write_json(report_path, report)
+    atomic_write_text(changed_path, changed_csv)
     return report_path, changed_path
 
 
@@ -495,6 +785,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=OUT / "blind_check_coded_calibration.csv",
     )
+    make.add_argument("--force", action="store_true")
 
     score = commands.add_parser("score-calibration")
     score.add_argument("--tag", required=True)
@@ -504,22 +795,38 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=OUT / "blind_check_coded_calibration.csv",
     )
+    score.add_argument("--force", action="store_true")
 
     compare = commands.add_parser("compare-full")
     compare.add_argument("--tag", required=True)
     compare.add_argument("--labeller", default="claude-opus-4.6")
     compare.add_argument("--baseline", type=Path, required=True)
+    compare.add_argument("--force", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    if hasattr(args, "tag"):
+        validate_path_component(args.tag, "tag")
+    if hasattr(args, "labeller"):
+        validate_path_component(args.labeller, "labeller")
     if args.command == "make-calibration":
-        make_calibration(args.source)
+        make_calibration(args.source, force=args.force)
     elif args.command == "score-calibration":
-        score_calibration(args.tag, args.labeller, args.source)
+        score_calibration(
+            args.tag,
+            args.labeller,
+            args.source,
+            force=args.force,
+        )
     elif args.command == "compare-full":
-        compare_full(args.tag, args.labeller, args.baseline)
+        compare_full(
+            args.tag,
+            args.labeller,
+            args.baseline,
+            force=args.force,
+        )
     else:  # pragma: no cover - argparse enforces this
         raise AssertionError(f"unhandled command: {args.command}")
 
