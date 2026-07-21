@@ -39,4 +39,4 @@ cd analysis && uv run pytest tests/test_ground_truth.py -v
 cd analysis && uv run python run_eval.py
 ```
 
-(Live `run_eval.py` may require R2/quack credentials; unit tests must pass offline.)
+(Live `run_eval.py` may require R2 credentials; unit tests must pass offline.)

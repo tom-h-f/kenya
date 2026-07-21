@@ -231,20 +231,3 @@ def latest_stories(con: duckdb.DuckDBPyConnection, platform: str = "x"):
         QUALIFY dense_rank() OVER (ORDER BY computed_at DESC) = 1
         """
     )
-
-
-def connect_quack(name: str = "kenya") -> duckdb.DuckDBPyConnection:
-    """Attach the tf1 DuckDB quack server. Queries run on tf1 against R2; no R2 creds
-    are needed locally - only QUACK_HOST + QUACK_TOKEN (from the shared .env).
-
-        con = connect_quack()
-        con.sql("FROM kenya.query('SELECT count(*) FROM latest_posts')")
-
-    The server exposes the views: posts, latest_posts, metrics.
-    """
-    host = os.environ["QUACK_HOST"]
-    token = os.environ["QUACK_TOKEN"]
-    con = duckdb.connect()
-    con.execute("INSTALL quack; LOAD quack;")
-    con.execute(f"ATTACH 'quack:{host}' AS {name} (TOKEN '{token}', DISABLE_SSL true)")
-    return con

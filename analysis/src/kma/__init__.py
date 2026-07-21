@@ -1,7 +1,6 @@
 from kma.db import (
     authors_source,
     connect,
-    connect_quack,
     coordination_source,
     latest_coordination_clusters,
     latest_coordination_edges,
@@ -14,7 +13,6 @@ from kma.db import (
 __all__ = [
     "authors_source",
     "connect",
-    "connect_quack",
     "coordination_source",
     "latest_coordination_clusters",
     "latest_coordination_edges",

@@ -78,4 +78,4 @@ thresholds to be **measured** against the data, not guessed.
 - Eyeball top-ranked accounts against their live profiles.
 - Known-real principals (`WilliamsRuto`, `RailaOdinga`, media handles) must score
   low; if they score high the features are miscalibrated.
-- Notebook runs end-to-end against live R2 (direct or via tf1 quack).
+- Notebook runs end-to-end against live R2.

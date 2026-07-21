@@ -5,9 +5,9 @@ the [data model](data-model.md) (what the bytes are) and the phase design docs
 (why each method exists). Source lives in `analysis/src/kma/`.
 
 `kma` is one editable package. Every module takes a DuckDB connection from
-`db.connect()` (or `db.connect_quack()`) and either returns a DataFrame/relation
-or writes a Parquet run back to R2. Nothing holds long-lived state; a notebook
-or script wires the modules together.
+`db.connect()` and either returns a DataFrame/relation or writes a Parquet run
+back to R2. Nothing holds long-lived state; a notebook or script wires the
+modules together.
 
 ## Data flow
 
@@ -50,11 +50,10 @@ flowchart TD
 
 ### Foundation
 
-- **`db.py`** - the only thing that talks to R2. `connect()` (local DuckDB +
-  R2 secret) and `connect_quack()` (remote tf1 server). For each prefix a
-  `<name>_source()` returns a `read_parquet(...)` glob for SQL `FROM`, and a
-  `latest_<name>()` returns the deduped relation. Start here to understand any
-  query.
+- **`db.py`** - the only thing that talks to R2. `connect()` gives local
+  DuckDB + an R2 secret. For each prefix a `<name>_source()` returns a
+  `read_parquet(...)` glob for SQL `FROM`, and a `latest_<name>()` returns the
+  deduped relation. Start here to understand any query.
 - **`viz.py`** - shared matplotlib theme + chart primitives (`use_theme`,
   `use_theme_538`, `altair_theme_538`, `hbars`, `grouped_hbars`,
   `diverging_stack`). Encodes the validated palette so every notebook reads as

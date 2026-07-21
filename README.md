@@ -30,8 +30,7 @@ kenya-monitor-2027/
   .env              # shared R2 credentials (gitignored) - used by both projects
   .env.example
   collector/        # scraper app + CLI (twscrape -> R2). Runs on pi0 (residential IP) via Docker.
-  server/           # DuckDB quack server on tf1: serves R2 over the tailnet (token auth).
-  analysis/         # DuckDB/Polars/marimo workspace. Query R2 directly, or via the tf1 server.
+  analysis/         # DuckDB/Polars/marimo workspace. Queries R2 directly.
   docs/collection/  # collector methods, R2 layout, env reference
 ```
 

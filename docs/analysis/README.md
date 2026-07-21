@@ -16,8 +16,8 @@ runs end-to-end against live R2.
 ## Reference docs
 
 - **[data-model.md](data-model.md)** - how the data is stored: R2 prefixes,
-  exact Parquet schemas, the latest-state read pattern, read paths
-  (`connect` vs `connect_quack`), and the operational quirks that bite.
+  exact Parquet schemas, the latest-state read pattern, the `connect()` read
+  path, and the operational quirks that bite.
 - **[code-map.md](code-map.md)** - how the `kma` package is organised: a
   module-by-module map, the data-flow diagram, the notebooks, and the
   investigation-folder pattern.

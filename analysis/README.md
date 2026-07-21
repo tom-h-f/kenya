@@ -50,24 +50,8 @@ con.sql(f"SELECT author_handle, count(*) FROM {posts_source('x')} GROUP BY 1 ORD
 
 `.pl()` -> polars, `.df()` -> pandas, `.arrow()` -> Arrow.
 
-## Two ways to connect
+## Connecting
 
-- **Direct to R2** (`connect()`): your local DuckDB reads Parquet straight from R2. Needs
-  the R2 credentials locally; each query pulls data over the network to you.
-- **Via the tf1 quack server** (`connect_quack()`): queries run *on tf1* against R2 and
-  only results stream back. Needs just `QUACK_TOKEN` + `QUACK_HOST` (no R2 creds), works
-  over the tailnet, and the server pre-exposes the `posts` / `latest_posts` / `metrics`
-  views.
-
-```python
-from kma import connect_quack
-
-con = connect_quack()                       # attaches tf1 as `kenya`
-con.sql("FROM kenya.query('SELECT count(*) FROM latest_posts')").pl()
-con.sql(\"\"\"FROM kenya.query('
-    SELECT author_handle, count(*) n FROM latest_posts GROUP BY 1 ORDER BY n DESC LIMIT 10
-')\"\"\").pl()
-```
-
-The tf1 server is defined in `../server/` (DuckDB + quack in Docker, bound to tf1's
-tailscale IP). Requires `pytz` client-side (already a dependency).
+`connect()` gives you local DuckDB with `httpfs` loaded and an R2 secret configured;
+it reads Parquet straight from R2 over the network. Needs the R2 credentials in `.env`
+(no other setup).

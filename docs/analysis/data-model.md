@@ -153,17 +153,12 @@ one row per member post with the scored story columns. These are the
 collector-handoff prefixes: `monitor adapt` reads the latest cluster/story run
 to promote targets.
 
-## Read paths
+## Read path
 
-Both return a normal DuckDB connection; every `kma` query helper takes it.
-
-- **`connect()`** - local DuckDB with `httpfs` + an R2 secret from the repo
-  `.env` (`R2_ACCESS_KEY_ID/SECRET/ACCOUNT_ID`). Reads R2 directly. This is
-  what notebooks and scripts use by default.
-- **`connect_quack(name="kenya")`** - attaches the remote **quack** DuckDB
-  server on tf1 (`QUACK_HOST`, `QUACK_TOKEN`). Queries run server-side against
-  R2, so no R2 credentials are needed locally. Exposes `posts`,
-  `latest_posts`, `metrics` views. Server impl: `server/duckdb_server.py`.
+`connect()` returns a normal DuckDB connection with `httpfs` + an R2 secret
+from the repo `.env` (`R2_ACCESS_KEY_ID/SECRET/ACCOUNT_ID`), reading R2
+directly. Every `kma` query helper takes it. This is what notebooks and
+scripts use.
 
 The `*_source(...)` helpers return a `read_parquet(...)` glob string usable
 directly in a SQL `FROM` clause; the `latest_*(...)` helpers return a deduped
