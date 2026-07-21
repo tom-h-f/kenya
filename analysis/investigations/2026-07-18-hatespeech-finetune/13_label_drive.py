@@ -48,6 +48,8 @@ LABELLERS = {
     "gemini-3.1-pro": ("agy", "Gemini 3.1 Pro (Low)"),
     "claude-sonnet-4.6": ("agy", "Claude Sonnet 4.6 (Thinking)"),
     "cursor-sonnet-4.5": ("cursor", "sonnet-4.5"),
+    "claude-opus-4.6": ("agy", "Claude Opus 4.6 (Thinking)"),
+    "claude-opus-code": ("claude", "opus"),
 }
 DEFAULT_LABELLERS = ["gemini-3.1-pro", "claude-sonnet-4.6"]
 
@@ -58,6 +60,8 @@ def build_cmd(cli: str, model: str, prompt: str, timeout: str) -> list[str]:
     if cli == "cursor":
         return ["agent", "-p", "--trust", "--model", model,
                 "--mode", "ask", "--output-format", "text", prompt]
+    if cli == "claude":
+        return ["claude", "-p", prompt, "--model", model]
     raise ValueError(f"unknown cli: {cli}")
 
 
@@ -134,7 +138,7 @@ def label_chunk(labeller: str, cli: str, model: str, chunk: Path, out_dir: Path,
     for attempt in range(1, MAX_ATTEMPTS + 1):
         proc = subprocess.run(
             build_cmd(cli, model, prompt, timeout),
-            capture_output=True, text=True,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
         try:
             if proc.returncode != 0:

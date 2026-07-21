@@ -77,7 +77,7 @@ def main() -> None:
 
         with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
             list(pool.map(
-                lambda c: drive.label_chunk(ADJUDICATOR, ADJUDICATOR_MODEL, c,
+                lambda c: drive.label_chunk(ADJUDICATOR, "agy", ADJUDICATOR_MODEL, c,
                                             out_dir, failed_dir,
                                             args.print_timeout, prompt_path),
                 todo,

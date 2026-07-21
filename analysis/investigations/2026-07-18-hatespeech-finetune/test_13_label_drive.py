@@ -20,3 +20,11 @@ def test_cursor_labeller_runs_in_read_only_ask_mode() -> None:
 
     assert "--mode" in command
     assert command[command.index("--mode") + 1] == "ask"
+
+
+def test_claude_labeller_uses_print_mode() -> None:
+    module = load_label_drive_module()
+
+    command = module.build_cmd("claude", "opus", "label these", "10m")
+
+    assert command == ["claude", "-p", "label these", "--model", "opus"]
