@@ -11,11 +11,11 @@
     uv run 13_label_drive.py --tag full                  # everything
 
 Two independent model families label identical chunks; agreement/kappa comes
-later from 14_label_merge.py. Resumable and idempotent: a chunk already
-present in the labeller's state file is skipped, so re-running costs nothing.
+later from 14_label_merge.py. Resumable and idempotent: an existing chunk
+output is schema- and ID-validated before it is skipped.
 
-Validation is strict about structure (JSONL parses, every input post_id back
-exactly once, label/flags in enum) and those failures are retried then parked
+Validation is strict about structure (exact schema, ordered string IDs, typed
+fields, and label/flag consistency) and those failures are retried then parked
 in out/labels/<tag>/failed/. Flag-consistency oddities (`neither` carrying
 `violence_call`) are recorded per row as `warnings` rather than retried -
 they are a labelling signal for the merge step, not a transport error, and
@@ -25,12 +25,16 @@ retrying them would just burn spend on a model that meant what it said.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
+import os
 import re
 import subprocess
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,40 +55,131 @@ LABELLERS = {
     "gemini-3.1-pro": ("agy", "Gemini 3.1 Pro (Low)"),
     "claude-sonnet-4.6": ("agy", "Claude Sonnet 4.6 (Thinking)"),
     "cursor-sonnet-4.5": ("cursor", "sonnet-4.5"),
-    "claude-opus-4.6": ("agy", "Claude Opus 4.6 (Thinking)"),
+    "claude-opus-4.6": ("agy", "claude-opus-4-6-thinking"),
     "claude-opus-code": ("claude", "opus"),
 }
 DEFAULT_LABELLERS = ["gemini-3.1-pro", "claude-sonnet-4.6"]
 
 
-def build_cmd(cli: str, model: str, prompt: str, timeout: str) -> list[str]:
+def build_cmd(cli: str, model: str, timeout: str) -> list[str]:
     if cli == "agy":
-        return ["agy", "-p", prompt, "--model", model, "--print-timeout", timeout]
+        return ["agy", "-p", "--model", model, "--print-timeout", timeout]
     if cli == "cursor":
         return ["agent", "-p", "--trust", "--model", model,
-                "--mode", "ask", "--output-format", "text", prompt]
+                "--mode", "ask", "--output-format", "text"]
     if cli == "claude":
-        return ["claude", "-p", prompt, "--model", model]
+        return ["claude", "-p", "--model", model]
     raise ValueError(f"unknown cli: {cli}")
 
 
 VALID_LABELS = {"hate", "offensive", "neither"}
 VALID_FLAGS = {"dehumanisation", "violence_call", "ethnic_targeting", "coded_language"}
 VALID_CONFIDENCE = {"high", "medium", "low"}
-REQUIRED_RESPONSE_FIELDS = {"confidence", "rationale", "target_group"}
+RESPONSE_FIELDS = {
+    "post_id",
+    "label",
+    "flags",
+    "target_group",
+    "confidence",
+    "rationale",
+}
 IMMUTABLE_MANIFEST_FIELDS = (
     "tag",
-    "input_path",
-    "input_name",
     "rows",
-    "row_ids_sha256",
+    "input_sha256",
     "prompt_filename",
     "prompt_version",
     "prompt_sha256",
     "labellers",
     "chunk_size",
+    # Keep the recorded execution contract simple: resume concurrency is fixed.
     "concurrency",
 )
+
+
+def batch_sha256(df: pd.DataFrame) -> str:
+    """Hash every selected value with canonical column and row ordering."""
+    columns = sorted(df.columns)
+    records = json.loads(
+        df.loc[:, columns].to_json(
+            orient="records",
+            date_format="iso",
+            date_unit="ns",
+            double_precision=15,
+            force_ascii=False,
+        )
+    )
+    payload = json.dumps(
+        {"columns": columns, "records": records},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+@contextmanager
+def atomic_target(path: Path):
+    """Yield a same-directory temp path, then durably replace the target."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        yield temp_path
+        with temp_path.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        _fsync_directory(path.parent)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    with atomic_target(path) as temp_path:
+        temp_path.write_text(content)
+
+
+def atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
+    with atomic_target(path) as temp_path:
+        df.to_parquet(temp_path, index=False)
+
+
+@contextmanager
+def tag_lock(path: Path):
+    """Hold a non-blocking OS lock for one tag; the lock file may persist."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            handle.seek(0)
+            holder = handle.read().strip() or "unknown process"
+            raise RuntimeError(
+                f"label run already locked: {path} (holder {holder})"
+            ) from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()}\n")
+        handle.flush()
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 def run_manifest(
@@ -93,8 +188,7 @@ def run_manifest(
     prompt_path: Path,
     labellers: list[str],
     input_name: str,
-    rows: int,
-    row_ids: list[str],
+    batch: pd.DataFrame,
     created_at: datetime | None = None,
     chunk_size: int = CHUNK_SIZE,
     concurrency: int = 4,
@@ -108,18 +202,13 @@ def run_manifest(
         raise ValueError("created_at must be timezone-aware")
     created_utc = created_at.astimezone(timezone.utc)
     input_path = Path(input_name)
-    row_ids_bytes = json.dumps(
-        [str(row_id) for row_id in row_ids],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode()
     return {
         "tag": tag,
         "created_at": created_utc.isoformat().replace("+00:00", "Z"),
         "input_path": str(input_path),
         "input_name": input_path.name,
-        "rows": rows,
-        "row_ids_sha256": hashlib.sha256(row_ids_bytes).hexdigest(),
+        "rows": len(batch),
+        "input_sha256": batch_sha256(batch),
         "prompt_filename": prompt_path.name,
         "prompt_version": match.group(1),
         "prompt_sha256": hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
@@ -163,18 +252,23 @@ def write_chunks(df: pd.DataFrame, chunk_dir: Path) -> list[Path]:
             for r in rows.itertuples()
         )
         if not path.exists() or path.read_text() != payload:
-            path.write_text(payload)
+            atomic_write_text(path, payload)
         paths.append(path)
     return paths
 
 
-def parse_response(raw: str, expected_ids: list[str]) -> list[dict]:
+def parse_response(
+    raw: str,
+    expected_ids: list[str],
+    *,
+    allow_warnings: bool = False,
+) -> list[dict]:
     """Parse JSONL, tolerating fences and surrounding prose.
 
     Agent CLIs differ in how literally they take "no prose": agy obeys, the
     Cursor agent prefixes a sentence and fences the block. Skipping non-`{`
-    lines absorbs that without weakening validation - the post_id set check
-    below still fails loudly if any row is missing, extra or malformed.
+    lines absorbs that without weakening validation - the ordered post_id
+    check below still fails loudly if any row is missing, extra or malformed.
     """
     rows = []
     for line in raw.splitlines():
@@ -183,20 +277,33 @@ def parse_response(raw: str, expected_ids: list[str]) -> list[dict]:
             continue
         rows.append(json.loads(line))
 
-    got = [r.get("post_id") for r in rows]
-    if sorted(map(str, got)) != sorted(expected_ids):
-        raise ValueError(f"post_id mismatch: got {len(got)}, want {len(expected_ids)}")
-
     for r in rows:
-        if r.get("label") not in VALID_LABELS:
-            raise ValueError(f"bad label {r.get('label')!r}")
-        flags = r.get("flags") or []
-        if not isinstance(flags, list) or set(flags) - VALID_FLAGS:
-            raise ValueError(f"bad flags {flags!r}")
-        missing = REQUIRED_RESPONSE_FIELDS - r.keys()
+        if not isinstance(r, dict):
+            raise ValueError(f"response row must be an object, got {type(r).__name__}")
+        expected_fields = RESPONSE_FIELDS | ({"warnings"} if allow_warnings else set())
+        missing = expected_fields - r.keys()
+        extra = r.keys() - expected_fields
         if missing:
             raise ValueError(f"missing fields: {', '.join(sorted(missing))}")
-        if r["confidence"] not in VALID_CONFIDENCE:
+        if extra:
+            raise ValueError(f"extra fields: {', '.join(sorted(extra))}")
+        if not isinstance(r["post_id"], str):
+            raise ValueError(f"bad post_id {r['post_id']!r}: must be a string")
+        if not isinstance(r["label"], str) or r["label"] not in VALID_LABELS:
+            raise ValueError(f"bad label {r['label']!r}")
+        flags = r["flags"]
+        if not isinstance(flags, list):
+            raise ValueError(f"bad flags {flags!r}")
+        if any(not isinstance(flag, str) for flag in flags):
+            raise ValueError(f"bad flags {flags!r}")
+        if len(flags) != len(set(flags)):
+            raise ValueError(f"duplicate flags {flags!r}")
+        if set(flags) - VALID_FLAGS:
+            raise ValueError(f"bad flags {flags!r}")
+        if (
+            not isinstance(r["confidence"], str)
+            or r["confidence"] not in VALID_CONFIDENCE
+        ):
             raise ValueError(f"bad confidence {r['confidence']!r}")
         if not isinstance(r["rationale"], str) or not r["rationale"].strip():
             raise ValueError(f"bad rationale {r['rationale']!r}")
@@ -215,22 +322,56 @@ def parse_response(raw: str, expected_ids: list[str]) -> list[dict]:
         warnings = []
         if r["label"] == "neither" and "violence_call" in flags:
             warnings.append("neither_with_violence_call")
+        if allow_warnings and r["warnings"] != warnings:
+            raise ValueError(
+                f"bad warnings {r['warnings']!r}: expected derived warnings {warnings!r}"
+            )
         r["flags"] = flags
         r["warnings"] = warnings
+
+    got = [r["post_id"] for r in rows]
+    if got != expected_ids:
+        raise ValueError(f"post_id order mismatch: got {got!r}, want {expected_ids!r}")
     return rows
+
+
+def chunk_expected_ids(chunk: Path) -> list[str]:
+    return [
+        json.loads(line)["post_id"]
+        for line in chunk.read_text().splitlines()
+        if line
+    ]
+
+
+def pending_chunks(chunks: list[Path], out_dir: Path) -> list[Path]:
+    todo = []
+    for chunk in chunks:
+        output_path = out_dir / f"{chunk.stem}.jsonl"
+        if not output_path.exists():
+            todo.append(chunk)
+            continue
+        try:
+            parse_response(
+                output_path.read_text(),
+                chunk_expected_ids(chunk),
+                allow_warnings=True,
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid existing output {output_path}: {exc}") from exc
+    return todo
 
 
 def label_chunk(labeller: str, cli: str, model: str, chunk: Path, out_dir: Path,
                 failed_dir: Path, timeout: str, prompt_path: Path) -> dict:
     prompt = f"{prompt_path.read_text()}\n\n{chunk.read_text()}"
-    expected = [json.loads(l)["post_id"] for l in chunk.read_text().splitlines() if l]
+    expected = chunk_expected_ids(chunk)
     start = time.time()
     last_error = ""
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         proc = subprocess.run(
-            build_cmd(cli, model, prompt, timeout),
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            build_cmd(cli, model, timeout),
+            input=prompt, capture_output=True, text=True,
         )
         try:
             if proc.returncode != 0:
@@ -242,7 +383,8 @@ def label_chunk(labeller: str, cli: str, model: str, chunk: Path, out_dir: Path,
             continue
 
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / f"{chunk.stem}.jsonl").write_text(
+        atomic_write_text(
+            out_dir / f"{chunk.stem}.jsonl",
             "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
         )
         elapsed = time.time() - start
@@ -251,7 +393,8 @@ def label_chunk(labeller: str, cli: str, model: str, chunk: Path, out_dir: Path,
                 "attempts": attempt}
 
     failed_dir.mkdir(parents=True, exist_ok=True)
-    (failed_dir / f"{labeller}-{chunk.stem}.txt").write_text(
+    atomic_write_text(
+        failed_dir / f"{labeller}-{chunk.stem}.txt",
         f"{last_error}\n\n--- last stdout ---\n{proc.stdout}"
     )
     print(f"  [{labeller}/{chunk.stem}] PARKED after {MAX_ATTEMPTS} attempts")
@@ -287,59 +430,74 @@ def main() -> None:
     labeller_names = args.labellers.split(",")
     selected_labellers = {name: LABELLERS[name] for name in labeller_names}
     root = OUT / "labels" / args.tag
-    manifest_path = root / "manifest.json"
-    manifest = run_manifest(
-        tag=args.tag,
-        prompt_path=prompt_path,
-        labellers=labeller_names,
-        input_name=str(input_path),
-        rows=len(df),
-        row_ids=df["post_id"].tolist(),
-        chunk_size=CHUNK_SIZE,
-        concurrency=args.concurrency,
-    )
-    if manifest_path.exists():
-        validate_run_manifest(json.loads(manifest_path.read_text()), manifest)
-    else:
-        root.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    lock_path = OUT / "labels" / f".{args.tag}.lock"
+    with tag_lock(lock_path):
+        manifest_path = root / "manifest.json"
+        manifest = run_manifest(
+            tag=args.tag,
+            prompt_path=prompt_path,
+            labellers=labeller_names,
+            input_name=str(input_path),
+            batch=df,
+            chunk_size=CHUNK_SIZE,
+            concurrency=args.concurrency,
+        )
+        if manifest_path.exists():
+            validate_run_manifest(json.loads(manifest_path.read_text()), manifest)
+        else:
+            root.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(manifest_path, json.dumps(manifest, indent=2) + "\n")
 
-    chunks = write_chunks(df, OUT / "chunks" / args.tag)
-    if args.limit_chunks:
-        chunks = chunks[: args.limit_chunks]
-    df.to_parquet(root / "batch.parquet", index=False)
-    print(f"{len(chunks)} chunks of {CHUNK_SIZE}")
+        chunks = write_chunks(df, OUT / "chunks" / args.tag)
+        if args.limit_chunks:
+            chunks = chunks[: args.limit_chunks]
+        atomic_write_parquet(df, root / "batch.parquet")
+        print(f"{len(chunks)} chunks of {CHUNK_SIZE}")
 
-    for labeller, (cli, model) in selected_labellers.items():
-        out_dir, failed_dir = root / labeller, root / "failed"
-        state_path = root / f"state-{labeller}.json"
-        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        for labeller, (cli, model) in selected_labellers.items():
+            out_dir, failed_dir = root / labeller, root / "failed"
+            state_path = root / f"state-{labeller}.json"
+            state = json.loads(state_path.read_text()) if state_path.exists() else {}
 
-        todo = [c for c in chunks if not (out_dir / f"{c.stem}.jsonl").exists()]
-        print(f"\n{labeller} ({model}): {len(todo)} of {len(chunks)} chunks to run")
-        if not todo:
-            continue
+            todo = pending_chunks(chunks, out_dir)
+            print(
+                f"\n{labeller} ({model}): "
+                f"{len(todo)} of {len(chunks)} chunks to run"
+            )
+            if not todo:
+                continue
 
-        start = time.time()
-        with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-            results = list(pool.map(
-                lambda c: label_chunk(labeller, cli, model, c, out_dir, failed_dir,
-                                      args.print_timeout, prompt_path),
-                todo,
-            ))
+            start = time.time()
+            with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+                results = list(pool.map(
+                    lambda c: label_chunk(
+                        labeller, cli, model, c, out_dir, failed_dir,
+                        args.print_timeout, prompt_path,
+                    ),
+                    todo,
+                ))
 
-        for r in results:
-            state[r["chunk"]] = r
-        state_path.write_text(json.dumps(state, indent=2))
+            for r in results:
+                state[r["chunk"]] = r
+            atomic_write_text(state_path, json.dumps(state, indent=2) + "\n")
 
-        done = [r for r in results if not r.get("failed")]
-        failed = len(results) - len(done)
-        wall = time.time() - start
-        secs = [r["seconds"] for r in done]
-        print(f"{labeller}: {len(done)} ok, {failed} parked, {wall / 60:.1f} min wall")
-        if secs:
-            print(f"  per chunk: mean {sum(secs) / len(secs):.0f}s, max {max(secs):.0f}s")
-            print(f"  throughput: {len(done) * CHUNK_SIZE / wall * 60:.0f} posts/min")
+            done = [r for r in results if not r.get("failed")]
+            failed = len(results) - len(done)
+            wall = time.time() - start
+            secs = [r["seconds"] for r in done]
+            print(
+                f"{labeller}: {len(done)} ok, {failed} parked, "
+                f"{wall / 60:.1f} min wall"
+            )
+            if secs:
+                print(
+                    f"  per chunk: mean {sum(secs) / len(secs):.0f}s, "
+                    f"max {max(secs):.0f}s"
+                )
+                print(
+                    f"  throughput: "
+                    f"{len(done) * CHUNK_SIZE / wall * 60:.0f} posts/min"
+                )
 
 
 if __name__ == "__main__":

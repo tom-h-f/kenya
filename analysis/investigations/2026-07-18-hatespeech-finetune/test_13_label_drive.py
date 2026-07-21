@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,18 +23,28 @@ def load_label_drive_module():
 def test_cursor_labeller_runs_in_read_only_ask_mode() -> None:
     module = load_label_drive_module()
 
-    command = module.build_cmd("cursor", "sonnet-4.5", "label these", "10m")
+    command = module.build_cmd("cursor", "sonnet-4.5", "10m")
 
     assert "--mode" in command
     assert command[command.index("--mode") + 1] == "ask"
+    assert "label these" not in command
 
 
 def test_claude_labeller_uses_print_mode() -> None:
     module = load_label_drive_module()
 
-    command = module.build_cmd("claude", "opus", "label these", "10m")
+    command = module.build_cmd("claude", "opus", "10m")
 
-    assert command == ["claude", "-p", "label these", "--model", "opus"]
+    assert command == ["claude", "-p", "--model", "opus"]
+
+
+def test_opus_labeller_uses_current_agy_identifier() -> None:
+    module = load_label_drive_module()
+
+    assert module.LABELLERS["claude-opus-4.6"] == (
+        "agy",
+        "claude-opus-4-6-thinking",
+    )
 
 
 def valid_response(**overrides: object) -> dict:
@@ -87,19 +98,184 @@ def test_parse_response_rejects_invalid_output(response: dict, error: str) -> No
         module.parse_response(json.dumps(response), ["post-1"])
 
 
+@pytest.mark.parametrize(
+    ("response", "error"),
+    [
+        (valid_response(flags=None), "flags"),
+        (valid_response(flags=""), "flags"),
+        (
+            valid_response(flags=["ethnic_targeting", "ethnic_targeting"]),
+            "duplicate",
+        ),
+        (valid_response(extra="field"), "extra fields"),
+        ({k: v for k, v in valid_response().items() if k != "flags"}, "missing fields"),
+        (valid_response(post_id=1), "post_id"),
+        (valid_response(label=["hate"]), "label"),
+        (valid_response(confidence=["high"]), "confidence"),
+        (valid_response(rationale=1), "rationale"),
+        (valid_response(rationale=""), "rationale"),
+        (valid_response(target_group=1), "target_group"),
+        (valid_response(target_group=""), "target_group"),
+    ],
+)
+def test_parse_response_rejects_malformed_schema(response: dict, error: str) -> None:
+    module = load_label_drive_module()
+
+    with pytest.raises(ValueError, match=error):
+        module.parse_response(json.dumps(response), ["post-1"])
+
+
+def test_parse_response_rejects_reordered_ids() -> None:
+    module = load_label_drive_module()
+    first = valid_response(post_id="post-1")
+    second = valid_response(post_id="post-2")
+
+    with pytest.raises(ValueError, match="order"):
+        module.parse_response(
+            "\n".join([json.dumps(second), json.dumps(first)]),
+            ["post-1", "post-2"],
+        )
+
+
+def test_label_chunk_sends_sensitive_content_only_through_stdin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_label_drive_module()
+    prompt_path = tmp_path / "label_v4.md"
+    prompt_path.write_text("PROMPT_SECRET_MARKER")
+    chunk = tmp_path / "chunk_000.jsonl"
+    chunk.write_text(
+        json.dumps({"post_id": "post-1", "text": "POST_SECRET_MARKER"})
+    )
+    invocation = {}
+
+    def run(command, **kwargs):
+        invocation["command"] = command
+        invocation["kwargs"] = kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(valid_response()),
+            stderr="",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    module.label_chunk(
+        "claude-opus-4.6",
+        "agy",
+        "claude-opus-4-6-thinking",
+        chunk,
+        tmp_path / "labels",
+        tmp_path / "failed",
+        "10m",
+        prompt_path,
+    )
+
+    command_text = " ".join(invocation["command"])
+    assert "PROMPT_SECRET_MARKER" not in command_text
+    assert "POST_SECRET_MARKER" not in command_text
+    assert "PROMPT_SECRET_MARKER" in invocation["kwargs"]["input"]
+    assert "POST_SECRET_MARKER" in invocation["kwargs"]["input"]
+
+
+def test_existing_output_is_validated_before_skip(tmp_path: Path) -> None:
+    module = load_label_drive_module()
+    chunk = tmp_path / "chunk_000.jsonl"
+    chunk.write_text(
+        "\n".join(
+            [
+                json.dumps({"post_id": "post-1", "text": "one"}),
+                json.dumps({"post_id": "post-2", "text": "two"}),
+            ]
+        )
+    )
+    out_dir = tmp_path / "labels"
+    out_dir.mkdir()
+    (out_dir / "chunk_000.jsonl").write_text(
+        json.dumps(valid_response(post_id="post-1"))
+    )
+
+    with pytest.raises(ValueError, match="invalid existing output"):
+        module.pending_chunks([chunk], out_dir)
+
+
+def test_valid_existing_output_is_skipped(tmp_path: Path) -> None:
+    module = load_label_drive_module()
+    chunk = tmp_path / "chunk_000.jsonl"
+    chunk.write_text(json.dumps({"post_id": "post-1", "text": "one"}))
+    out_dir = tmp_path / "labels"
+    out_dir.mkdir()
+    existing = module.parse_response(
+        json.dumps(valid_response(post_id="post-1")),
+        ["post-1"],
+    )
+    (out_dir / "chunk_000.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in existing)
+    )
+
+    assert module.pending_chunks([chunk], out_dir) == []
+
+
+def test_tag_lock_rejects_concurrent_holder_and_releases(tmp_path: Path) -> None:
+    module = load_label_drive_module()
+    lock_path = tmp_path / "test-run.lock"
+
+    with module.tag_lock(lock_path):
+        with pytest.raises(RuntimeError, match="already locked"):
+            with module.tag_lock(lock_path):
+                pass
+
+    with module.tag_lock(lock_path):
+        pass
+
+
+def test_atomic_write_preserves_target_when_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_label_drive_module()
+    path = tmp_path / "state.json"
+    path.write_text("old")
+
+    def fail_replace(source, target):
+        raise OSError("replace interrupted")
+
+    monkeypatch.setattr(module.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace interrupted"):
+        module.atomic_write_text(path, "new")
+
+    assert path.read_text() == "old"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
 def test_run_manifest_captures_reproducible_provenance(tmp_path: Path) -> None:
     module = load_label_drive_module()
     prompt_path = tmp_path / "label_v4.md"
     prompt_bytes = b"# Prompt v4\n\xcf\x80 exact bytes\n"
     prompt_path.write_bytes(prompt_bytes)
+    batch = pd.DataFrame(
+        [
+            {
+                "post_id": "post-1",
+                "text": "text 1",
+                "stratum": "sample",
+                "metadata": "m1",
+            },
+            {
+                "post_id": "post-2",
+                "text": "text 2",
+                "stratum": "sample",
+                "metadata": "m2",
+            },
+        ]
+    )
     created_at = datetime(2026, 7, 21, 12, 34, 56, tzinfo=timezone.utc)
     manifest = module.run_manifest(
         tag="opus-v4",
         prompt_path=prompt_path,
         labellers=["claude-opus-4.6"],
         input_name="/source/label_batch_001.parquet",
-        rows=125,
-        row_ids=["post-1", "post-2"],
+        batch=batch,
         created_at=created_at,
         chunk_size=25,
         concurrency=4,
@@ -110,20 +286,41 @@ def test_run_manifest_captures_reproducible_provenance(tmp_path: Path) -> None:
         "created_at": "2026-07-21T12:34:56Z",
         "input_path": "/source/label_batch_001.parquet",
         "input_name": "label_batch_001.parquet",
-        "rows": 125,
-        "row_ids_sha256": hashlib.sha256(b'["post-1","post-2"]').hexdigest(),
+        "rows": 2,
+        "input_sha256": module.batch_sha256(batch),
         "prompt_filename": "label_v4.md",
         "prompt_version": "v4",
         "prompt_sha256": hashlib.sha256(prompt_bytes).hexdigest(),
         "labellers": {
             "claude-opus-4.6": {
                 "cli": "agy",
-                "model": "Claude Opus 4.6 (Thinking)",
+                "model": "claude-opus-4-6-thinking",
             },
         },
         "chunk_size": 25,
         "concurrency": 4,
     }
+
+
+def test_batch_hash_covers_content_and_canonical_column_order() -> None:
+    module = load_label_drive_module()
+    batch = pd.DataFrame(
+        [
+            {
+                "post_id": "post-1",
+                "text": "original",
+                "stratum": "sample",
+                "metadata": "m1",
+            }
+        ]
+    )
+    reordered = batch[["metadata", "stratum", "text", "post_id"]]
+    changed_text = batch.assign(text="changed")
+    changed_metadata = batch.assign(metadata="m2")
+
+    assert module.batch_sha256(batch) == module.batch_sha256(reordered)
+    assert module.batch_sha256(batch) != module.batch_sha256(changed_text)
+    assert module.batch_sha256(batch) != module.batch_sha256(changed_metadata)
 
 
 def manifest_identity() -> dict:
@@ -133,14 +330,14 @@ def manifest_identity() -> dict:
         "input_path": "/source/label_batch_001.parquet",
         "input_name": "label_batch_001.parquet",
         "rows": 1,
-        "row_ids_sha256": "row-hash",
+        "input_sha256": "input-hash",
         "prompt_filename": "label_v4.md",
         "prompt_version": "v4",
         "prompt_sha256": "prompt-hash",
         "labellers": {
             "claude-opus-4.6": {
                 "cli": "agy",
-                "model": "Claude Opus 4.6 (Thinking)",
+                "model": "claude-opus-4-6-thinking",
             }
         },
         "chunk_size": 25,
@@ -156,12 +353,22 @@ def test_validate_run_manifest_accepts_matching_resume() -> None:
     module.validate_run_manifest(existing, current)
 
 
+def test_validate_run_manifest_allows_different_checkout_path() -> None:
+    module = load_label_drive_module()
+    existing = manifest_identity()
+    current = {
+        **existing,
+        "input_path": "/another/checkout/label_batch_001.parquet",
+    }
+
+    module.validate_run_manifest(existing, current)
+
+
 @pytest.mark.parametrize(
     ("field", "changed"),
     [
-        ("input_path", "/source/other.parquet"),
         ("rows", 2),
-        ("row_ids_sha256", "different-row-hash"),
+        ("input_sha256", "different-input-hash"),
         ("prompt_filename", "label_v5.md"),
         ("prompt_version", "v5"),
         ("prompt_sha256", "different-prompt-hash"),
@@ -170,7 +377,7 @@ def test_validate_run_manifest_accepts_matching_resume() -> None:
             {
                 "claude-opus-4.6": {
                     "cli": "agy",
-                    "model": "Claude Opus 4.6 (Low)",
+                    "model": "other-model",
                 }
             },
         ),
@@ -220,7 +427,7 @@ def test_main_writes_manifest_before_labelling(
         assert manifest["labellers"] == {
             "claude-opus-4.6": {
                 "cli": "agy",
-                "model": "Claude Opus 4.6 (Thinking)",
+                "model": "claude-opus-4-6-thinking",
             }
         }
         return {"chunk": "chunk_000", "rows": 1, "seconds": 0.1, "attempts": 1}
@@ -260,9 +467,8 @@ def test_main_rejects_conflicting_manifest_before_model_execution(
         tag="test-run",
         prompt_path=prompt_path,
         labellers=["claude-opus-4.6"],
-        input_name=str(out / "different.parquet"),
-        rows=1,
-        row_ids=["post-1"],
+        input_name=str(out / "label_batch_001.parquet"),
+        batch=df.assign(text="changed"),
         concurrency=4,
     )
     (root / "manifest.json").write_text(json.dumps(existing))
@@ -295,7 +501,7 @@ def test_main_rejects_conflicting_manifest_before_model_execution(
         ],
     )
 
-    with pytest.raises(ValueError, match="input_path"):
+    with pytest.raises(ValueError, match="input_sha256"):
         module.main()
 
     assert model_called is False
@@ -322,8 +528,7 @@ def test_main_resumes_when_manifest_identity_matches(
         prompt_path=prompt_path,
         labellers=["claude-opus-4.6"],
         input_name=str(out / "label_batch_001.parquet"),
-        rows=1,
-        row_ids=["post-1"],
+        batch=df,
         created_at=datetime(2026, 7, 21, 12, 34, 56, tzinfo=timezone.utc),
         concurrency=4,
     )
