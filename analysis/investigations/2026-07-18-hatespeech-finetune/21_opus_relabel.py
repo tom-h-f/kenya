@@ -473,6 +473,7 @@ def _read_reference(source: Path) -> pd.DataFrame:
 def validate_reference_matches_batch(
     reference: pd.DataFrame, batch: pd.DataFrame
 ) -> None:
+    """Ensure the score-time CSV still describes the same posts as the run."""
     require_matching_ids(
         batch["post_id"], reference["post_id"], "calibration source"
     )
@@ -487,6 +488,35 @@ def validate_reference_matches_batch(
     ].tolist()
     if changed:
         raise ValueError(f"calibration source text mismatch for post IDs: {changed}")
+
+
+def validate_baseline_matches_batch(
+    baseline: pd.DataFrame, batch: pd.DataFrame
+) -> None:
+    """Ensure the prior labels describe the same posts as the Opus run batch."""
+    require_columns(baseline, ("post_id", "text", "stratum"), "baseline")
+    require_matching_ids(batch["post_id"], baseline["post_id"], "full comparison")
+    comparison = batch[["post_id", "text", "stratum"]].merge(
+        baseline[["post_id", "text", "stratum"]],
+        on="post_id",
+        validate="one_to_one",
+        suffixes=("_batch", "_baseline"),
+    )
+    text_changed = comparison.loc[
+        comparison["text_batch"] != comparison["text_baseline"], "post_id"
+    ].tolist()
+    if text_changed:
+        raise ValueError(f"baseline text mismatch for post IDs: {text_changed}")
+    stratum_changed = comparison.loc[
+        ~comparison["stratum_batch"].eq(comparison["stratum_baseline"])
+        & ~(
+            comparison["stratum_batch"].isna()
+            & comparison["stratum_baseline"].isna()
+        ),
+        "post_id",
+    ].tolist()
+    if stratum_changed:
+        raise ValueError(f"baseline stratum mismatch for post IDs: {stratum_changed}")
 
 
 def _reference_bool(value: Any, context: str) -> bool:
@@ -516,16 +546,15 @@ def dataframe_csv(frame: pd.DataFrame) -> str:
 
 
 def make_calibration(source: Path, *, force: bool = False) -> Path:
+    """Write a driver-compatible parquet with post text only.
+
+    Human labels stay in the calibration CSV and are used only at score time,
+    so correcting the reference after a blind model run remains legitimate.
+    """
     destination = OUT / "opus_v4_calibration.parquet"
     ensure_outputs_available((destination,), force)
     frame = _read_reference(source)
-    human_columns = [column for column in frame if column.startswith("human_")]
-    result = frame[["post_id", "text", *human_columns]].rename(
-        columns={
-            column: f"reference_{column.removeprefix('human_')}"
-            for column in human_columns
-        }
-    )
+    result = frame[["post_id", "text"]].copy()
     result.insert(2, "stratum", "calibration")
     atomic_write_parquet(result, destination)
     return destination
@@ -672,7 +701,9 @@ def compare_full(
     changed_path = OUT / f"21_opus_full_{tag}_changed.csv"
     ensure_outputs_available((report_path, changed_path), force)
     baseline = pd.read_parquet(baseline_path)
-    require_columns(baseline, ("post_id", "label", "flags"), str(baseline_path))
+    require_columns(
+        baseline, ("post_id", "text", "stratum", "label", "flags"), str(baseline_path)
+    )
     baseline["post_id"] = baseline["post_id"].astype(str)
     validate_unique_ids(baseline, str(baseline_path))
     validate_labels(baseline["label"], str(baseline_path))
@@ -684,6 +715,7 @@ def compare_full(
     ]
 
     root, manifest, batch, labels = load_validated_run(tag, labeller)
+    validate_baseline_matches_batch(baseline, batch)
     require_matching_ids(baseline["post_id"], labels["post_id"], "full comparison")
     joined = baseline.merge(
         labels,
@@ -693,13 +725,13 @@ def compare_full(
         suffixes=("_previous", "_new"),
         sort=False,
     )
-    if "stratum" not in joined:
-        require_matching_ids(joined["post_id"], batch["post_id"], "run batch")
-        joined = joined.merge(
-            batch[["post_id", "stratum"]],
-            on="post_id",
-            validate="one_to_one",
-        )
+    # Prefer the validated run-batch stratum so reporting is not aliased to a
+    # baseline column rename after the merge.
+    joined = joined.drop(columns=["stratum"], errors="ignore").merge(
+        batch[["post_id", "stratum"]],
+        on="post_id",
+        validate="one_to_one",
+    )
 
     joined["label_changed"] = joined["label_previous"] != joined["label_new"]
     joined["flags_changed"] = [
@@ -779,7 +811,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
-    make = commands.add_parser("make-calibration")
+    make = commands.add_parser(
+        "make-calibration",
+        help=(
+            "Write post_id/text/stratum parquet for labelling. Human labels "
+            "remain in the source CSV and are used only by score-calibration."
+        ),
+    )
     make.add_argument(
         "--source",
         type=Path,

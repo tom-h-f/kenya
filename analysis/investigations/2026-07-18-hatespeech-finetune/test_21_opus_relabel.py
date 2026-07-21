@@ -283,7 +283,7 @@ def test_read_label_chunks_enforces_chunk_boundaries(tmp_path: Path) -> None:
         module.read_label_chunks(directory, ids, chunk_size=25)
 
 
-def test_make_calibration_writes_driver_input_with_reference_metadata(
+def test_make_calibration_writes_only_driver_columns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "source.csv"
@@ -293,11 +293,12 @@ def test_make_calibration_writes_driver_input_with_reference_metadata(
     module.main(["make-calibration", "--source", str(source)])
 
     result = pd.read_parquet(tmp_path / "opus_v4_calibration.parquet")
+    assert list(result.columns) == ["post_id", "text", "stratum"]
     assert result["post_id"].tolist() == ["001", "002", "003"]
+    assert result["text"].tolist() == ["one", "two", "three"]
     assert result["stratum"].tolist() == ["calibration"] * 3
-    assert "human_label" not in result
-    assert result["reference_label"].tolist() == ["neither", "offensive", "hate"]
-    assert result["reference_ethnic_targeting"].tolist() == [False, False, True]
+    assert not any(column.startswith("human_") for column in result)
+    assert not any(column.startswith("reference_") for column in result)
 
 
 def test_make_calibration_refuses_overwrite_unless_forced(
@@ -534,6 +535,18 @@ def test_score_calibration_rejects_incomplete_manifest(
         )
 
 
+def matching_batch(
+    strata: list[str | None] | None = None,
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "post_id": ["001", "002", "003"],
+            "text": ["one", "two", "three"],
+            "stratum": strata or ["random", "lexicon", "lexicon"],
+        }
+    )
+
+
 def test_compare_full_writes_movement_changed_rows_and_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -551,7 +564,7 @@ def test_compare_full_writes_movement_changed_rows_and_provenance(
             "conf_gemini": ["high", "medium", "high"],
         }
     ).to_parquet(baseline_path, index=False)
-    write_run(tmp_path)
+    write_run(tmp_path, batch=matching_batch())
     monkeypatch.setattr(module, "OUT", tmp_path)
 
     module.main(
@@ -605,15 +618,16 @@ def test_compare_full_rejects_id_mismatch(
     pd.DataFrame(
         {
             "post_id": ["001", "002"],
+            "text": ["one", "two"],
             "stratum": ["random", "lexicon"],
             "label": ["neither", "offensive"],
             "flags": [[], []],
         }
     ).to_parquet(baseline_path, index=False)
-    write_run(tmp_path)
+    write_run(tmp_path, batch=matching_batch())
     monkeypatch.setattr(module, "OUT", tmp_path)
 
-    with pytest.raises(ValueError, match=r"extra=.*003"):
+    with pytest.raises(ValueError, match=r"missing=.*003"):
         module.main(
             [
                 "compare-full",
@@ -627,16 +641,63 @@ def test_compare_full_rejects_id_mismatch(
         )
 
 
+def test_compare_full_rejects_changed_baseline_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baseline_path = tmp_path / "baseline.parquet"
+    matching_batch().assign(
+        text=["one", "CHANGED", "three"],
+        label=["neither", "offensive", "hate"],
+        flags=[[], [], ["ethnic_targeting"]],
+    ).to_parquet(baseline_path, index=False)
+    write_run(tmp_path, batch=matching_batch())
+    monkeypatch.setattr(module, "OUT", tmp_path)
+
+    with pytest.raises(ValueError, match=r"baseline text mismatch.*002"):
+        module.main(
+            [
+                "compare-full",
+                "--tag",
+                "test-tag",
+                "--baseline",
+                str(baseline_path),
+            ]
+        )
+
+
+def test_compare_full_rejects_changed_baseline_stratum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baseline_path = tmp_path / "baseline.parquet"
+    matching_batch().assign(
+        stratum=["random", "CHANGED", "lexicon"],
+        label=["neither", "offensive", "hate"],
+        flags=[[], [], ["ethnic_targeting"]],
+    ).to_parquet(baseline_path, index=False)
+    write_run(tmp_path, batch=matching_batch())
+    monkeypatch.setattr(module, "OUT", tmp_path)
+
+    with pytest.raises(ValueError, match=r"baseline stratum mismatch.*002"):
+        module.main(
+            [
+                "compare-full",
+                "--tag",
+                "test-tag",
+                "--baseline",
+                str(baseline_path),
+            ]
+        )
+
+
 def test_compare_full_checks_output_set_before_writing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     baseline_path = tmp_path / "baseline.parquet"
-    source_frame()[["post_id", "text"]].assign(
-        stratum=["random", "lexicon", "lexicon"],
+    matching_batch().assign(
         label=["neither", "offensive", "hate"],
         flags=[[], ["dehumanisation"], ["ethnic_targeting"]],
     ).to_parquet(baseline_path, index=False)
-    write_run(tmp_path)
+    write_run(tmp_path, batch=matching_batch())
     report_path = tmp_path / "21_opus_full_test-tag.json"
     report_path.write_text("keep-me")
     monkeypatch.setattr(module, "OUT", tmp_path)
@@ -661,12 +722,12 @@ def test_compare_full_preserves_null_and_string_nan_strata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     baseline_path = tmp_path / "baseline.parquet"
-    source_frame()[["post_id", "text"]].assign(
-        stratum=[None, "nan", "lexicon"],
+    strata = [None, "nan", "lexicon"]
+    matching_batch(strata).assign(
         label=["neither", "offensive", "hate"],
         flags=[[], ["dehumanisation"], ["ethnic_targeting"]],
     ).to_parquet(baseline_path, index=False)
-    write_run(tmp_path)
+    write_run(tmp_path, batch=matching_batch(strata))
     monkeypatch.setattr(module, "OUT", tmp_path)
 
     module.main(
