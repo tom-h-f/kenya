@@ -1,0 +1,19 @@
+{
+  "tag": "opus-v4-full",
+  "created_at": "2026-07-21T14:16:13.153895Z",
+  "input_path": "/Users/tom/Code/Misc/kenya-monitor-2027/analysis/investigations/2026-07-18-hatespeech-finetune/out/labels/full/batch.parquet",
+  "input_name": "batch.parquet",
+  "rows": 2440,
+  "input_sha256": "c85e1e0c0e4882ddabc55314861983fce1cc02baafde85068bfdb202c5645fbc",
+  "prompt_filename": "label_v4.md",
+  "prompt_version": "v4",
+  "prompt_sha256": "496cd93c5bf133c2861723469e136c91b0390984dce42e3ce94b689fdfb40a6d",
+  "labellers": {
+    "claude-opus-code": {
+      "cli": "claude",
+      "model": "opus"
+    }
+  },
+  "chunk_size": 25,
+  "concurrency": 4
+}
