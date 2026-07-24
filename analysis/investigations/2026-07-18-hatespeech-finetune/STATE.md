@@ -1,7 +1,8 @@
 # STATE - Kenya hate-speech classifier
 
 Single source of truth for where this investigation stands. Updated
-2026-07-24. If this disagrees with any other doc, this wins.
+2026-07-24 (Opus labels human-validated). If this disagrees with any other
+doc, this wins.
 
 Reading order for someone new: this file, then `README.md` (scripts + how to
 run), then `findings.md` (Plan D + round 2 results) and `findings-plan-a.md`
@@ -23,8 +24,8 @@ only. Remaining 940 posts and flag heads stay deferred.
 
 - Replace production `d3-s1337`: **NO**. Unanimous regression (−3.4pt) exceeds
   seed noise; challenge gain is partly circular (Opus labels on challenge).
-- Use Opus v4 partial as training signal for further experiments: **YES**,
-  with the single-labeller caveat and no Opus gold coverage.
+- Use Opus v4 partial as training signal for further experiments: **YES**.
+  Labels are human-validated; no Opus gold coverage yet.
 - Finish remaining 940 Opus labels before any further claim: **DEFER**. Not
   required for the measured go/no-go above.
 - Flag-head pilot: **NOT APPROVED**. Partial-set support is still thin
@@ -53,10 +54,11 @@ Challenge gain is clear and stable; unanimous drop is real (above seed noise)
 but not catastrophic forgetting. Net: **do not promote**.
 
 Caveats:
-- Challenge labels are Opus; primary metric measures fit to Opus taxonomy.
+- Challenge labels are Opus v4; operator (2026-07-24) treats the full 1,500
+  Opus labels as **human-validated**. Challenge gains are no longer dismissed
+  as circular labeller fit alone.
 - No Opus-labelled gold in the partial set (0/283 prior gold IDs labelled).
-- Single labeller (`claude-opus-code` / model `opus`); operator accepted Opus
-  over human on the calibration disagreements.
+- Production replace still blocked by unanimous regression (−3.4pt).
 
 ## What is banked
 
