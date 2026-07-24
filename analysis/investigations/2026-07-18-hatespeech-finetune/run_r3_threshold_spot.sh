@@ -91,15 +91,17 @@ print(summary.to_string(index=False))
 # spotcheck p_hate means
 print("\n=== coded-14 mean p_hate ===")
 for path in sorted(Path("out").glob("spotcheck_coded14_*.csv")):
-    if path.name.endswith("_opus.parquet"):
+    if path.name.startswith("spotcheck_coded14_opus"):
         continue
     df = pd.read_csv(path)
-    if "p_hate" not in df.columns:
+    pcol = "pred_p_hate" if "pred_p_hate" in df.columns else "p_hate"
+    pred = "pred_label_id" if "pred_label_id" in df.columns else "label_id"
+    if pcol not in df.columns:
         print(path.name, "no p_hate")
         continue
-    print(f"{path.name}: mean_p_hate={df.p_hate.mean():.4f} "
-          f"argmax_hate={(df.label_id==2).sum() if 'label_id' in df else '?'} "
-          f"n={len(df)}")
+    n_hate = int((df[pred] == 2).sum()) if pred in df.columns else "?"
+    print(f"{path.name}: mean_p_hate={df[pcol].mean():.4f} "
+          f"argmax_hate={n_hate} n={len(df)}")
 PY
 
 echo "=== threshold + spotcheck done ==="

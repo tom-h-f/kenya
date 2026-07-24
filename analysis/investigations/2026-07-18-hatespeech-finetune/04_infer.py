@@ -74,11 +74,15 @@ def main() -> None:
 
     df = pd.read_csv(args.csv)
     scored = predict(df[args.column].astype(str).tolist(), model_dir=args.model_dir)
-    result = pd.concat([df.reset_index(drop=True), scored], axis=1)
+    # Input CSVs often already have a gold `label` column; keep both.
+    overlap = [c for c in scored.columns if c in df.columns]
+    scored_renamed = scored.rename(columns={c: f"pred_{c}" for c in overlap})
+    result = pd.concat([df.reset_index(drop=True), scored_renamed], axis=1)
 
     out = args.out or args.csv.rsplit(".", 1)[0] + "_scored.csv"
     result.to_csv(out, index=False)
-    print(result["label"].value_counts().to_string())
+    pred_col = "pred_label" if "pred_label" in result.columns else "label"
+    print(result[pred_col].value_counts().to_string())
     print(f"wrote {out}")
 
 
