@@ -1,0 +1,32 @@
+{
+  "train2026_opus-v4": {
+    "n": 1055,
+    "by_label": {
+      "0": 445,
+      "1": 399,
+      "2": 211
+    }
+  },
+  "val2026_opus-v4": {
+    "n": 250,
+    "by_label": {
+      "0": 105,
+      "1": 95,
+      "2": 50
+    }
+  },
+  "challenge_opus-v4": {
+    "n": 195,
+    "by_label": {
+      "0": 126,
+      "1": 64,
+      "2": 5
+    }
+  },
+  "notes": {
+    "gold_opus-v4": "unavailable: partial Opus set contains zero prior gold IDs",
+    "source": "labels_2026_opus-v4-partial.parquet",
+    "val_size": 250,
+    "seed": 42
+  }
+}
