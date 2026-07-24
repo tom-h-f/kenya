@@ -5,21 +5,6 @@ cd "$(dirname "$0")"
 RUN="uv run"
 command -v uv >/dev/null 2>&1 || RUN="python"
 
-# Prefer a train-schema parquet for load_split compatibility.
-if [ ! -f out/spotcheck_coded14.parquet ]; then
-  $RUN python - <<'PY'
-import pandas as pd
-from pathlib import Path
-src = Path("out/spotcheck_coded14_opus.csv")
-df = pd.read_parquet(src)
-out = df.rename(columns={"label_id": "label"})[["post_id", "text", "label"]].copy()
-if "agreement" not in out.columns:
-    out["agreement"] = 1.0
-out.to_parquet("out/spotcheck_coded14.parquet", index=False)
-print("wrote out/spotcheck_coded14.parquet", len(out))
-PY
-fi
-
 sweep() {
   tag=$1; dir=$2; split=$3
   prefix="sweep-$tag-$split"
