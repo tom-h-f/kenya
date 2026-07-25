@@ -64,7 +64,28 @@ def test_build_splits_reuses_prior_membership_and_carves_val() -> None:
         assert (frame["agreement"] == 1.0).all()
 
     assert report["challenge_opus-v4"]["n"] == 3
-    assert "gold_opus-v4" not in report
+    assert "unavailable" in report["notes"]["gold_opus-v4"]
+
+
+def test_build_splits_includes_gold_with_suffix() -> None:
+    module = load_module()
+    frame = sample_frame()
+    gold = pd.DataFrame(
+        [
+            {"post_id": "g0", "text": "gold 0", "label": "hate", "split": "gold"},
+            {"post_id": "g1", "text": "gold 1", "label": "neither", "split": "gold"},
+        ]
+    )
+    parts, report = module.build_splits(
+        pd.concat([frame, gold], ignore_index=True),
+        val_size=3,
+        seed=42,
+        suffix="-full",
+    )
+    assert "gold_opus-v4-full" in parts
+    assert len(parts["gold_opus-v4-full"]) == 2
+    assert parts["challenge_opus-v4-full"].shape[0] == 3
+    assert "n=2" in report["notes"]["gold_opus-v4"]
 
 
 def test_build_splits_rejects_missing_split_column() -> None:

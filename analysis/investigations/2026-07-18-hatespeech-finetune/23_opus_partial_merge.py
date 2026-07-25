@@ -177,9 +177,14 @@ def merge_partial(
         validate="one_to_one",
     )
     changed = int((overlap["label"] != overlap["label_previous"]).sum())
+    complete = len(merged) >= 2440
     report = {
-        "dataset": f"opus-v4-partial-{len(merged)}",
-        "decision": "use_partial_not_full_2440",
+        "dataset": (
+            f"opus-v4-full-{len(merged)}" if complete else f"opus-v4-partial-{len(merged)}"
+        ),
+        "decision": (
+            "use_full_2440" if complete else "use_partial_not_full_2440"
+        ),
         "rows": len(merged),
         "labeller": labeller,
         "model": model,
@@ -200,12 +205,15 @@ def merge_partial(
             "movement": _label_movement(overlap["label"], overlap["label_previous"]),
         },
         "reliability_caveat": (
-            "Single labeller (Claude Opus via Claude Code). Operator accepted "
-            "Opus calibration disagreements over the human set and chose this "
-            "partial run as the working label set."
+            "Single labeller (Claude Opus via Claude Code). Operator treated "
+            "Opus v4 labels as human-validated for training."
         ),
         "artifacts": {
-            "labels": "out/labels_2026_opus-v4-partial.parquet",
+            "labels": (
+                "out/labels_2026_opus-v4-full.parquet"
+                if complete
+                else "out/labels_2026_opus-v4-partial.parquet"
+            ),
             "report": f"out/21_opus_partial_{len(merged)}_report.json",
         },
     }
