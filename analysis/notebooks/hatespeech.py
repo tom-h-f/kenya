@@ -337,7 +337,7 @@ def _(df, viz):
 
 
 @app.cell
-def _(df, np, pd, sns, viz):
+def _(df, pd, sns, viz):
     # Heatmap keeps the explicit series for continuity with prior charts.
     _d = df[(df["created_at"].dt.year == 2026) & df["in_kenya_scope"]].copy()
     _d["hour"] = _d["created_at"].dt.hour
