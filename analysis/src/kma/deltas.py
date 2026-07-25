@@ -30,12 +30,79 @@ TRIBE_DISCLAIMER = (
 # lowercased free-text profile location.
 REGION_RULES: list[tuple[list[str], str]] = [
     (["nairobi", "nbo", "cbd"], "Nairobi"),
-    (["mombasa", "kilifi", "kwale", "lamu", "tana", "taita", "malindi", "coast", "pwani"], "Coast"),
-    (["kisumu", "siaya", "homa bay", "homabay", "migori", "nyanza", "bondo", "kisii", "nyamira"], "Nyanza"),
+    (
+        [
+            "mombasa",
+            "kilifi",
+            "kwale",
+            "lamu",
+            "tana",
+            "taita",
+            "malindi",
+            "coast",
+            "pwani",
+        ],
+        "Coast",
+    ),
+    (
+        [
+            "kisumu",
+            "siaya",
+            "homa bay",
+            "homabay",
+            "migori",
+            "nyanza",
+            "bondo",
+            "kisii",
+            "nyamira",
+        ],
+        "Nyanza",
+    ),
     (["kakamega", "bungoma", "busia", "vihiga", "western", "mumias"], "Western"),
-    (["eldoret", "uasin gishu", "kericho", "bomet", "nandi", "baringo", "marakwet", "nakuru", "narok", "kajiado", "rift"], "Rift Valley"),
-    (["nyeri", "murang", "kiambu", "kirinyaga", "nyandarua", "thika", "central", "mount kenya", "mt kenya"], "Central"),
-    (["machakos", "makueni", "kitui", "embu", "meru", "isiolo", "marsabit", "tharaka", "eastern"], "Eastern"),
+    (
+        [
+            "eldoret",
+            "uasin gishu",
+            "kericho",
+            "bomet",
+            "nandi",
+            "baringo",
+            "marakwet",
+            "nakuru",
+            "narok",
+            "kajiado",
+            "rift",
+        ],
+        "Rift Valley",
+    ),
+    (
+        [
+            "nyeri",
+            "murang",
+            "kiambu",
+            "kirinyaga",
+            "nyandarua",
+            "thika",
+            "central",
+            "mount kenya",
+            "mt kenya",
+        ],
+        "Central",
+    ),
+    (
+        [
+            "machakos",
+            "makueni",
+            "kitui",
+            "embu",
+            "meru",
+            "isiolo",
+            "marsabit",
+            "tharaka",
+            "eastern",
+        ],
+        "Eastern",
+    ),
     (["garissa", "wajir", "mandera", "north eastern", "northeastern"], "North Eastern"),
     (["turkana", "samburu", "west pokot", "lodwar"], "North Rift"),
 ]
@@ -45,7 +112,10 @@ COMMUNITY_RULES: list[tuple[list[str], str]] = [
     (["nyeri", "murang", "kiambu", "kirinyaga", "nyandarua", "thika"], "Kikuyu"),
     (["kisumu", "siaya", "homa bay", "homabay", "migori", "bondo"], "Luo"),
     (["kakamega", "bungoma", "busia", "vihiga", "mumias"], "Luhya"),
-    (["eldoret", "uasin gishu", "kericho", "bomet", "nandi", "baringo", "marakwet"], "Kalenjin"),
+    (
+        ["eldoret", "uasin gishu", "kericho", "bomet", "nandi", "baringo", "marakwet"],
+        "Kalenjin",
+    ),
     (["machakos", "makueni", "kitui"], "Kamba"),
     (["kisii", "nyamira"], "Kisii"),
     (["meru", "tharaka", "embu"], "Meru/Embu"),
@@ -156,11 +226,17 @@ def slice_claim(
         raise ValueError("dimension must be 'region' or 'community'")
 
     empty_cols = [
-        "slice", "n_authors", "mean_sentiment", "coverage_pct",
-        "insufficient_location_signal", "disclaimer",
+        "slice",
+        "n_authors",
+        "mean_sentiment",
+        "coverage_pct",
+        "insufficient_location_signal",
+        "disclaimer",
     ]
-    disclaimer = TRIBE_DISCLAIMER if dimension == "community" else (
-        "Region inferred from free-text profile location; many authors unmapped."
+    disclaimer = (
+        TRIBE_DISCLAIMER
+        if dimension == "community"
+        else ("Region inferred from free-text profile location; many authors unmapped.")
     )
     if authors is None or authors.empty:
         return pd.DataFrame(columns=empty_cols)
