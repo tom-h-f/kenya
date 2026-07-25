@@ -143,7 +143,9 @@ target-specific and computed live).
 (list<string>), `dehumanisation_score`, `violence_call_score`,
 `othering_score`, `political_criticism_score`, `model`, `scored_at`. Written
 to its **own prefix on purpose** (see quirks). Zero-shot NLI over the same
-mDeBERTa model used for stance.
+mDeBERTa model used for stance. Notebook measurement re-runs the lexicon
+regex live via `kma.incitement.scan_text` and combines those hits with these
+NLI scores in `kma.measure.coded_suspect` (not persisted).
 
 ### hatespeech/ (`hatespeech.py`)
 
@@ -155,8 +157,11 @@ is `p_hate >= 0.28`, an explicit triage threshold, **not** argmax - the taxonomy
 pushes most coded menace without a protected-group target to `offensive`, so
 read `label` and `hate_flag` together. Its **own prefix**, like `incitement/`
 and for the same reason: `latest_*` dedups on `platform_post_id` alone, so a
-second writer under `labels/` or `incitement/` would shadow those rows. Triage
-signal for a human, never an auto-verdict.
+second writer under `labels/` or `incitement/` would shadow those rows.
+
+Automated notebook rates (Kenya-scoped explicit toxic + `coded_suspect`) are
+**derived at read time** in `kma.measure` / `notebooks/hatespeech.py` from post
+text + these scores + incitement NLI. They are not written back to R2.
 
 ### coordination/ and stories/
 
