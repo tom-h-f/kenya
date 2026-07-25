@@ -153,8 +153,13 @@ coded menace labelled `offensive`).
 ## Roadmap
 
 1. ~~Promote Opus ×3~~ **done** (HF + thr 0.28).
-2. Wire model into live scoring (`12_score_corpus` / monitor / `kma`).
-3. Feed Phase 5 desk brief with hate/offensive flags.
+2. ~~Wire model into live scoring~~ **done**: `kma.hatespeech.score_new` writes
+   the R2 `hatespeech/` prefix (own prefix, thr 0.28); `kma.enrich` runs it as a
+   third isolated pass so new posts (incl. news/media timelines) stay scored;
+   full corpus backfilled on Modal A100 via `analysis/modal_backfill.py`.
+3. ~~Feed Phase 5 desk brief with hate/offensive flags~~ **done**: "Hate /
+   offensive lens" cell in `analysis/notebooks/desk_brief.py`
+   (`latest_hatespeech`).
 4. Optional later: sample remaining 940 only if live errors demand it.
 5. Flag heads: still deferred.
 

@@ -18,6 +18,7 @@ def _():
         connect,
         latest_coordination_clusters,
         latest_coordination_edges,
+        latest_hatespeech,
         latest_labels,
         latest_stories,
         authors_source,
@@ -36,6 +37,7 @@ def _():
         fr,
         latest_coordination_clusters,
         latest_coordination_edges,
+        latest_hatespeech,
         latest_labels,
         latest_stories,
         mo,
@@ -241,6 +243,51 @@ def _(
         framing_bundle["sentiment_timeline"] if len(framing_bundle["sentiment_timeline"])
         else mo.md("_No labeled members in this claim window._"),
     ])
+    _out
+    return
+
+
+@app.cell
+def _(con, focus_story, latest_hatespeech, mo):
+    mo.md("## 4b. Hate / offensive lens")
+    # Fine-tuned afro-xlmr 3-class scores for this claim's member posts. hate_flag
+    # is p_hate >= 0.28 (an explicit triage threshold, not argmax); the taxonomy
+    # pushes most coded menace to `offensive`, so read both classes. Triage for a
+    # human, never an auto-verdict.
+    if focus_story is None or not len(focus_story) or "platform_post_id" not in focus_story:
+        _out = mo.md("_Select a story._")
+    else:
+        try:
+            _hs = latest_hatespeech(con).df()
+        except Exception:
+            _hs = None
+        if _hs is None or not len(_hs):
+            _out = mo.md("_No hate-speech scores yet (backfill / enrich pending)._")
+        else:
+            _cols = [c for c in ["platform_post_id", "author_handle", "text"]
+                     if c in focus_story.columns]
+            _members = focus_story[_cols].drop_duplicates("platform_post_id")
+            _merged = _members.merge(
+                _hs[["platform_post_id", "label", "p_offensive", "p_hate", "hate_flag"]],
+                on="platform_post_id", how="inner",
+            )
+            if not len(_merged):
+                _out = mo.md("_No scored members in this claim window._")
+            else:
+                _n_hate = int(_merged["hate_flag"].sum())
+                _n_off = int((_merged["label"] == "offensive").sum())
+                _flagged = _merged[
+                    _merged["hate_flag"] | (_merged["label"] == "offensive")
+                ].sort_values("p_hate", ascending=False)
+                _out = mo.vstack([
+                    mo.md(
+                        f"Scored members: **{len(_merged)}**. "
+                        f"Hate-flagged (p_hate ≥ 0.28): **{_n_hate}**. "
+                        f"Offensive: **{_n_off}**."
+                    ),
+                    _flagged.head(50) if len(_flagged)
+                    else mo.md("_No hate/offensive members in this claim._"),
+                ])
     _out
     return
 

@@ -46,6 +46,7 @@ all in `analysis/src/kma/db.py`.
 | `embeddings/` | analysis (`semantic.py`) | `platform`, `model`, `dt` | `platform_post_id` (by `embedded_at`) | `embeddings_source`, `latest_embeddings` |
 | `labels/` | analysis (`classify.py`) | `platform`, `dt` | `platform_post_id` (by `labeled_at`) | `labels_source`, `latest_labels` |
 | `incitement/` | analysis (`incitement.py`) | `platform`, `dt` | `platform_post_id` (by `scored_at`) | `incitement_source`, `latest_incitement` |
+| `hatespeech/` | analysis (`hatespeech.py`) | `platform`, `dt` | `platform_post_id` (by `scored_at`) | `hatespeech_source`, `latest_hatespeech` |
 | `coordination/` | analysis (`coordination.py`) | `platform`, `kind`, (`channel`, `method`), `dt` | per kind | `coordination_source`, `latest_coordination_edges/clusters` |
 | `stories/` | analysis (`stories.py`) | `platform`, `dt` | `stable_story_id` (by `computed_at`) | `stories_source`, `latest_stories` |
 
@@ -143,6 +144,19 @@ target-specific and computed live).
 `othering_score`, `political_criticism_score`, `model`, `scored_at`. Written
 to its **own prefix on purpose** (see quirks). Zero-shot NLI over the same
 mDeBERTa model used for stance.
+
+### hatespeech/ (`hatespeech.py`)
+
+`platform_post_id`, `label` (neither/offensive/hate), `p_neither`,
+`p_offensive`, `p_hate`, `hate_flag` (bool), `model`, `scored_at`. The
+fine-tuned afro-xlmr 3-class classifier (HF `tom-h-f/kenya-hatespeech-afroxlmr`,
+Opus x3 `r3-mix3-s1337`; see the 2026-07 fine-tune investigation). `hate_flag`
+is `p_hate >= 0.28`, an explicit triage threshold, **not** argmax - the taxonomy
+pushes most coded menace without a protected-group target to `offensive`, so
+read `label` and `hate_flag` together. Its **own prefix**, like `incitement/`
+and for the same reason: `latest_*` dedups on `platform_post_id` alone, so a
+second writer under `labels/` or `incitement/` would shadow those rows. Triage
+signal for a human, never an auto-verdict.
 
 ### coordination/ and stories/
 
