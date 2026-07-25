@@ -1,0 +1,47 @@
+{
+  "train2026_opus-v4-full": {
+    "n": 1712,
+    "by_label": {
+      "0": 601,
+      "1": 874,
+      "2": 237
+    }
+  },
+  "val2026_opus-v4-full": {
+    "n": 250,
+    "by_label": {
+      "0": 88,
+      "1": 128,
+      "2": 34
+    }
+  },
+  "challenge_opus-v4-full": {
+    "n": 195,
+    "by_label": {
+      "0": 126,
+      "1": 64,
+      "2": 5
+    }
+  },
+  "gold_opus-v4-full": {
+    "n": 283,
+    "by_label": {
+      "0": 253,
+      "1": 25,
+      "2": 5
+    }
+  },
+  "notes": {
+    "gold_opus-v4": "n=283",
+    "source_rows": 2440,
+    "val_size": 250,
+    "seed": 42,
+    "suffix": "-full"
+  },
+  "artifacts": {
+    "train2026_opus-v4-full": "train2026_opus-v4-full.parquet",
+    "val2026_opus-v4-full": "val2026_opus-v4-full.parquet",
+    "challenge_opus-v4-full": "challenge_opus-v4-full.parquet",
+    "gold_opus-v4-full": "gold_opus-v4-full.parquet"
+  }
+}

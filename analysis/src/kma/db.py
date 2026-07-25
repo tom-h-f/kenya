@@ -133,6 +133,25 @@ def latest_incitement(con: duckdb.DuckDBPyConnection, platform: str = "*"):
     )
 
 
+def hatespeech_source(platform: str = "*") -> str:
+    glob = f"r2://{BUCKET}/hatespeech/platform={platform}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def latest_hatespeech(con: duckdb.DuckDBPyConnection, platform: str = "*"):
+    """One hate-speech-score row per post (latest). Separate prefix from labels/
+    and incitement/ on purpose: latest_* dedups on platform_post_id alone, so a
+    second writer under an existing prefix would shadow its rows."""
+    return con.sql(
+        f"""
+        SELECT * FROM {hatespeech_source(platform)}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform_post_id ORDER BY scored_at DESC
+        ) = 1
+        """
+    )
+
+
 def engagements_source(platform: str = "*") -> str:
     glob = f"r2://{BUCKET}/engagements/platform={platform}/dt=*/run=*.parquet"
     return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"

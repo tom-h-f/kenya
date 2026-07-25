@@ -3,8 +3,12 @@ services:
     build: .
     env_file: ../.env
     command: ["--loop"]
-    # Three XLM-RoBERTa / mpnet models load into memory at once.
-    mem_limit: 4g
+    # --loop isolates each pass in its own subprocess, so only one model set is
+    # resident at a time. The largest is the afro-xlmr-large hate model (~2GB
+    # fp32); headroom for it + duckdb + a batch is why this is 6g, not 4g.
+    # Needs HF_TOKEN in ../.env to pull the private hate model on first run.
+    # Verify peak RSS on the deploy host and trim if it runs comfortably lower.
+    mem_limit: 6g
     volumes:
       - hf_cache:/app/hf_cache   # transformer weights, downloaded once
     restart: unless-stopped

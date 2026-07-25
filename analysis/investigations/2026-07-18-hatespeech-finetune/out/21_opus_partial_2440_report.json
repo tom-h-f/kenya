@@ -1,0 +1,68 @@
+{
+  "dataset": "opus-v4-full-2440",
+  "decision": "use_full_2440",
+  "rows": 2440,
+  "labeller": "claude-opus-code",
+  "model": "opus",
+  "prompt_version": "v4",
+  "prompt_sha256": "496cd93c5bf133c2861723469e136c91b0390984dce42e3ce94b689fdfb40a6d",
+  "label_origin_counts": {
+    "manual": 1340,
+    "automated": 1100
+  },
+  "class_counts": {
+    "neither": 1068,
+    "offensive": 1091,
+    "hate": 281
+  },
+  "stratum_counts": {
+    "p_hate_top": 1192,
+    "p_offensive_top": 770,
+    "random_control": 283,
+    "nli_tail": 150,
+    "lexicon": 45
+  },
+  "confidence_counts": {
+    "medium": 1225,
+    "high": 911,
+    "low": 304
+  },
+  "flag_counts": {
+    "dehumanisation": 60,
+    "violence_call": 58,
+    "ethnic_targeting": 281,
+    "coded_language": 67
+  },
+  "prior_split_counts": {
+    "train": 1962,
+    "gold": 283,
+    "challenge": 195
+  },
+  "vs_baseline_overlap": {
+    "n": 2440,
+    "label_changed": 501,
+    "label_change_rate": 0.2053,
+    "movement": {
+      "neither": {
+        "neither": 989,
+        "offensive": 300,
+        "hate": 55
+      },
+      "offensive": {
+        "neither": 36,
+        "offensive": 735,
+        "hate": 11
+      },
+      "hate": {
+        "neither": 43,
+        "offensive": 56,
+        "hate": 215
+      }
+    }
+  },
+  "reliability_caveat": "Single labeller (Claude Opus via Claude Code). Operator treated Opus v4 labels as human-validated for training.",
+  "artifacts": {
+    "labels": "out/labels_2026_opus-v4-full.parquet",
+    "report": "out/21_opus_partial_2440_report.json"
+  }
+}

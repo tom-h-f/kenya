@@ -1,0 +1,66 @@
+{
+  "dataset": "opus-v4-partial-1500",
+  "decision": "use_partial_not_full_2440",
+  "rows": 1500,
+  "labeller": "claude-opus-code",
+  "model": "opus",
+  "prompt_version": "v4",
+  "prompt_sha256": "496cd93c5bf133c2861723469e136c91b0390984dce42e3ce94b689fdfb40a6d",
+  "label_origin_counts": {
+    "automated": 1100,
+    "manual": 400
+  },
+  "class_counts": {
+    "neither": 676,
+    "offensive": 558,
+    "hate": 266
+  },
+  "stratum_counts": {
+    "p_hate_top": 1192,
+    "nli_tail": 150,
+    "p_offensive_top": 113,
+    "lexicon": 45
+  },
+  "confidence_counts": {
+    "medium": 770,
+    "high": 465,
+    "low": 265
+  },
+  "flag_counts": {
+    "dehumanisation": 43,
+    "violence_call": 44,
+    "ethnic_targeting": 266,
+    "coded_language": 58
+  },
+  "prior_split_counts": {
+    "train": 1305,
+    "challenge": 195
+  },
+  "vs_baseline_overlap": {
+    "n": 1500,
+    "label_changed": 362,
+    "label_change_rate": 0.2413,
+    "movement": {
+      "neither": {
+        "neither": 612,
+        "offensive": 181,
+        "hate": 53
+      },
+      "offensive": {
+        "neither": 21,
+        "offensive": 321,
+        "hate": 8
+      },
+      "hate": {
+        "neither": 43,
+        "offensive": 56,
+        "hate": 205
+      }
+    }
+  },
+  "reliability_caveat": "Single labeller (Claude Opus via Claude Code). Operator accepted Opus calibration disagreements over the human set and chose this partial run as the working label set.",
+  "artifacts": {
+    "labels": "out/labels_2026_opus-v4-partial.parquet",
+    "report": "out/21_opus_partial_1500_report.json"
+  }
+}

@@ -40,8 +40,13 @@ prefix (e.g. `03_eval` calls `04_infer.predict`).
 | `18_blind_check.py` | the human gate: `make` a sheet, `score` it |
 | `19_label_cli.py` | calibrated human labelling: protected-target rubric, flags, confidence, provenance |
 | `20_heldout.py` | make/score the fresh prompt-v3 heldout and enforce promotion gates |
+| `21_opus_relabel.py` | Opus v4 calibration / compare reports |
+| `22_import_manual_labels.py` | import manual Opus outbox batches |
+| `23_opus_partial_merge.py` | merge 1,500 Opus labels + movement report |
+| `24_prep_opus_v4.py` | Opus train/val/challenge splits |
 | `modal_train.py` | run any of the above on a Modal A100 |
-| `run_*.sh` | batch recipes (d = Plan D ladder, r2 = round 2) |
+| `run_r3_*.sh` | round-3 Opus recipes (batch, mix sweep, threshold, mix3 seeds) |
+| `run_*.sh` | older batch recipes (d = Plan D, r2 = round 2) |
 
 Prompt-v3 heldout scoring records whether the reference was independent or
 model-assisted; the provenance argument is required:

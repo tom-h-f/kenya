@@ -27,6 +27,7 @@ import time
 
 from kma.classify import classify_new
 from kma.db import connect
+from kma.hatespeech import score_new as score_hate_new
 from kma.semantic import embed_new
 
 log = logging.getLogger("kma.enrich")
@@ -47,8 +48,10 @@ def run_once(
     batch_size: int = BATCH_SIZE,
     embed: bool = True,
     classify: bool = True,
+    hate: bool = True,
 ) -> dict[str, int]:
-    """One bounded enrichment pass. Returns {embedded, labelled} counts."""
+    """One bounded enrichment pass. Returns {embedded, labelled, hate_scored}
+    counts (only the passes that ran)."""
     con = connect()
     counts: dict[str, int] = {}
     if embed:
@@ -57,22 +60,26 @@ def run_once(
     if classify:
         counts["labelled"] = classify_new(con, limit=limit, batch_size=batch_size)
         log.info("labelled %d new post(s)", counts["labelled"])
+    if hate:
+        counts["hate_scored"] = score_hate_new(con, limit=limit, batch_size=batch_size)
+        log.info("hate-scored %d new post(s)", counts["hate_scored"])
     return counts
 
 
-def _subprocess_pass(flag: str, limit: int | None, batch_size: int) -> int:
+def _subprocess_pass(flags: list[str], limit: int | None, batch_size: int) -> int:
     """Run one `--once` pass in a fresh subprocess and return its processed
-    count. Isolating embed from classify per process means only one model set is
-    resident at a time - the peak-memory guard for RAM-tight hosts (the
-    embedding mpnet and the two classifier transformers never coexist)."""
-    cmd = [sys.executable, "-m", "kma.enrich", "--once", flag, "--batch-size", str(batch_size)]
+    count. Isolating each model set per process means only one is resident at a
+    time - the peak-memory guard for RAM-tight hosts (the embedding mpnet, the
+    two classifier transformers, and the ~2GB afro-xlmr hate model never
+    coexist). `flags` disables the other passes so this one runs alone."""
+    cmd = [sys.executable, "-m", "kma.enrich", "--once", *flags, "--batch-size", str(batch_size)]
     if limit is not None:
         cmd += ["--limit", str(limit)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.stdout:
         sys.stdout.write(proc.stdout)
     if proc.returncode != 0:
-        log.error("pass %s failed (rc=%d): %s", flag, proc.returncode, proc.stderr[-500:])
+        log.error("pass %s failed (rc=%d): %s", flags, proc.returncode, proc.stderr[-500:])
         return 0
     # last line is "enriched: {'embedded': N}" / "{'labelled': N}"
     line = [ln for ln in proc.stdout.splitlines() if ln.startswith("enriched:")]
@@ -91,13 +98,14 @@ def run_loop(
     batch_size: int = BATCH_SIZE,
     embed: bool = True,
     classify: bool = True,
+    hate: bool = True,
     isolate: bool = True,
 ) -> None:
     """Forever: bounded passes back to back while there is a backlog, then a
     jittered idle once caught up. A per-pass failure is logged and retried, so a
     transient R2 / model hiccup never kills the worker.
 
-    `isolate` (default) runs embed and classify in separate subprocesses so
+    `isolate` (default) runs embed, classify and hate in separate subprocesses so
     their models never coexist in memory - keep it on for < ~6GB hosts."""
     cycle = 0
     while True:
@@ -106,11 +114,13 @@ def run_loop(
         try:
             if isolate:
                 if embed:
-                    done += _subprocess_pass("--no-classify", limit, batch_size)
+                    done += _subprocess_pass(["--no-classify", "--no-hate"], limit, batch_size)
                 if classify:
-                    done += _subprocess_pass("--no-embed", limit, batch_size)
+                    done += _subprocess_pass(["--no-embed", "--no-hate"], limit, batch_size)
+                if hate:
+                    done += _subprocess_pass(["--no-embed", "--no-classify"], limit, batch_size)
             else:
-                done = sum(run_once(limit, batch_size, embed, classify).values())
+                done = sum(run_once(limit, batch_size, embed, classify, hate).values())
         except Exception:
             log.exception("enrich cycle %d failed", cycle)
         wait = BUSY_COOLDOWN_S if done > 0 else random.uniform(IDLE_MIN_S, IDLE_MAX_S)
@@ -128,17 +138,18 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     ap.add_argument("--no-embed", action="store_true", help="skip embeddings")
     ap.add_argument("--no-classify", action="store_true", help="skip sentiment/emotion")
+    ap.add_argument("--no-hate", action="store_true", help="skip hate-speech scoring")
     ap.add_argument(
         "--no-isolate", action="store_true",
         help="load all models in one process (faster, needs ~6GB RAM)",
     )
     args = ap.parse_args()
-    embed, classify = not args.no_embed, not args.no_classify
+    embed, classify, hate = not args.no_embed, not args.no_classify, not args.no_hate
     if args.once:
-        counts = run_once(args.limit, args.batch_size, embed, classify)
+        counts = run_once(args.limit, args.batch_size, embed, classify, hate)
         print(f"enriched: {counts}")
     else:
-        run_loop(args.limit, args.batch_size, embed, classify, isolate=not args.no_isolate)
+        run_loop(args.limit, args.batch_size, embed, classify, hate, isolate=not args.no_isolate)
 
 
 if __name__ == "__main__":
