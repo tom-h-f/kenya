@@ -1,7 +1,7 @@
 # STATE - Kenya hate-speech classifier
 
 Single source of truth for where this investigation stands. Updated
-2026-07-25 (mix ×3 3-seed confirm). If this disagrees with any other doc,
+2026-07-25 (Opus ×3 **promoted**). If this disagrees with any other doc,
 this wins.
 
 Reading order for someone new: this file, then `README.md` (scripts + how to
@@ -12,24 +12,25 @@ run), then `findings.md` (Plan D + round 2 results) and `findings-plan-a.md`
 
 ## One-paragraph status
 
-Opus v4 labels (1,500; human-validated). Opus ×5 rejected (unan −3.4pt).
-Mix sweep + **3-seed confirm** of **Opus ×3**: challenge **0.612 ± 0.010**
-(+7.1pt vs shipped) and unanimous **0.683 ± 0.009** (−1.5pt, inside ~2.1pt
-seed noise). Stop-gate cleared on the challenge/collapse rule. Production
-still `d3-s1337` until an explicit promote + hate-threshold choice; Opus ×3
-is the approved research / optional-replace candidate. Remaining 940 labels
-and flag heads stay deferred.
+**Production candidate: Opus ×3 seed 1337** (`r3-mix3-s1337`), pushed to HF
+`tom-h-f/kenya-hatespeech-afroxlmr`. 3-seed: challenge **0.612 ± 0.010**
+(+7.1pt), unanimous **0.683 ± 0.009** (−1.5pt, inside seed noise). Default
+hate decision threshold for triage: **0.28** (val R≥0.80, P≈0.58). Prior
+`d3-s1337` remains on the Modal volume as rollback. **Model work for this
+investigation is closed** — next work is wiring scores into the live monitor
+/ desk brief, not further training. Remaining 940 labels and flag heads stay
+deferred.
 
 ## Current decision
 
-- Opus ×3 (AfriHate ×1 + Opus train ×3): **APPROVED candidate** (3-seed).
-- Replace production `d3-s1337` immediately: **NO** — needs explicit promote
-  plus deployment threshold (val best-F1 ~0.24 / R≥0.80 ~0.28 on Opus).
-- Opus ×5: **rejected** (unan past seed noise).
-- Opus ×3 + hard-flag oversample: **reject for ship**.
-- Finish remaining 940 Opus labels: **DEFER**.
-- Flag-head pilot: **NOT APPROVED**.
-- Shipped weights remain `d3-s1337` until promote.
+- Opus ×3 seed 1337: **PROMOTED** (HF private repo above).
+- Rollback: Modal `model-d3-s1337` / previous HF revision if needed.
+- Hate threshold (deploy): **0.28** on `p_hate` (not argmax); val best-F1
+  alternative 0.24 if maximizing F1 over precision.
+- Further classifier ablations / oversample sweeps: **STOP**.
+- Finish remaining 940 Opus labels / flag heads: **DEFER** (not blocking).
+- Next product work: score live posts with this model; feed Phase 5 desk
+  brief / incitement monitoring — not more fine-tunes.
 
 ---
 
@@ -77,9 +78,8 @@ App `ap-mMx1qzqwGZaX6U9159ZE6r`. Recipe: AfriHate ×1 + Opus ×3. Seeds
 
 Per-seed challenge / unan: 0.614/0.690, 0.601/0.685, 0.621/0.673.
 
-**Verdict:** stop-gate **PASS** (clear challenge gain; unan drop inside seed
-noise). Not auto-shipped — promote is an operator decision with threshold
-tuning.
+**Verdict:** stop-gate **PASS**. **Promoted 2026-07-25:** seed 1337 → HF
+`tom-h-f/kenya-hatespeech-afroxlmr`; deploy hate thr **0.28**.
 
 ### Hate threshold (full sweep, `11_hate_sweep.py`)
 
@@ -115,8 +115,9 @@ Caveats:
 
 | asset | where | number |
 |---|---|---|
-| Shipped classifier `d3-s1337` | HF `tom-h-f/kenya-hatespeech-afroxlmr` (private); Drive `out/model-d/`; Modal vol | unan macro-F1 **0.688 ± 0.021** (3 seeds), full 0.592 |
-| **Opus ×3 candidate (approved)** | Modal `model-r3-mix3-s{1337,1338,1339}/` | challenge **0.612 ± 0.010**; unan **0.683 ± 0.009** |
+| **Production Opus ×3 `r3-mix3-s1337`** | HF `tom-h-f/kenya-hatespeech-afroxlmr`; Modal `model-r3-mix3-s1337/` | challenge 0.612 ± 0.010; unan 0.683 ± 0.009; thr 0.28 |
+| Rollback `d3-s1337` | Modal `model-d3-s1337/` (prior HF revision) | unan 0.688 ± 0.021 |
+| Opus ×3 other seeds | Modal `model-r3-mix3-s{1338,1339}/` | banked, not shipped |
 | Round-3 Opus ×5 (rejected) | Modal `model-r3-opus-s{1337,1338,1339}/` | challenge 0.610 ± 0.012; unan 0.664 ± 0.006 |
 | Mix sweep seed-1337 | Modal `model-r3-mix-r{1,2,3,3hard}-s1337/` | led to ×3 |
 | Threshold + coded-14 | Modal `sweep-*`, `spotcheck_coded14_*`, `r3_threshold_summary.csv` | see above |
@@ -141,21 +142,21 @@ Caveats:
 
 ## The open problem, precisely
 
-Opus ×3 clears the statistical stop-gate. What remains is product choice:
-promote `r3-mix3` (with hate thr ~0.24–0.28) or keep `d3-s1337` and shadow
-the Opus model on 2026 traffic. Coded incitement without a protected-group
-target remains mostly `offensive` under the validated taxonomy, so p_hate
-alone will not catch the 14 known coded posts.
+Classifier optimization for this batch is **closed**. Open product work is
+operational: score the live Kenyan stream with Opus ×3 + thr 0.28, surface
+hate/offensive into the desk brief / monitoring path, and only reopen
+labelling if production errors show a systematic taxonomy miss (especially
+coded menace labelled `offensive`).
 
 ---
 
 ## Roadmap
 
-1. **Operator:** promote Opus ×3 vs keep shipped + shadow.
-2. If promote: push best seed (or seed-mean ensemble) to HF; set hate
-   threshold from val sweep (~0.24–0.28).
-3. Optional: sample remaining 940 for coverage.
-4. Flag heads only after measured human-positive support is adequate.
+1. ~~Promote Opus ×3~~ **done** (HF + thr 0.28).
+2. Wire model into live scoring (`12_score_corpus` / monitor / `kma`).
+3. Feed Phase 5 desk brief with hate/offensive flags.
+4. Optional later: sample remaining 940 only if live errors demand it.
+5. Flag heads: still deferred.
 
 ---
 
@@ -170,7 +171,7 @@ alone will not catch the 14 known coded posts.
 
 ## Pending / deferred
 
-- Explicit promote / HF push for Opus ×3.
-- Remaining ~940 Opus v4 labels.
+- Wire promoted model into live monitor / desk brief.
+- Remaining ~940 Opus v4 labels (only if live errors demand).
 - Flag-head pilot.
-- Deployment threshold/quantisation on whatever is promoted.
+- Quantisation measurement if edge deploy is required.
