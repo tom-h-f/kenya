@@ -21,7 +21,72 @@ from kenya_monitor.config import APP_ROOT
 
 DEFAULT_DB_PATH = Path(os.getenv("TWS_ACCOUNTS_DB", APP_ROOT / "state" / "accounts.db"))
 
-# Ignore anything older than this. Bounds the search windows and guards timelines.
+import asyncio
+import twscrape.xclid
+import twscrape.queue_client
+
+async def _patched_create(proxy: str | None = None, cookies: dict | None = None) -> twscrape.xclid.XClIdGen:
+    clt = twscrape.xclid._make_http_client(proxy=proxy, cookies=cookies, headers={"user-agent": "@chrome"})
+    try:
+        text = await twscrape.xclid.get_tw_page_text("https://x.com/tesla", clt)
+        soup = twscrape.xclid.bs4.BeautifulSoup(text, "html.parser")
+        vk_bytes, anim_key = await twscrape.xclid.load_keys(soup, clt)
+        return twscrape.xclid.XClIdGen(vk_bytes, anim_key)
+    finally:
+        await clt.aclose()
+
+@classmethod
+async def _patched_store_get(
+    cls, username: str, proxy: str | None = None, cookies: dict | None = None, fresh: bool = False
+) -> twscrape.xclid.XClIdGen:
+    if username in cls.items and not fresh:
+        return cls.items[username]
+
+    tries = 0
+    while tries < 3:
+        try:
+            clid_gen = await twscrape.xclid.XClIdGen.create(proxy=proxy, cookies=cookies)
+            cls.items[username] = clid_gen
+            return clid_gen
+        except Exception as e:
+            tries += 1
+            twscrape.queue_client.logger.warning(
+                f"XClIdGen creation attempt {tries}/3 failed: {type(e).__name__}: {e}"
+            )
+            await asyncio.sleep(1)
+
+    raise twscrape.queue_client.AbortReqError(
+        "Failed to create XClIdGen. See: https://github.com/vladkens/twscrape/issues/248"
+    )
+
+async def _patched_ctx_req(self, method, url, params=None):
+    path = twscrape.queue_client.urlparse(url).path or "/"
+
+    tries = 0
+    while tries < 3:
+        gen = await twscrape.queue_client.XClIdGenStore.get(
+            self.acc.username,
+            proxy=self.acc.proxy,
+            cookies=self.acc.cookies,
+            fresh=tries > 0
+        )
+        hdr = {"x-client-transaction-id": gen.calc(method, path)}
+        rep = await self.clt.request(method, url, params=params, headers=hdr)
+        if rep.status_code != 404:
+            return rep
+
+        tries += 1
+        twscrape.queue_client.logger.debug(f"Retrying request with new x-client-transaction-id: {url}")
+        await asyncio.sleep(1)
+
+    raise twscrape.queue_client.AbortReqError(
+        "Faield to get XClIdGen. See: https://github.com/vladkens/twscrape/issues/248"
+    )
+
+twscrape.xclid.XClIdGen.create = staticmethod(_patched_create)
+twscrape.queue_client.XClIdGenStore.get = _patched_store_get
+twscrape.queue_client.Ctx.req = _patched_ctx_req
+
 MAX_AGE_DAYS = 14
 
 Window = tuple[str, str]  # (since_date, until_date) as YYYY-MM-DD, UTC
