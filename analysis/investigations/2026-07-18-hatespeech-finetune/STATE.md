@@ -1,7 +1,8 @@
 # STATE - Kenya hate-speech classifier
 
 Single source of truth for where this investigation stands. Updated
-2026-07-25. If this disagrees with any other doc, this wins.
+2026-07-25 (mix ×3 3-seed confirm). If this disagrees with any other doc,
+this wins.
 
 Reading order for someone new: this file, then `README.md` (scripts + how to
 run), then `findings.md` (Plan D + round 2 results) and `findings-plan-a.md`
@@ -11,25 +12,24 @@ run), then `findings.md` (Plan D + round 2 results) and `findings-plan-a.md`
 
 ## One-paragraph status
 
-Opus v4 labels (1,500; human-validated) trained under the settled mixed
-recipe. Initial Opus ×5 run gained challenge but lost −3.4pt on 2013
-unanimous. A seed-1337 **extra-repeat sweep** found **Opus ×3** as the
-Pareto point: challenge **0.614** (+7.2pt) and unanimous **0.690** (−0.8pt,
-inside ~2.1pt seed noise). Hard-flag oversample raised challenge further
-but re-hurt unanimous. Hate-threshold sweeps and coded-14 scoring are
-banked. Production remains `d3-s1337` until a **3-seed confirm** of mix ×3
-lands. Remaining 940 labels and flag heads stay deferred.
+Opus v4 labels (1,500; human-validated). Opus ×5 rejected (unan −3.4pt).
+Mix sweep + **3-seed confirm** of **Opus ×3**: challenge **0.612 ± 0.010**
+(+7.1pt vs shipped) and unanimous **0.683 ± 0.009** (−1.5pt, inside ~2.1pt
+seed noise). Stop-gate cleared on the challenge/collapse rule. Production
+still `d3-s1337` until an explicit promote + hate-threshold choice; Opus ×3
+is the approved research / optional-replace candidate. Remaining 940 labels
+and flag heads stay deferred.
 
 ## Current decision
 
-- Replace production `d3-s1337`: **NO** until mix ×3 3-seed confirm.
-- Provisional research recipe: **AfriHate ×1 + Opus train ×3** (not ×5).
-- Opus ×5: **rejected** as ship candidate (unan regression past seed noise).
-- Opus ×3 + hard-flag oversample: **reject for ship** (unan −2.6pt); keep as
-  challenge-maximising experiment only.
+- Opus ×3 (AfriHate ×1 + Opus train ×3): **APPROVED candidate** (3-seed).
+- Replace production `d3-s1337` immediately: **NO** — needs explicit promote
+  plus deployment threshold (val best-F1 ~0.24 / R≥0.80 ~0.28 on Opus).
+- Opus ×5: **rejected** (unan past seed noise).
+- Opus ×3 + hard-flag oversample: **reject for ship**.
 - Finish remaining 940 Opus labels: **DEFER**.
 - Flag-head pilot: **NOT APPROVED**.
-- Existing shipped model remains the production candidate.
+- Shipped weights remain `d3-s1337` until promote.
 
 ---
 
@@ -62,7 +62,24 @@ App `ap-aovETPE2nGy7XhQRKb9R2v`. Same recipe; Opus repeat ∈ {1,2,3} plus
 | Opus ×5 | 0.597 | 0.670 | +0.056 | −0.027 |
 | ×3 + hardflags | 0.630 | 0.672 | +0.089 | −0.026 |
 
-**Pareto:** Opus ×3. Next: 3-seed confirm (`run_r3_mix3_seeds.sh`).
+**Pareto:** Opus ×3 → confirmed below.
+
+### Mix ×3 3-seed confirm (measured 2026-07-25)
+
+App `ap-mMx1qzqwGZaX6U9159ZE6r`. Recipe: AfriHate ×1 + Opus ×3. Seeds
+1337/1338/1339. Artifacts: `model-r3-mix3-s{1337,1338,1339}/`.
+
+| eval set | baseline | mix ×3 mean ± sd | Δ |
+|---|---|---|---|
+| `challenge_opus-v4` | 0.541 | **0.612 ± 0.010** | **+0.071** |
+| `test_unanimous` | 0.698 | 0.683 ± 0.009 | −0.015 |
+| old `gold` | 0.428 | 0.421 ± 0.041 | −0.007 |
+
+Per-seed challenge / unan: 0.614/0.690, 0.601/0.685, 0.621/0.673.
+
+**Verdict:** stop-gate **PASS** (clear challenge gain; unan drop inside seed
+noise). Not auto-shipped — promote is an operator decision with threshold
+tuning.
 
 ### Hate threshold (full sweep, `11_hate_sweep.py`)
 
@@ -94,15 +111,14 @@ most coded menace without a protected-group target as offensive.
 Caveats:
 - Challenge labels are Opus v4 and human-validated.
 - No Opus-labelled gold in the partial set.
-- Mix ×3 numbers above are **1-seed** until 3-seed confirm finishes.
-
 ## What is banked
 
 | asset | where | number |
 |---|---|---|
 | Shipped classifier `d3-s1337` | HF `tom-h-f/kenya-hatespeech-afroxlmr` (private); Drive `out/model-d/`; Modal vol | unan macro-F1 **0.688 ± 0.021** (3 seeds), full 0.592 |
-| Round-3 Opus ×5 (not shipped) | Modal `model-r3-opus-s{1337,1338,1339}/` | challenge 0.610 ± 0.012; unan 0.664 ± 0.006 |
-| Mix sweep seed-1337 | Modal `model-r3-mix-r{1,2,3,3hard}-s1337/` | Pareto = Opus ×3 |
+| **Opus ×3 candidate (approved)** | Modal `model-r3-mix3-s{1337,1338,1339}/` | challenge **0.612 ± 0.010**; unan **0.683 ± 0.009** |
+| Round-3 Opus ×5 (rejected) | Modal `model-r3-opus-s{1337,1338,1339}/` | challenge 0.610 ± 0.012; unan 0.664 ± 0.006 |
+| Mix sweep seed-1337 | Modal `model-r3-mix-r{1,2,3,3hard}-s1337/` | led to ×3 |
 | Threshold + coded-14 | Modal `sweep-*`, `spotcheck_coded14_*`, `r3_threshold_summary.csv` | see above |
 | DAPT encoder | HF `tom-h-f/kenya-dapt-afroxlmr`; Modal `dapt-afro-xlmr/` | perplexity 16.0 -> 5.2 |
 | Opus v4 partial labels | `out/labels_2026_opus-v4-partial.parquet` | 1,500; neither 676 / offensive 558 / hate 266 |
@@ -120,26 +136,24 @@ Caveats:
 - **DAPT**: large LM gain, ~+2pt classification (inside 1-seed noise). Keep,
   don't over-claim.
 - **Seed sd on unan macro-F1 ~2.1pt.** Nothing smaller is a result.
-- **Opus oversample ×5 overfits 2026 vs 2013**; ×3 is the measured better
-  tradeoff on seed 1337 (pending 3-seed).
+- **Opus oversample ×5 overfits 2026 vs 2013**; **×3** is the confirmed
+  better tradeoff (3-seed).
 
 ## The open problem, precisely
 
-Opus-validated 2026 labels improve challenge fit. The remaining question is
-whether Opus ×3 holds across seeds with unanimous inside noise of shipped.
-If yes, promote with a tuned hate threshold for triage. If not, keep
-`d3-s1337` and treat Opus checkpoints as a 2026 shadow model. Coded
-incitement without a protected-group target remains mostly `offensive` under
-the validated taxonomy, so p_hate alone will not catch the 14 known coded
-posts.
+Opus ×3 clears the statistical stop-gate. What remains is product choice:
+promote `r3-mix3` (with hate thr ~0.24–0.28) or keep `d3-s1337` and shadow
+the Opus model on 2026 traffic. Coded incitement without a protected-group
+target remains mostly `offensive` under the validated taxonomy, so p_hate
+alone will not catch the 14 known coded posts.
 
 ---
 
 ## Roadmap
 
-1. **In flight / next:** 3-seed confirm for Opus ×3 (`run_r3_mix3_seeds.sh`).
-2. If confirm passes: decide promote vs shadow-deploy; set hate threshold
-   from val sweep (~0.24–0.28 for Opus).
+1. **Operator:** promote Opus ×3 vs keep shipped + shadow.
+2. If promote: push best seed (or seed-mean ensemble) to HF; set hate
+   threshold from val sweep (~0.24–0.28).
 3. Optional: sample remaining 940 for coverage.
 4. Flag heads only after measured human-positive support is adequate.
 
@@ -156,7 +170,7 @@ posts.
 
 ## Pending / deferred
 
-- Mix ×3 3-seed confirm (promote gate).
+- Explicit promote / HF push for Opus ×3.
 - Remaining ~940 Opus v4 labels.
 - Flag-head pilot.
 - Deployment threshold/quantisation on whatever is promoted.
