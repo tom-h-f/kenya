@@ -175,3 +175,46 @@ coded menace labelled `offensive`).
 - Remaining ~940 Opus v4 labels (only if live errors demand).
 - Flag-head pilot.
 - Quantisation measurement if edge deploy is required.
+
+---
+
+## Handoff for the next agent
+
+**Do not** resume classifier training, mix sweeps, or the remaining 940 labels
+unless live production errors show a systematic miss.
+
+### Where you are
+
+| item | value |
+|---|---|
+| Branch / worktree | `feat/opus-v4-relabel` under `.worktrees/opus-v4-relabel` |
+| Investigation dir | `analysis/investigations/2026-07-18-hatespeech-finetune/` |
+| Source of truth | **this file (`STATE.md`)** |
+| Production weights | HF private `tom-h-f/kenya-hatespeech-afroxlmr` (= Modal `model-r3-mix3-s1337`) |
+| Deploy rule | class from model probs; **flag hate if `p_hate >= 0.28`** (not argmax) |
+| Rollback | Modal volume `hatespeech-finetune` → `model-d3-s1337/` |
+| Labels | `out/labels_2026_opus-v4-partial.parquet` (1,500, human-validated Opus v4) |
+| Prompt | `prompts/label_v4.md` |
+
+### Next task (product, not ML)
+
+1. Load `tom-h-f/kenya-hatespeech-afroxlmr` (needs `HF_TOKEN`) via
+   `04_infer.predict` or equivalent.
+2. Score live / R2 Kenyan posts; persist `label`, `p_neither`, `p_offensive`,
+   `p_hate`, and a boolean `hate_flag = p_hate >= 0.28`.
+3. Keep this **separate from** `kma.incitement` (lexicon + NLI). That path
+   writes `incitement/` on R2; do not overwrite `labels/` sentiment rows —
+   see `docs/analysis/data-model.md`.
+4. Surface hate/offensive into Phase 5 desk brief
+   (`docs/plans/2026-07-16-misinfo-desk-brief/`).
+
+Starting points in-repo: `12_score_corpus.py` (batch corpus), `04_infer.py`
+(seam), `docs/analysis/code-map.md` (kma layout), `docs/collection/README.md`
+(live collector).
+
+### Explicit non-goals
+
+- Relitigate class weights / LLRD / Opus ×5 / flag heads.
+- Treat coded-14 p_hate as the success metric (taxonomy → mostly offensive).
+- Burn more Modal GPU on ablations without a new measured failure mode.
+

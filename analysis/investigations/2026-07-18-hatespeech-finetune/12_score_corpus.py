@@ -28,7 +28,8 @@ from _common import OUT
 
 infer = import_module("04_infer")
 
-MODEL_DIR = OUT / "model-d3-s1337"
+MODEL_DIR = OUT / "model-r3-mix3-s1337"  # promoted 2026-07-25; was model-d3-s1337
+
 
 
 def main() -> None:
