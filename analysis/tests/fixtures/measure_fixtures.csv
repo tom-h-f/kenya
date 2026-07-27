@@ -1,0 +1,9 @@
+case,domain,in_kenya_scope,lexicon_hits,min_fp_risk,dehum,violence,othering,pol,label,hate_flag,explicit_toxic,coded_suspect,text
+offdomain_mamdani,offdomain,False,,,,,,,hate,True,False,False,"I have a bill that could Remigrate Zohran Mamdani, and a lot of other foreigners who hate our country. Pass my Remigration Act!"
+kenya_fukuza_ruto,kenya,True,fukuza,high,0.2,0.15,0.1,0.85,neither,False,False,False,Gachagua in Kirinyaga rally right now. Fukuza Ruto #Wantam
+kenya_madoadoa_cleanse,kenya,True,madoadoa,low,0.9,0.8,0.5,0.3,neither,False,False,True,"@YusuphCabdi @HonAdenDuale Tukimaliza kutoa wantam, next ni kutoa madoadoa Kenya. Tuwe safi kama pamba"
+kenya_nyoka_mayai,ambiguous,True,nyoka,high,0.9,0.85,0.4,0.2,neither,False,False,True,"@_KithureKindiki Yangu Iko, but nyoka na mayai yake lazima iende"
+sports_nyoka,ambiguous,True,nyoka,high,0.1,0.1,0.05,0.2,neither,False,False,False,Toto na Tetesi: Nyoka wahangaisha wachezaji kombe la dunia.
+kenya_41vs1,ambiguous,True,41_vs_1,low,0.7,0.6,0.55,0.25,neither,False,False,True,@BoboWamboiKuria Hii nayo mkijaribu 41 vs 1 will be a reality ni hayo kwa sasa
+clean_col,kenya,True,,,0.05,0.05,0.05,0.9,neither,False,False,False,The government must lower the cost of living before 2027 in Kenya.
+us_muslims_congress,offdomain,False,,,0.3,0.2,0.4,0.1,hate,True,False,False,SOCIALISM: This will be the youngest member of Congress from Colorado. America won't survive if we allow African-born socialists to rule us.
