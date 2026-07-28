@@ -13,13 +13,16 @@ def _():
 
     from kma import authenticity, deltas, measure, semantic, viz
     from kma.db import (
+        TARGETED_TYPES,
         authors_source,
         connect,
         embeddings_source,
+        first_seen_types_cte,
         hatespeech_source,
         incitement_source,
         labels_source,
         posts_source,
+        scope_predicate,
     )
 
     # House theme once; seaborn then draws onto viz.new_fig() axes with viz
@@ -28,6 +31,12 @@ def _():
     con = connect()
     con.execute("SET enable_progress_bar=false")
 
+    # Every rate in this notebook is a prevalence measurement, so the corpus is
+    # scoped to posts a BASELINE pass first surfaced. The hate-seeking and CIB
+    # passes oversample the toxic tail by construction; including them would
+    # inflate every rate below. Set to "all" only to inspect the whole corpus.
+    SCOPE = "baseline"
+
     # Severity encoding, fixed across every chart: colour follows the class,
     # never its rank. neither = recessive grey, offensive = orange, hate = red.
     CLASS_ORDER = ["neither", "offensive", "hate"]
@@ -35,11 +44,14 @@ def _():
     return (
         CLASS_COLORS,
         CLASS_ORDER,
+        SCOPE,
+        TARGETED_TYPES,
         authenticity,
         authors_source,
         con,
         deltas,
         embeddings_source,
+        first_seen_types_cte,
         hatespeech_source,
         incitement_source,
         labels_source,
@@ -48,6 +60,7 @@ def _():
         np,
         pd,
         posts_source,
+        scope_predicate,
         semantic,
         sns,
         viz,
@@ -82,27 +95,39 @@ def _(mo):
 
 @app.cell
 def _(
+    SCOPE,
     authors_source,
     con,
     deltas,
+    first_seen_types_cte,
     hatespeech_source,
     incitement_source,
     labels_source,
     measure,
     pd,
     posts_source,
+    scope_predicate,
 ):
     # One enriched frame, loaded once. Post (latest) INNER hatespeech (100%
     # coverage), LEFT the author-origin proxy, incitement rhetoric (81%) and
     # sentiment/emotion (100%). Measurement columns (domain, coded_suspect,
     # explicit_toxic) are derived in pandas via kma.measure - not persisted.
+    #
+    # Scoping is on FIRST-seen type, not the latest row's: a post found by a
+    # baseline search and later re-collected by a hate pass keeps its latest
+    # `type`, so scoping on that would drain exactly the toxic tail out of the
+    # baseline denominator and read as a falling trend.
     df = con.sql(
         f"""
-        WITH p AS (
-            SELECT platform_post_id, author_id, author_handle, created_at, text,
-                   like_count, reply_count, repost_count, quote_count,
-                   hashtags, lang
-            FROM {posts_source("x")}
+        WITH {first_seen_types_cte("x", "fs")},
+        p AS (
+            SELECT p0.platform_post_id, p0.author_id, p0.author_handle,
+                   p0.created_at, p0.text,
+                   p0.like_count, p0.reply_count, p0.repost_count, p0.quote_count,
+                   p0.hashtags, p0.lang, fs.first_type
+            FROM {posts_source("x")} p0
+            JOIN fs USING (platform, platform_post_id)
+            WHERE {scope_predicate(SCOPE, "fs.first_type")}
             QUALIFY row_number() OVER (
                 PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
             ) = 1
@@ -129,7 +154,7 @@ def _(
         )
         SELECT
             p.platform_post_id, p.author_id, p.author_handle, p.created_at,
-            p.text, p.hashtags, p.lang,
+            p.text, p.hashtags, p.lang, p.first_type,
             (p.like_count + p.reply_count + p.repost_count + p.quote_count) AS engagement,
             p.like_count,
             h.label, h.p_neither, h.p_offensive, h.p_hate, h.hate_flag,
@@ -153,6 +178,48 @@ def _(
     df["toxic"] = (df["label"] != "neither") | df["hate_flag"]
     df = measure.attach_measurement_columns(df)
     return (df,)
+
+
+@app.cell
+def _(SCOPE, TARGETED_TYPES, con, first_seen_types_cte, mo, posts_source):
+    # What the scope filter above actually removed. Targeted passes (hate-seeking
+    # search, ethnonym search, seed-account timelines, CIB expansion) chase the
+    # toxic tail on purpose, so their posts cannot sit in a prevalence
+    # denominator. Reported rather than silently dropped.
+    _mix = con.sql(
+        f"""
+        WITH {first_seen_types_cte("x", "fs")}
+        SELECT first_type, count(*) AS n, min(first_collected_at) AS since
+        FROM fs GROUP BY 1 ORDER BY n DESC
+        """
+    ).df()
+    _tgt = _mix[_mix["first_type"].isin(TARGETED_TYPES)]
+    if _tgt.empty:
+        _banner = mo.callout(
+            mo.md(
+                f"Scope **`{SCOPE}`**. No targeted-collection partitions exist yet, "
+                "so this is the whole corpus - every rate below is directly "
+                "comparable to the pre-hate-seeking baseline."
+            ),
+            kind="neutral",
+        )
+    else:
+        _rows = ", ".join(
+            f"`{r.first_type}` {r.n:,}" for r in _tgt.itertuples()
+        )
+        _banner = mo.callout(
+            mo.md(
+                f"Scope **`{SCOPE}`**: **{int(_tgt['n'].sum()):,} targeted-collection "
+                f"posts excluded** ({_rows}), first collected "
+                f"**{_tgt['since'].min():%Y-%m-%d}**. These passes oversample toxic "
+                "speech by construction; including them would inflate every rate "
+                "below. Scoping is on first-seen partition, so a baseline post "
+                "later re-collected by a targeted pass stays in the denominator."
+            ),
+            kind="warn",
+        )
+    _banner
+    return
 
 
 @app.cell

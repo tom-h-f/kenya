@@ -50,8 +50,36 @@ all in `analysis/src/kma/db.py`.
 | `coordination/` | analysis (`coordination.py`) | `platform`, `kind`, (`channel`, `method`), `dt` | per kind | `coordination_source`, `latest_coordination_edges/clusters` |
 | `stories/` | analysis (`stories.py`) | `platform`, `dt` | `stable_story_id` (by `computed_at`) | `stories_source`, `latest_stories` |
 
-`type` for `posts/` is one of `search`, `timeline`, `replies`, `hydrated`
-(see the collection docs for which method writes which).
+`type` for `posts/` encodes **collection provenance**, and is one of
+`search`, `timeline`, `replies`, `hydrated` (baseline) or `hate_search`,
+`hate_target_search`, `hate_timeline`, `hate_replies`, `hate_hydrated`,
+`cib_timeline` (targeted). See the collection docs for which method writes
+which. The registries are `db.BASELINE_TYPES` / `db.TARGETED_TYPES`.
+
+### Prevalence must be baseline-scoped, on first-seen type
+
+Targeted partitions chase hate speech and coordination, so they oversample the
+toxic tail by construction. Any prevalence, rate, or trend measurement must
+exclude them:
+
+```python
+latest_posts(con, scope="baseline")     # every rate
+latest_posts(con, scope="targeted")     # inspect what the hate/CIB passes pulled
+latest_posts(con, scope="all")          # whole corpus (the default)
+```
+
+**Scope on `first_seen_types_cte`, never on the latest row's `type`.** The
+`latest_*` pattern keeps the newest `collected_at`, so a post first found by a
+baseline search and later re-collected by a targeted pass has its `type`
+flipped to the targeted one - and it is by construction a post the targeted
+query matched, i.e. the toxic tail. Scoping on the latest row would quietly
+drain exactly those posts out of the baseline denominator, deflating measured
+toxicity over time in a way that reads as a real downward trend.
+
+An unrecognised `type` raises rather than falling into a bucket, so a future
+partition cannot silently pollute the baseline or vanish from both scopes. Add
+new partitions to one of the two registries in `db.py`. Tests:
+`analysis/tests/test_scope.py`.
 
 ## Schemas
 

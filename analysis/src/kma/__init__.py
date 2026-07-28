@@ -1,23 +1,31 @@
 from kma.db import (
+    BASELINE_TYPES,
+    TARGETED_TYPES,
     authors_source,
     connect,
     coordination_source,
+    first_seen_types_cte,
     latest_coordination_clusters,
     latest_coordination_edges,
     latest_posts,
     metrics_source,
     posts,
     posts_source,
+    scope_predicate,
 )
 
 __all__ = [
+    "BASELINE_TYPES",
+    "TARGETED_TYPES",
     "authors_source",
     "connect",
     "coordination_source",
+    "first_seen_types_cte",
     "latest_coordination_clusters",
     "latest_coordination_edges",
     "latest_posts",
     "metrics_source",
     "posts",
     "posts_source",
+    "scope_predicate",
 ]

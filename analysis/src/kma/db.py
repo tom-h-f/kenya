@@ -41,19 +41,100 @@ def posts_source(platform: str = "*", type: str = "*") -> str:
     return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
 
 
+# Collection provenance. Baseline partitions sample the discourse; targeted ones
+# chase hate speech and coordination, so they oversample the toxic tail by
+# construction. Any prevalence or rate measurement must scope to `baseline`.
+BASELINE_TYPES = ("search", "timeline", "replies", "hydrated")
+TARGETED_TYPES = (
+    "hate_search",
+    "hate_target_search",
+    "hate_timeline",
+    "hate_replies",
+    "hate_hydrated",
+    "cib_timeline",
+)
+KNOWN_TYPES = BASELINE_TYPES + TARGETED_TYPES
+SCOPES = ("all", "baseline", "targeted")
+
+
+def _sql_list(values) -> str:
+    return ", ".join("'" + v.replace("'", "''") + "'" for v in values)
+
+
+def first_seen_types_cte(platform: str = "*", name: str = "_first_seen") -> str:
+    """A CTE body mapping platform_post_id -> the partition that FIRST surfaced it.
+
+    Prevalence must scope on this, never on the latest row's `type`. `latest_*`
+    keeps the newest `collected_at`, so a post first found by a baseline search
+    and later re-collected by a targeted one has its `type` flipped - and it is
+    by construction a post the targeted query matched, i.e. the toxic tail.
+    Scoping on the latest row would quietly drain those posts out of the
+    baseline denominator and read as a falling trend.
+    """
+    return f"""{name} AS (
+        SELECT platform, platform_post_id,
+               min_by(type, collected_at) AS first_type,
+               min(collected_at)          AS first_collected_at
+        FROM {posts_source(platform)}
+        GROUP BY platform, platform_post_id
+    )"""
+
+
+def scope_predicate(scope: str = "baseline", col: str = "first_type") -> str:
+    """A SQL predicate selecting one collection scope by first-seen type.
+
+    An unrecognised type raises rather than falling into a bucket: a future
+    partition must not be able to silently pollute the baseline denominator,
+    nor to vanish from both scopes.
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"unknown scope {scope!r} (expected one of {SCOPES})")
+    if scope == "all":
+        return "TRUE"
+    wanted = BASELINE_TYPES if scope == "baseline" else TARGETED_TYPES
+    other = TARGETED_TYPES if scope == "baseline" else BASELINE_TYPES
+    return f"""CASE
+        WHEN {col} IN ({_sql_list(wanted)}) THEN TRUE
+        WHEN {col} IN ({_sql_list(other)}) THEN FALSE
+        ELSE error('unknown post type ' || coalesce({col}, 'NULL')
+                   || ' - add it to kma.db.BASELINE_TYPES or TARGETED_TYPES')
+    END"""
+
+
 def posts(con: duckdb.DuckDBPyConnection, platform: str = "*", type: str = "*"):
     """All collected post rows (every engagement snapshot, not deduped)."""
     return con.sql(f"SELECT * FROM {posts_source(platform, type)}")
 
 
-def latest_posts(con: duckdb.DuckDBPyConnection, platform: str = "*", type: str = "*"):
-    """One row per post: its most recently collected state."""
-    return con.sql(
-        f"""
-        SELECT * FROM {posts_source(platform, type)}
+def latest_posts(
+    con: duckdb.DuckDBPyConnection,
+    platform: str = "*",
+    type: str = "*",
+    scope: str = "all",
+):
+    """One row per post: its most recently collected state.
+
+    `scope` filters by collection provenance - "baseline" for any prevalence or
+    rate measurement, "targeted" to inspect what the hate/CIB passes pulled,
+    "all" (default) for the whole corpus. See `first_seen_types_cte`.
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"unknown scope {scope!r} (expected one of {SCOPES})")
+    dedup = """
         QUALIFY row_number() OVER (
             PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
         ) = 1
+    """
+    if scope == "all":
+        return con.sql(f"SELECT * FROM {posts_source(platform, type)} {dedup}")
+    return con.sql(
+        f"""
+        WITH {first_seen_types_cte(platform)}
+        SELECT p.*, fs.first_type, fs.first_collected_at
+        FROM {posts_source(platform, type)} p
+        JOIN _first_seen fs USING (platform, platform_post_id)
+        WHERE {scope_predicate(scope, "fs.first_type")}
+        {dedup}
         """
     )
 
