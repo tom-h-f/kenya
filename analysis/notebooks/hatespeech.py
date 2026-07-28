@@ -176,7 +176,16 @@ def _(
     df["is_offensive"] = df["label"] == "offensive"
     df["is_hate"] = df["label"] == "hate"
     df["toxic"] = (df["label"] != "neither") | df["hate_flag"]
-    df = measure.attach_measurement_columns(df)
+
+    # Measurement columns are persisted onto hatespeech/ from 2026-07 onward.
+    # Recompute only the rows that predate the rollout, so the notebook and the
+    # automated consumers read exactly the same values.
+    _needs = df["domain"].isna() if "domain" in df.columns else pd.Series(True, index=df.index)
+    if _needs.any():
+        _live = measure.attach_measurement_columns(df[_needs])
+        for _c in ("domain", "in_kenya_scope", "coded_suspect", "explicit_toxic"):
+            df.loc[_needs, _c] = _live[_c]
+    df["in_kenya_scope"] = df["in_kenya_scope"].astype(bool)
     return (df,)
 
 

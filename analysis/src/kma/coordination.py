@@ -21,6 +21,7 @@ scorecards are a triage tool for human review, never an auto-label.
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 
@@ -28,8 +29,16 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from kma.db import BUCKET, embeddings_source, engagements_source, posts_source
+from kma.db import (
+    BUCKET,
+    embeddings_source,
+    engagements_source,
+    hatespeech_source,
+    posts_source,
+)
 from kma.semantic import DIM, MODEL, _slug
+
+log = logging.getLogger("kma")
 
 SAMPLING_CAVEAT = (
     "Capture is a sample, not a census: absence of a co-action is not evidence "
@@ -1241,7 +1250,97 @@ def scorecards(
     df["inauthenticity_index"] = sum(
         w * df[f"ix_{k}"] for k, w in INAUTHENTICITY_WEIGHTS.items()
     )
+    df = attach_hate_columns(con, members, df, platform=platform)
     return df.sort_values("inauthenticity_index", ascending=False, ignore_index=True)
+
+
+def attach_hate_columns(
+    con: duckdb.DuckDBPyConnection,
+    members: pd.DataFrame,
+    scorecard: pd.DataFrame,
+    platform: str = "x",
+) -> pd.DataFrame:
+    """Add per-cluster hate columns, reported as a SEPARATE `hate_index`.
+
+    Deliberately not folded into `INAUTHENTICITY_WEIGHTS`: coordination and hate
+    are different claims. A cluster can be plainly coordinated and entirely
+    non-toxic (a campaign amplification ring), or toxic and uncoordinated.
+    Mixing them would make the existing index uninterpretable and would silently
+    reshuffle every historical ranking. Triage is 2-D: inauthenticity x hate.
+
+    `toxic_concentration` is the Herfindahl index of flagged posts across
+    members - the cluster-level restatement of "one post is not a network". A
+    cluster where a single member carries all the toxicity is a loud individual
+    inside an otherwise ordinary group, not a hate network, and scores near 1.
+    """
+    out = scorecard.copy()
+    cols = ["toxic_share", "coded_share", "n_toxic_authors", "toxic_concentration",
+            "hate_index"]
+    try:
+        con.register("_hate_members", members[["cluster_id", "author_id"]])
+        try:
+            posts = _member_posts(con, platform)
+            stats = con.sql(
+                f"""
+                WITH lh AS (
+                    SELECT * FROM {hatespeech_source(platform)}
+                    QUALIFY row_number() OVER (
+                        PARTITION BY platform_post_id ORDER BY scored_at DESC
+                    ) = 1
+                ), scoped AS (
+                    SELECT m.cluster_id, p.author_id,
+                        (h.label <> 'neither' OR COALESCE(h.hate_flag, FALSE)) AS toxic,
+                        COALESCE(TRY_CAST(h.coded_suspect AS BOOLEAN), FALSE) AS coded
+                    FROM _hate_members m
+                    JOIN {posts} p ON p.author_id = m.author_id
+                    JOIN lh h ON h.platform_post_id = p.platform_post_id
+                ), per_author AS (
+                    SELECT cluster_id, author_id,
+                        count(*) AS n_posts,
+                        count(*) FILTER (WHERE toxic) AS n_toxic,
+                        count(*) FILTER (WHERE coded) AS n_coded
+                    FROM scoped GROUP BY cluster_id, author_id
+                ), cluster_tot AS (
+                    SELECT cluster_id,
+                        sum(n_posts) AS tot_posts,
+                        sum(n_toxic) AS tot_toxic,
+                        sum(n_coded) AS tot_coded
+                    FROM per_author GROUP BY cluster_id
+                ), joined AS (
+                    SELECT a.*, t.tot_posts, t.tot_toxic, t.tot_coded
+                    FROM per_author a JOIN cluster_tot t USING (cluster_id)
+                )
+                SELECT cluster_id,
+                    max(tot_toxic) * 1.0 / nullif(max(tot_posts), 0) AS toxic_share,
+                    max(tot_coded) * 1.0 / nullif(max(tot_posts), 0) AS coded_share,
+                    count(*) FILTER (WHERE n_toxic >= 3) AS n_toxic_authors,
+                    sum(pow(n_toxic * 1.0 / nullif(tot_toxic, 0), 2)) AS toxic_concentration
+                FROM joined GROUP BY cluster_id
+                """
+            ).df()
+        finally:
+            con.unregister("_hate_members")
+    except duckdb.Error:
+        # A missing prefix is expected before the first enrich run; a malformed
+        # query is not, and must never masquerade as "no data".
+        log.exception("hate columns unavailable; reporting nulls")
+        for c in cols:
+            out[c] = np.nan
+        return out
+
+    out = out.merge(stats, on="cluster_id", how="left")
+    for c in ("toxic_share", "coded_share", "n_toxic_authors", "toxic_concentration"):
+        if c not in out.columns:
+            out[c] = np.nan
+    # Spread beats level: toxicity carried by many members is a network signal,
+    # the same member carrying it all is not.
+    spread = 1.0 - out["toxic_concentration"].fillna(1.0)
+    out["hate_index"] = (
+        out["toxic_share"].fillna(0.0) * 0.5
+        + out["coded_share"].fillna(0.0) * 0.2
+        + spread * 0.3
+    )
+    return out
 
 
 def member_table(

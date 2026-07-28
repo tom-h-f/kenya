@@ -187,9 +187,31 @@ read `label` and `hate_flag` together. Its **own prefix**, like `incitement/`
 and for the same reason: `latest_*` dedups on `platform_post_id` alone, so a
 second writer under `labels/` or `incitement/` would shadow those rows.
 
-Automated notebook rates (Kenya-scoped explicit toxic + `coded_suspect`) are
-**derived at read time** in `kma.measure` / `notebooks/hatespeech.py` from post
-text + these scores + incitement NLI. They are not written back to R2.
+**Measurement columns**, written with every new or refreshed row so automated
+consumers can read them in pure SQL instead of re-running the lexicon and
+re-joining the NLI:
+
+| column | type | meaning |
+|---|---|---|
+| `domain` | string | `kenya` / `offdomain` / `ambiguous` (`measure.domain_bucket`) |
+| `in_kenya_scope` | bool | `domain != offdomain` |
+| `lexicon_hits` | list\<string\> | live `incitement.scan_text` hits at write time |
+| `coded_suspect` | bool | lexicon hit corroborated by NLI, gated by the term's `fp_risk` |
+| `explicit_toxic` | bool | Kenya-scoped `(label != neither) \| hate_flag` |
+| `flagged` | bool | `hate_flag \| coded_suspect` - the operational OR |
+
+Rules live in `kma.measure` and are called from `hatespeech._measure_frame`, so
+persisted columns cannot drift from the read-time helper. `coded_suspect` is
+false when NLI is missing (a lexicon hit alone is never evidence), so `flagged`
+never over-flags on incomplete enrichment.
+
+Runs written before these columns existed lack them: read with `union_by_name`
+and treat nulls as "needs refresh". `python -m kma.hatespeech --refresh-measure`
+recomputes them on CPU, reusing the stored model scores verbatim - afro-xlmr
+never re-runs. Rerun it after retuning the `_CODED_MENACE_MIN` gates.
+
+The collector's `hate_signal` reads `in_kenya_scope` / `coded_suspect` when
+present and degrades to unscoped toxicity when they are null.
 
 ### coordination/ and stories/
 
