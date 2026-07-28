@@ -93,7 +93,12 @@ async def collect_x(
     timeline_limit: int,
     keywords: bool = True,
     accounts: bool = True,
+    search_type: str = "search",
+    timeline_type: str = "timeline",
 ) -> dict[str, int]:
+    """`search_type` / `timeline_type` pick the R2 `posts/type=` partition.
+    Targeted passes override them so their oversampled posts stay out of the
+    baseline prevalence denominator (see kma.db.BASELINE_TYPES)."""
     counts: dict[str, int] = {}
 
     if keywords and targets.keywords and search_windows:
@@ -118,8 +123,8 @@ async def collect_x(
                         collector, kw, search_windows, min_faves, window_limit
                     )
                 )
-        key = storage.write_posts(search_posts, target_type="search")
-        counts["search"] = len(search_posts)
+        key = storage.write_posts(search_posts, target_type=search_type)
+        counts[search_type] = len(search_posts)
         if key:
             log.info("wrote %d search posts -> %s", len(search_posts), key)
 
@@ -129,8 +134,8 @@ async def collect_x(
             got = [p async for p in collector.timeline(handle, limit=timeline_limit)]
             log.info("timeline @%s -> %d posts", handle, len(got))
             timeline_posts.extend(got)
-        key = storage.write_posts(timeline_posts, target_type="timeline")
-        counts["timeline"] = len(timeline_posts)
+        key = storage.write_posts(timeline_posts, target_type=timeline_type)
+        counts[timeline_type] = len(timeline_posts)
         if key:
             log.info("wrote %d timeline posts -> %s", len(timeline_posts), key)
 
@@ -140,6 +145,91 @@ async def collect_x(
     if key:
         log.info("wrote %d authors -> %s", len(authors), key)
 
+    return counts
+
+
+async def collect_hate_seek(
+    collector: Collector,
+    storage: Storage,
+    queries: list,
+    anchors: dict[str, list[str]],
+    search_windows: list[Window],
+    min_faves: int = 0,
+    window_limit: int = 15,
+    concurrency: int = 1,
+) -> dict[str, int]:
+    """Hate-seeking search pass. Writes to its own `hate_search` /
+    `hate_target_search` partitions, never `search`: these queries oversample
+    toxic speech by construction, so mixing them into the baseline partition
+    would silently bias every prevalence measurement computed downstream
+    (see kma.db.BASELINE_TYPES). Records the rendered queries to
+    `collection_runs/` as the audit trail.
+
+    Its own semaphore, not COLLECT_CONCURRENCY: this is discretionary work and
+    must never contend with baseline keyword coverage."""
+    from kenya_monitor import hate_seek as hs
+
+    sem = asyncio.Semaphore(max(1, concurrency))
+    manifest: list[dict] = []
+
+    async def one(q) -> tuple[str, list[Post]]:
+        got: list[Post] = []
+        async with sem:
+            for since, until in search_windows:
+                rendered = hs.render(
+                    q, anchors, since=since, until=until,
+                    min_faves=min_faves, include_retweets=SEARCH_INCLUDE_RETWEETS,
+                )
+                window_posts = [
+                    p
+                    async for p in collector.search(
+                        q.query,
+                        limit=window_limit,
+                        since=since,
+                        until=until,
+                        min_faves=min_faves,
+                        product=SEARCH_PRODUCT,
+                        include_retweets=SEARCH_INCLUDE_RETWEETS,
+                        anchors=hs.anchors_for(q, anchors),
+                    )
+                ]
+                for p in window_posts:
+                    p.source_query = f"hate:{q.term}"
+                got.extend(window_posts)
+                manifest.append(
+                    {
+                        "target_type": q.target_type,
+                        "term": q.term,
+                        "source": q.source,
+                        "fp_risk": q.fp_risk,
+                        "query": rendered,
+                        "since": since,
+                        "until": until,
+                        "n_posts": len(window_posts),
+                    }
+                )
+        log.info("hate-seek %r (%s) -> %d posts", q.term, q.source, len(got))
+        return q.target_type, got
+
+    results = await asyncio.gather(*[one(q) for q in queries])
+
+    counts: dict[str, int] = {}
+    by_partition: dict[str, list[Post]] = {}
+    for target_type, got in results:
+        by_partition.setdefault(target_type, []).extend(got)
+    for target_type, got in by_partition.items():
+        key = storage.write_posts(got, target_type=target_type)
+        counts[target_type] = len(got)
+        if key:
+            log.info("wrote %d %s posts -> %s", len(got), target_type, key)
+
+    authors = collector.collected_authors()
+    if authors:
+        storage.write_authors(authors)
+        counts["authors"] = len(authors)
+    manifest_key = storage.write_collection_run(manifest)
+    if manifest_key:
+        log.info("wrote %d manifest rows -> %s", len(manifest), manifest_key)
     return counts
 
 
@@ -285,13 +375,22 @@ async def collect_snowball(
     hydrate_limit: int = SNOWBALL_HYDRATE_LIMIT,
     refresh_hours: int = SNOWBALL_REFRESH_HOURS,
     state_path: Path = SNOWBALL_STATE_PATH,
+    objects: tuple[list[str], list[str], list[str]] | None = None,
+    type_prefix: str = "",
 ) -> dict[str, int]:
     """Census pass over hot objects: full retweeter lists (-> engagements/),
     full reply threads (-> posts/type=replies), and hydration of referenced
     originals (-> posts/type=hydrated). Per-object TTL in `state_path` stops
-    hot objects being re-fetched every pass."""
+    hot objects being re-fetched every pass.
+
+    `objects` supplies a pre-computed (retweeted, conversations, missing) triple
+    instead of the engagement-ranked default - the toxic snowball passes
+    `hate_signal.hot_toxic_objects`. `type_prefix` redirects the written posts
+    to a quarantined partition (`hate_replies` / `hate_hydrated`); engagement
+    edges have no `type` partition and need none, since they never enter a
+    prevalence denominator."""
     counts: dict[str, int] = {}
-    retweeted, conversations, missing = hot_objects(
+    retweeted, conversations, missing = objects or hot_objects(
         storage.con,
         storage.posts_view(platform=collector.platform),
         lookback_days,
@@ -321,13 +420,13 @@ async def collect_snowball(
         log.info("replies under %s -> %d", cid, len(got))
         reply_posts.extend(got)
         state[f"conv:{cid}"] = now_iso
-    key = storage.write_posts(reply_posts, target_type="replies")
+    key = storage.write_posts(reply_posts, target_type=f"{type_prefix}replies")
     counts["replies"] = len(reply_posts)
     if key:
         log.info("wrote %d reply posts -> %s", len(reply_posts), key)
 
     hydrated = [p async for p in collector.hydrate(missing)]
-    key = storage.write_posts(hydrated, target_type="hydrated")
+    key = storage.write_posts(hydrated, target_type=f"{type_prefix}hydrated")
     counts["hydrated"] = len(hydrated)
     if key:
         log.info("hydrated %d referenced posts -> %s", len(hydrated), key)

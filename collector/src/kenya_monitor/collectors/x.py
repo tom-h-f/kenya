@@ -136,16 +136,44 @@ def build_api(db_path: Path = DEFAULT_DB_PATH) -> API:
     return api
 
 
+MAX_QUERY_CHARS = 512  # X search rejects longer queries
+
+
+def _or_group(keyword: str) -> str:
+    """Parenthesise a multi-alternative keyword before anything is appended.
+
+    X binds the implicit AND tighter than OR, so `a OR b since:X` means
+    `a OR (b AND since:X)` - the leading alternatives silently escape every
+    filter, including the Kenya anchors that make a high-false-positive term
+    searchable at all. Wrapping is a no-op for single-term keywords."""
+    if " OR " not in keyword:
+        return keyword
+    if keyword.startswith("(") and keyword.endswith(")"):
+        return keyword
+    return f"({keyword})"
+
+
 def build_query(
     keyword: str,
     min_faves: int | None = None,
     since: str | None = None,
     until: str | None = None,
     include_retweets: bool = False,
+    anchors: list[str] | None = None,
+    exclude: list[str] | None = None,
 ) -> str:
     """X search query string. `include:nativeretweets` matters: without it the
-    co-retweet channel only ever sees retweets from target timelines."""
-    parts = [keyword]
+    co-retweet channel only ever sees retweets from target timelines.
+
+    `anchors` conjoins an OR-group - `term (Kenya OR Ruto OR ...)` - scoping a
+    high-false-positive Swahili term to Kenyan political discourse. This is the
+    only scoping available: the platform `lang` field is useless for Swahili
+    (~0% of Swahili posts are tagged `sw`), so `lang:sw` is never emitted."""
+    parts = [_or_group(keyword)]
+    if anchors:
+        parts.append("(" + " OR ".join(anchors) + ")")
+    for term in exclude or []:
+        parts.append(f"-{term}")
     if min_faves:
         parts.append(f"min_faves:{min_faves}")
     if since:
@@ -154,7 +182,10 @@ def build_query(
         parts.append(f"until:{until}")
     if include_retweets:
         parts.append("include:nativeretweets")
-    return " ".join(parts)
+    query = " ".join(parts)
+    if len(query) > MAX_QUERY_CHARS:
+        raise ValueError(f"query is {len(query)} chars, over the {MAX_QUERY_CHARS} limit: {query!r}")
+    return query
 
 
 def _s(value) -> str | None:
@@ -205,8 +236,12 @@ class XCollector(Collector):
         min_faves: int | None = None,
         product: str | None = None,
         include_retweets: bool = False,
+        anchors: list[str] | None = None,
+        exclude: list[str] | None = None,
     ) -> AsyncIterator[Post]:
-        query = build_query(keyword, min_faves, since, until, include_retweets)
+        query = build_query(
+            keyword, min_faves, since, until, include_retweets, anchors, exclude
+        )
         kv = {"product": product} if product else None
         cutoff = _cutoff()
         async for tw in self.api.search(query, limit=limit, kv=kv):

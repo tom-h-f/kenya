@@ -132,10 +132,14 @@ class Collector(ABC):
         min_faves: int | None = None,
         product: str | None = None,
         include_retweets: bool = False,
+        anchors: list[str] | None = None,
+        exclude: list[str] | None = None,
     ) -> AsyncIterator[Post]:
         """Yield posts matching a keyword/hashtag query. `product` picks the
         result ordering where supported ("Latest" = chronological, no ranking
-        bias); `include_retweets` asks for native retweets too."""
+        bias); `include_retweets` asks for native retweets too. `anchors` /
+        `exclude` narrow an ambiguous term (see `x.build_query`); platforms
+        without query-operator support may ignore them."""
         raise NotImplementedError
         yield  # pragma: no cover  (marks this an async generator)
 

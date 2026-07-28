@@ -16,6 +16,7 @@ load_dotenv()
 
 DEFAULT_TARGETS_PATH = APP_ROOT / "config" / "targets.yaml"
 DEFAULT_ACCOUNTS_PATH = APP_ROOT / "config" / "accounts.yaml"
+DEFAULT_HATE_TERMS_PATH = APP_ROOT / "config" / "hate_terms.yaml"
 
 # Stratified search sampling (env-overridable). See the plan / README.
 SEARCH_MIN_FAVES = int(os.getenv("SEARCH_MIN_FAVES", "0"))  # engagement floor per query (0 = none)
@@ -44,6 +45,35 @@ DYNAMIC_HASHTAG_MIN_COUNT = int(os.getenv("DYNAMIC_HASHTAG_MIN_COUNT", "20"))  #
 DYNAMIC_HASHTAG_RATIO = float(os.getenv("DYNAMIC_HASHTAG_RATIO", "5.0"))  # vs prior-7d daily avg
 # Min story_suspicion_index for a flagged story's terms to be promoted (Phase 4).
 STORY_FLAG_MIN_INDEX = float(os.getenv("STORY_FLAG_MIN_INDEX", "0.6"))
+# Min supporting channels for a coordination cluster to drive targeting.
+# Measured on the live corpus (2026-07-28): of 906 clusters / 4,732 accounts,
+# 894 clusters (4,674 accounts) rest on a single channel and 12 clusters (58
+# accounts) are corroborated across co_retweet AND co_reply. Promoting at
+# n_channels >= 1 would hand nearly the whole active author base to the
+# expansion passes, which is not a signal. Cross-channel corroboration is the
+# strongest evidence available short of ground truth (docs/analysis/phase-3).
+CLUSTER_MIN_CHANNELS = int(os.getenv("CLUSTER_MIN_CHANNELS", "2"))
+
+# Hate-seeking collection (docs/collection/hate-seeking.md). Runs as its own
+# cycle step with its own concurrency, never merged into the baseline keyword
+# pool: sharing COLLECT_CONCURRENCY would starve baseline coverage, and sharing
+# the `search` partition would destroy the sampling-bias separation that keeps
+# prevalence measurable (kma.db.BASELINE_TYPES).
+HATE_SEEK_ENABLED = os.getenv("HATE_SEEK_ENABLED", "0") not in ("0", "false", "")
+HATE_SEEK_MAX_TERMS = int(os.getenv("HATE_SEEK_MAX_TERMS", "8"))  # per pass, rotated
+HATE_TARGET_MAX_TERMS = int(os.getenv("HATE_TARGET_MAX_TERMS", "3"))  # ethnonym slots
+HATE_MINE_MAX_TERMS = int(os.getenv("HATE_MINE_MAX_TERMS", "5"))  # mined-term slots
+HATE_SEEK_WINDOW_LIMIT = int(os.getenv("HATE_SEEK_WINDOW_LIMIT", "15"))
+HATE_SEEK_RECENT_DAYS = int(os.getenv("HATE_SEEK_RECENT_DAYS", "2"))
+HATE_SEEK_EVERY_N_CYCLES = int(os.getenv("HATE_SEEK_EVERY_N_CYCLES", "3"))
+HATE_SEEK_CONCURRENCY = int(os.getenv("HATE_SEEK_CONCURRENCY", "1"))
+HATE_TERMS_PATH = Path(os.getenv("HATE_TERMS_PATH", DEFAULT_HATE_TERMS_PATH))
+# Mined terms are machine-derived candidates for searches about ethnic hate.
+# Promoting one automatically risks both false accusation and corpus bias, so
+# the default is write-and-log; a human moves terms into hate_terms.yaml.
+HATE_MINE_AUTOPROMOTE = os.getenv("HATE_MINE_AUTOPROMOTE", "0") not in ("0", "false", "")
+HATE_SEED_MAX_ACCOUNTS = int(os.getenv("HATE_SEED_MAX_ACCOUNTS", "20"))  # seeds per expand pass
+FOLLOW_CRAWL_TOP_HATE = int(os.getenv("FOLLOW_CRAWL_TOP_HATE", "10"))
 
 BURST_ZSCORE = float(os.getenv("BURST_ZSCORE", "3.0"))
 BURST_MIN_POSTS = int(os.getenv("BURST_MIN_POSTS", "100"))  # hourly floor before a burst counts
@@ -71,6 +101,8 @@ STATE_DIR = APP_ROOT / "state"
 DYNAMIC_TARGETS_PATH = Path(os.getenv("DYNAMIC_TARGETS_PATH", STATE_DIR / "dynamic_targets.json"))
 SNOWBALL_STATE_PATH = Path(os.getenv("SNOWBALL_STATE_PATH", STATE_DIR / "snowball.json"))
 FOLLOW_CRAWL_STATE_PATH = Path(os.getenv("FOLLOW_CRAWL_STATE_PATH", STATE_DIR / "follow_crawl.json"))
+HATE_SEEK_STATE_PATH = Path(os.getenv("HATE_SEEK_STATE_PATH", STATE_DIR / "hate_seek.json"))
+MINED_TERMS_PATH = Path(os.getenv("MINED_TERMS_PATH", STATE_DIR / "mined_terms.json"))
 
 
 @dataclass(frozen=True)
@@ -139,6 +171,73 @@ def load_accounts(path: Path = DEFAULT_ACCOUNTS_PATH) -> list[XAccount]:
             )
         )
     return accounts
+
+
+FP_RISKS = ("low", "medium", "high")
+
+
+@dataclass(frozen=True)
+class HateTerm:
+    """One coded-incitement search term. `query` is an X search fragment (it may
+    contain OR groups and quoted phrases); `fp_risk` decides how much Kenya
+    anchoring it gets at render time, never whether it is a verdict."""
+
+    term: str
+    query: str
+    fp_risk: str
+    category: str = ""
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class HateTermSet:
+    terms: list[HateTerm] = field(default_factory=list)
+    anchors: dict[str, list[str]] = field(default_factory=dict)
+    menace: list[str] = field(default_factory=list)
+    ethnonyms: list[str] = field(default_factory=list)
+
+    def by_name(self, name: str) -> HateTerm | None:
+        return next((t for t in self.terms if t.term == name), None)
+
+
+def load_hate_terms(path: Path = DEFAULT_HATE_TERMS_PATH) -> HateTermSet:
+    """The coded-incitement search register (config/hate_terms.yaml).
+
+    Mirrors `kma.incitement.LEXICON` as data - the collector carries no `kma`
+    dependency. Terms are triage seeds documented in NCIC/PeaceTech advisories,
+    not verdicts; most have innocent everyday senses, which is what `fp_risk`
+    is for."""
+    if not path.exists():
+        raise RuntimeError(f"{path} not found - hate-seeking collection needs a term register")
+    raw = yaml.safe_load(path.read_text()) or {}
+    terms = []
+    for entry in raw.get("terms") or []:
+        name = (entry.get("term") or "").strip()
+        query = (entry.get("query") or "").strip()
+        risk = (entry.get("fp_risk") or "").strip()
+        if not name or not query:
+            continue
+        if risk not in FP_RISKS:
+            raise ValueError(f"hate term {name!r} has fp_risk {risk!r}, expected one of {FP_RISKS}")
+        terms.append(
+            HateTerm(
+                term=name,
+                query=query,
+                fp_risk=risk,
+                category=(entry.get("category") or "").strip(),
+                notes=(entry.get("notes") or "").strip(),
+            )
+        )
+    anchors = {k: list(v or []) for k, v in (raw.get("anchors") or {}).items()}
+    for tier in ("core", "wide"):
+        if not anchors.get(tier):
+            raise ValueError(f"hate_terms.yaml is missing the {tier!r} anchor set")
+    return HateTermSet(
+        terms=terms,
+        anchors=anchors,
+        menace=list(raw.get("menace") or []),
+        ethnonyms=list(raw.get("ethnonyms") or []),
+    )
 
 
 def load_targets(path: Path = DEFAULT_TARGETS_PATH) -> dict[str, PlatformTargets]:

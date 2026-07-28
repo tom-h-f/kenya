@@ -100,6 +100,26 @@ FOLLOW_SCHEMA = pa.schema(
     ]
 )
 
+# Audit trail for targeted collection: the only place the RENDERED query string
+# is recorded. `posts.source_query` keeps the bare term, so without this there
+# is no way to reconstruct what was actually asked of the platform, or when.
+# For a project that searches for ethnic hate speech this is the difference
+# between "we monitored hate speech" and "here is exactly what we searched for".
+COLLECTION_RUN_SCHEMA = pa.schema(
+    [
+        ("run_id", pa.string()),
+        ("target_type", pa.string()),
+        ("term", pa.string()),
+        ("source", pa.string()),
+        ("fp_risk", pa.string()),
+        ("query", pa.string()),
+        ("since", pa.string()),
+        ("until", pa.string()),
+        ("n_posts", pa.int64()),
+        ("collected_at", pa.timestamp("us", tz="UTC")),
+    ]
+)
+
 
 def run_id(now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
@@ -194,6 +214,45 @@ class Storage:
         key = f"follows/platform={platform}/dt={_dt_partition(now)}/run={run_id(now)}.parquet"
         self._copy_table(table, key)
         return key
+
+    def write_collection_run(
+        self, rows: Sequence[dict], platform: str = "x", now: datetime | None = None
+    ) -> str | None:
+        """Append the query manifest for one targeted-collection pass."""
+        if not rows:
+            return None
+        now = now or datetime.now(timezone.utc)
+        rid = run_id(now)
+        buf = [
+            {
+                "run_id": rid,
+                "target_type": r.get("target_type"),
+                "term": r.get("term"),
+                "source": r.get("source"),
+                "fp_risk": r.get("fp_risk"),
+                "query": r.get("query"),
+                "since": r.get("since"),
+                "until": r.get("until"),
+                "n_posts": int(r.get("n_posts", 0)),
+                "collected_at": now,
+            }
+            for r in rows
+        ]
+        table = pa.Table.from_pylist(buf, schema=COLLECTION_RUN_SCHEMA)
+        key = f"collection_runs/platform={platform}/dt={_dt_partition(now)}/run={rid}.parquet"
+        self._copy_table(table, key)
+        return key
+
+    def collection_runs_view(self, platform: str = "*") -> str:
+        """Rendered-query audit trail for targeted collection passes."""
+        glob = self._uri(f"collection_runs/platform={platform}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+    def hatespeech_view(self, platform: str = "*") -> str:
+        """Analysis-written hate scores (kma.hatespeech). Read-only here: the
+        collector runs no models, it selects targets from scored parquet."""
+        glob = self._uri(f"hatespeech/platform={platform}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
 
     def healthcheck(self) -> int:
         """Round-trip a probe under a fixed key outside posts/ (overwritten each call)."""

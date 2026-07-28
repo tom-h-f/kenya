@@ -1,0 +1,132 @@
+# Hate-seeking search register for the 2027 Kenyan election monitor.
+#
+# THIS IS NOT A LIST OF VERDICTS. Every term below has an innocent everyday
+# sense in Swahili, Sheng or Kenyan English (`mende` is a cockroach, `nyoka` is
+# a snake, `fukuza` is the ordinary verb "chase away"). A hit means "a human
+# should read this", never "this is hate speech". The terms are documented in
+# NCIC advisories and the PeaceTech Lab Kenya lexicon as coded incitement
+# markers from the 2007-08 and 2017 cycles.
+#
+# Mirrors `kma.incitement.LEXICON` (analysis/src/kma/incitement.py) as DATA,
+# not code - the collector deliberately carries no `kma` dependency and no ML
+# deps, the same precedent as `suspicion.py` mirroring `kma.authenticity` in
+# pure SQL. IF YOU ADD A TERM THERE, ADD IT HERE (and vice versa);
+# collector/tests/test_hate_seek.py asserts the two registers agree.
+#
+# `fp_risk` drives how much Kenya scoping a term gets at query time, because
+# the platform `lang` field is useless for Swahili (~0% of Swahili posts are
+# tagged `sw`, measured in the 2026-07-17 manipulation sweep) so `lang:sw` is
+# not an option:
+#   low    -> searched bare; these are near-unique phrases and anchoring would
+#             cost the recall that matters most
+#   medium -> conjoined with `anchors.core`
+#   high   -> conjoined with `anchors.wide`; everyday words that would
+#             otherwise return a Swahili-noise firehose from the whole region
+
+anchors:
+  core:
+    [Kenya, Ruto, Gachagua, IEBC, Kalonzo, Wantam]
+  wide:
+    [Kenya, Kenyan, Ruto, Gachagua, IEBC, Kalonzo, Wantam, Nairobi, Kisumu,
+     Eldoret, ODM, UDA]
+
+# Menace verbs/phrases conjoined with an ethnonym for the targets-of-hate pass.
+# A bare ethnonym is a firehose of ordinary discussion; the conjunction is what
+# makes the query about threat rather than about a community.
+menace:
+  ["rudi kwao", waondoke, wafukuzwe, madoadoa, kwekwe, "watajua hawajui"]
+
+# Communities historically targeted in Kenyan election violence. Present here
+# ONLY as the target side of a menace conjunction - never searched bare.
+# Posts found this way land in the quarantined `hate_target_search` partition
+# and are excluded from every prevalence measure, because searching ethnonyms
+# biases the corpus toward ethnicised discourse and would corrupt any
+# "how ethnicised is the discourse" statistic computed on it.
+ethnonyms:
+  [Kikuyu, Luhya, Kalenjin, Luo, Kamba, Kisii, Somali, Nubian]
+
+terms:
+  # -- dehumanisation ------------------------------------------------------
+  - term: madoadoa
+    category: dehumanisation
+    fp_risk: low
+    query: 'madoadoa OR "madoa doa"'
+    notes: "'spots/stains' - marking a community for removal; NCIC-flagged, 2007-08 era"
+  - term: sangari
+    category: dehumanisation
+    fp_risk: low
+    query: sangari
+    notes: "'couch grass to uproot'; 2007-08 era"
+  - term: kwekwe
+    category: dehumanisation
+    fp_risk: medium
+    query: kwekwe
+    notes: "'weeds' (to be uprooted); NCIC-flagged"
+  - term: madimoni
+    category: dehumanisation
+    fp_risk: medium
+    query: madimoni
+    notes: "'demons'"
+  - term: fumigate
+    category: dehumanisation
+    fp_risk: medium
+    query: fumigate OR fumigating OR fukiza
+    notes: "pest-control framing of people; 2017 era"
+  - term: mende
+    category: dehumanisation
+    fp_risk: high
+    query: mende
+    notes: "'cockroaches' - everyday word for the insect; needs NLI corroboration"
+  - term: nyoka
+    category: dehumanisation
+    fp_risk: high
+    query: nyoka
+    notes: "'snakes' - everyday word; needs NLI corroboration"
+  # -- expulsion -----------------------------------------------------------
+  - term: rudi_kwao
+    category: expulsion
+    fp_risk: medium
+    query: '"rudi kwao" OR "warudi kwao"'
+    notes: "'(they should) go back to their homeland'"
+  - term: waondoke
+    category: expulsion
+    fp_risk: medium
+    query: waondoke
+    notes: "'they must leave'"
+  - term: fukuza
+    category: expulsion
+    fp_risk: high
+    query: fukuza OR wafukuzwe OR tufukuze
+    notes: "'chase away/expel' - generic verb; context decides the target"
+  # -- veiled threat -------------------------------------------------------
+  - term: watajua_hawajui
+    category: veiled_threat
+    fp_risk: low
+    query: '"watajua hawajui"'
+    notes: "'they will know they don't know' - NCIC-flagged veiled threat"
+  - term: kimeumana
+    category: veiled_threat
+    fp_risk: medium
+    query: kimeumana
+    notes: "'it has bitten / things have escalated' - 2017-era coded"
+  # -- othering ------------------------------------------------------------
+  - term: 41_vs_1
+    category: othering
+    fp_risk: low
+    query: '"41 vs 1" OR "41 against 1" OR "41 versus 1"'
+    notes: "2007-era anti-Kikuyu coalition framing"
+  - term: watu_wa_kule
+    category: othering
+    fp_risk: medium
+    query: '"watu wa kule"'
+    notes: "'those people from there'"
+  - term: wabara
+    category: othering
+    fp_risk: medium
+    query: 'wabara OR "watu wa bara"'
+    notes: "coastal term for upcountry people; MRC-era othering"
+  - term: uthamaki
+    category: othering
+    fp_risk: medium
+    query: uthamaki
+    notes: "Kikuyu kingship/supremacy discourse marker (context term)"
