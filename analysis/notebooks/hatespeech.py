@@ -55,28 +55,26 @@ def _():
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        # Hate & offensive speech in the Kenya 2027 stream
+    mo.md("""
+    # Hate & offensive speech in the Kenya 2027 stream
 
-        Every collected post is scored by the fine-tuned afro-xlmr 3-class
-        classifier (`neither` / `offensive` / `hate`) and joined here to author
-        origin, dangerous-speech rhetoric (the NCIC coded-term lexicon),
-        sentiment/emotion, reach, and account behaviour.
+    Every collected post is scored by the fine-tuned afro-xlmr 3-class
+    classifier (`neither` / `offensive` / `hate`) and joined here to author
+    origin, dangerous-speech rhetoric (the NCIC coded-term lexicon),
+    sentiment/emotion, reach, and account behaviour.
 
-        The questions this notebook answers: **how much** toxic speech is in the
-        discourse, **whether it is trending** toward the election, **where** it
-        comes from, **what kind** of dangerous speech it is, **whether it
-        spreads**, and **what it is about**.
+    The questions this notebook answers: **how much** toxic speech is in the
+    discourse, **whether it is trending** toward the election, **where** it
+    comes from, **what kind** of dangerous speech it is, **whether it
+    spreads**, and **what it is about**.
 
-        `label` is the argmax class; `hate_flag` is the deploy triage rule
-        `p_hate >= 0.28` (an explicit threshold, not argmax - the taxonomy pushes
-        most coded menace without a protected-group target to `offensive`, so
-        read the two together). **Everything here is triage for a human analyst,
-        never an automated verdict**, and the geographic/ethnic lenses are coarse
-        author-origin proxies, not statements about who any post targets.
-        """
-    )
+    `label` is the argmax class; `hate_flag` is the deploy triage rule
+    `p_hate >= 0.28` (an explicit threshold, not argmax - the taxonomy pushes
+    most coded menace without a protected-group target to `offensive`, so
+    read the two together). **Everything here is triage for a human analyst,
+    never an automated verdict**, and the geographic/ethnic lenses are coarse
+    author-origin proxies, not statements about who any post targets.
+    """)
     return
 
 
@@ -175,16 +173,14 @@ def _(df, mo):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## A. How severe, and how confident
+    mo.md("""
+    ## A. How severe, and how confident
 
-        The classifier emits a probability per class. `p_hate` separates cleanly
-        for `neither`, but `offensive` and `hate` overlap - which is exactly why
-        the deploy rule flags on a **0.28 threshold** (dashed line) rather than
-        the argmax winner. Posts to the right of the line reach the human queue.
-        """
-    )
+    The classifier emits a probability per class. `p_hate` separates cleanly
+    for `neither`, but `offensive` and `hate` overlap - which is exactly why
+    the deploy rule flags on a **0.28 threshold** (dashed line) rather than
+    the argmax winner. Posts to the right of the line reach the human queue.
+    """)
     return
 
 
@@ -207,7 +203,7 @@ def _(CLASS_COLORS, CLASS_ORDER, df, sns, viz):
 
 
 @app.cell
-def _(df, mo):
+def _(mo):
     klass = mo.ui.dropdown(
         {"all": "all", "hate": "hate", "offensive": "offensive", "neither": "neither"},
         value="hate", label="Class",
@@ -237,17 +233,15 @@ def _(df, klass, mo, sort_by):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## B. Is toxicity trending toward the election?
+    mo.md("""
+    ## B. Is toxicity trending toward the election?
 
-        Daily share of posts the model calls `offensive` or `hate`, with a 7-day
-        rolling mean (bold). A sustained rise in the run-up to the 2027 vote is
-        the signal worth watching; single-day spikes usually track a specific
-        rally, announcement or viral row. Restricted to 2026 (99.8% of the
-        corpus; a handful of older posts are dropped from the time axis).
-        """
-    )
+    Daily share of posts the model calls `offensive` or `hate`, with a 7-day
+    rolling mean (bold). A sustained rise in the run-up to the 2027 vote is
+    the signal worth watching; single-day spikes usually track a specific
+    rally, announcement or viral row. Restricted to 2026 (99.8% of the
+    corpus; a handful of older posts are dropped from the time axis).
+    """)
     return
 
 
@@ -303,7 +297,7 @@ def _(df, viz):
 
 
 @app.cell
-def _(df, np, pd, sns, viz):
+def _(df, sns, viz):
     _d = df[df["created_at"].dt.year == 2026].copy()
     _d["hour"] = _d["created_at"].dt.hour
     _d["dow"] = _d["created_at"].dt.dayofweek
@@ -328,17 +322,15 @@ def _(df, np, pd, sns, viz):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## C. Where it comes from
+    mo.md("""
+    ## C. Where it comes from
 
-        Prevalence by the **author's** region, derived from self-declared
-        profile location. Two hard caveats: only ~a third of accounts carry a
-        mappable location, and this is where the *poster* is from, **not who a
-        post targets**. Read as a coarse aggregate signal, never about an
-        individual.
-        """
-    )
+    Prevalence by the **author's** region, derived from self-declared
+    profile location. Two hard caveats: only ~a third of accounts carry a
+    mappable location, and this is where the *poster* is from, **not who a
+    post targets**. Read as a coarse aggregate signal, never about an
+    individual.
+    """)
     return
 
 
@@ -419,18 +411,16 @@ def _(df, sns, viz):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## D. What kind of dangerous speech
+    mo.md("""
+    ## D. What kind of dangerous speech
 
-        The incitement lexicon tags posts with NCIC/PeaceTech coded-term
-        categories - the specific rhetoric that preceded past Kenyan election
-        violence. The first chart is how often each category appears among
-        flagged posts; the second cross-tabs the model's class against the
-        lexicon category, showing where the fine-tuned model and the coded-term
-        scan corroborate each other.
-        """
-    )
+    The incitement lexicon tags posts with NCIC/PeaceTech coded-term
+    categories - the specific rhetoric that preceded past Kenyan election
+    violence. The first chart is how often each category appears among
+    flagged posts; the second cross-tabs the model's class against the
+    lexicon category, showing where the fine-tuned model and the coded-term
+    scan corroborate each other.
+    """)
     return
 
 
@@ -455,7 +445,7 @@ def _(df, sns, viz):
 
 
 @app.cell
-def _(CLASS_ORDER, df, np, pd, sns, viz):
+def _(CLASS_ORDER, df, pd, sns, viz):
     _f = df[df["lexicon_categories"].notna()].explode("lexicon_categories")
     _f = _f[_f["lexicon_categories"].notna()]
     _ct = pd.crosstab(_f["label"], _f["lexicon_categories"])
@@ -479,18 +469,16 @@ def _(CLASS_ORDER, df, np, pd, sns, viz):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## E. Does it spread, and who spreads it
+    mo.md("""
+    ## E. Does it spread, and who spreads it
 
-        Two amplification questions. First, reach: on average, toxic posts are
-        **not** the most engaged - inflammatory content is not automatically
-        viral here - but a thin tail does break out, and those are the ones that
-        matter. Second, authorship: comparing the account-suspicion distribution
-        of toxic-post authors against everyone shows whether hate is
-        disproportionately pushed by inauthentic / coordinated-looking accounts.
-        """
-    )
+    Two amplification questions. First, reach: on average, toxic posts are
+    **not** the most engaged - inflammatory content is not automatically
+    viral here - but a thin tail does break out, and those are the ones that
+    matter. Second, authorship: comparing the account-suspicion distribution
+    of toxic-post authors against everyone shows whether hate is
+    disproportionately pushed by inauthentic / coordinated-looking accounts.
+    """)
     return
 
 
@@ -565,17 +553,15 @@ def _(authenticity, con, df, mo, sns, viz):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## F. What the hate is about
+    mo.md("""
+    ## F. What the hate is about
 
-        Two narrative lenses over the flagged subset. Hashtags are the cheap,
-        legible one - which campaign tags carry the most toxic replies. Topic
-        clusters (UMAP → HDBSCAN on the multilingual embeddings, labelled by
-        distinctive c-TF-IDF terms) surface the latent conversations that the
-        hashtags miss.
-        """
-    )
+    Two narrative lenses over the flagged subset. Hashtags are the cheap,
+    legible one - which campaign tags carry the most toxic replies. Topic
+    clusters (UMAP → HDBSCAN on the multilingual embeddings, labelled by
+    distinctive c-TF-IDF terms) surface the latent conversations that the
+    hashtags miss.
+    """)
     return
 
 
