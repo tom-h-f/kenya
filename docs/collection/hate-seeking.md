@@ -201,6 +201,30 @@ Floors: `c_in >= 8` occurrences and **`a_in >= 3` distinct authors**. The
 author floor is the one that matters - one account repeating a word is a verbal
 tic, not a register.
 
+## The closed loop
+
+```
+collector  hate-seeking search + seed expansion  ->  posts/type=hate_*
+analysis   kma.enrich (hate + measure columns)   ->  hatespeech/
+analysis   kma.coordination_run --persist        ->  coordination/
+collector  hate_signal + adaptive.promote        ->  next pass's targets
+```
+
+`hatespeech/` carries `domain`, `in_kenya_scope`, `lexicon_hits`,
+`coded_suspect`, `explicit_toxic` and `flagged` as persisted columns, so
+`hate_signal` scopes to Kenya in pure SQL without importing `kma` or
+re-implementing the domain regex. Rows written before the rollout are brought
+up to contract with `python -m kma.hatespeech --refresh-measure` (CPU only -
+the model never re-runs).
+
+Cluster scorecards carry `toxic_share`, `coded_share`, `n_toxic_authors`,
+`toxic_concentration` and a separate `hate_index`. `hate_index` is deliberately
+**not** folded into `inauthenticity_index`: coordination and hate are different
+claims, and a cluster can be plainly coordinated and entirely non-toxic. Triage
+is 2-D. `toxic_concentration` is the Herfindahl index of flagged posts across
+members - the cluster-level restatement of "one post is not a network", since a
+cluster where one member carries all the toxicity scores near 1 and ranks down.
+
 ## Governance of mined terms
 
 Mined terms are machine-derived candidates that would drive searches about

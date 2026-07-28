@@ -269,7 +269,21 @@ STOPWORDS = {
     "wewe", "yeye", "sisi", "nyinyi", "hata", "kila", "wote", "watu", "mtu",
     "siku", "leo", "kesho", "juzi", "nini", "nani", "gani", "vile", "hivyo",
     "ati", "eti", "haya", "sawa", "asante", "pole", "kwanza", "tena", "zaidi",
+    # Generic connectives and discourse filler that survived the first live run
+    # (2026-07-28) purely on small-count novelty noise.
+    "since", "trying", "without", "haha", "can't", "cant", "dont", "don't",
+    "east", "west", "north", "south", "down", "end", "made", "make", "know",
+    "think", "said", "say", "says", "see", "even", "still", "back", "good",
+    "well", "want", "need", "like", "time", "years", "year", "first", "last",
+    "many", "much", "every", "other", "same", "long", "next", "come", "going",
+    "let", "put", "take", "give", "look", "thing", "things", "man", "people",
 }
+
+# A term must be over-represented in the cohort before its temporal rise means
+# anything. Without this, novelty ranks small-count sampling noise: the first
+# live run surfaced terms with lift ~0.15 (six times UNDER-represented in the
+# cohort) simply because their handful of occurrences happened to be recent.
+MIN_LIFT = 1.5
 
 
 def mine_terms(
@@ -280,6 +294,7 @@ def mine_terms(
     lookback_days: int = HATE_LOOKBACK_DAYS,
     min_count: int = 8,
     min_authors: int = 3,
+    min_lift: float = MIN_LIFT,
     novelty_days: int = 3,
     extra_stopwords: set[str] | None = None,
     n: int = 50,
@@ -291,14 +306,17 @@ def mine_terms(
     cohort is located by explicit toxicity and coordination, and then its
     *language* is mined by contrast.
 
-    Ranked by `novelty` (rise in cohort share over the last `novelty_days`
-    versus the preceding window) rather than raw lift, because new coded terms
-    appear suddenly, which is far more specific than a term simply being
-    cohort-flavoured. `lift` is returned alongside for review.
+    Two-stage on purpose. `min_lift` **gates**: a term must actually be
+    over-represented in the cohort to be a candidate at all. `novelty` (rise in
+    cohort share over the last `novelty_days` versus the preceding window) then
+    **ranks** the survivors, because new coded terms appear suddenly, which is
+    far more specific than a term merely being cohort-flavoured. Ranking by
+    novelty alone does not work: cohort counts are small, so the top of that
+    list fills with sampling noise on terms the cohort barely uses.
 
-    `min_authors` is the guard that matters: one account repeating a word is a
-    verbal tic, not a register. Output is a candidate list for human review,
-    never a promotion - see HATE_MINE_AUTOPROMOTE.
+    `min_authors` is the other guard that matters: one account repeating a word
+    is a verbal tic, not a register. Output is a candidate list for human
+    review, never a promotion - see HATE_MINE_AUTOPROMOTE.
     """
     if not cohort_handles:
         return []
@@ -347,13 +365,16 @@ def mine_terms(
                        sum(c_in_new) AS n_in_new, sum(c_in_old) AS n_in_old
                 FROM agg
             )
-            SELECT a.term, a.c_in, a.a_in, a.c_all,
-                ((a.c_in + 0.5) / (t.n_in + 0.5 * t.v))
-                    / ((a.c_all + 0.5) / (t.n_all + 0.5 * t.v)) AS lift,
-                ((a.c_in_new + 0.5) / (t.n_in_new + 0.5 * t.v))
-                    / ((a.c_in_old + 0.5) / (t.n_in_old + 0.5 * t.v)) AS novelty
-            FROM agg a, tot t
-            WHERE a.c_in >= {int(min_count)} AND a.a_in >= {int(min_authors)}
+            SELECT * FROM (
+                SELECT a.term, a.c_in, a.a_in, a.c_all,
+                    ((a.c_in + 0.5) / (t.n_in + 0.5 * t.v))
+                        / ((a.c_all + 0.5) / (t.n_all + 0.5 * t.v)) AS lift,
+                    ((a.c_in_new + 0.5) / (t.n_in_new + 0.5 * t.v))
+                        / ((a.c_in_old + 0.5) / (t.n_in_old + 0.5 * t.v)) AS novelty
+                FROM agg a, tot t
+                WHERE a.c_in >= {int(min_count)} AND a.a_in >= {int(min_authors)}
+            )
+            WHERE lift >= {float(min_lift)}
             ORDER BY novelty DESC, lift DESC
             LIMIT {int(n)}
             """

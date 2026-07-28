@@ -86,7 +86,9 @@ def test_novelty_ranks_a_sudden_term_above_a_steady_one(con):
             post(con, f"{uid}s{i}", uid, "steadyword commentary", days_ago=1 + i)
         for i in range(10):  # only in the last 3 days
             post(con, f"{uid}n{i}", uid, "suddenword commentary", days_ago=0)
-    ranked = [t["term"] for t in mine(con, ["seed1", "seed2", "seed3"])]
+    # min_lift=0: every post here is a cohort post, so lift is 1.0 by
+    # construction. This test is about the novelty ordering, not the gate.
+    ranked = [t["term"] for t in mine(con, ["seed1", "seed2", "seed3"], min_lift=0.0)]
     assert "suddenword" in ranked and "steadyword" in ranked
     assert ranked.index("suddenword") < ranked.index("steadyword")
 
@@ -99,6 +101,40 @@ def test_stopwords_and_common_corpus_terms_are_suppressed(con):
             post(con, f"{uid}p{i}", uid, "the watu wa kule na sisi wote")
     terms = {t["term"] for t in mine(con, ["seed1", "seed2", "seed3"])}
     assert not terms & {"the", "watu", "wa", "sisi", "wote", "na"}
+
+
+def test_under_represented_terms_are_gated_out(con):
+    """Regression for the first live run (2026-07-28): ranking by novelty alone
+    filled the candidate list with terms the cohort barely used, whose handful
+    of occurrences merely happened to be recent. Lift gates, novelty ranks."""
+    for i in (1, 2, 3):
+        add(con, f"u{i}", f"seed{i}")
+    add(con, "out", "outsider")
+    # `rareword` is recent inside the cohort but far more common outside it.
+    # The cohort also needs a broad ordinary vocabulary, otherwise the term is
+    # a large share of its tokens purely because it says nothing else.
+    for uid in ("u1", "u2", "u3"):
+        for i in range(4):
+            post(con, f"{uid}r{i}", uid, "rareword commentary", days_ago=0)
+        for i in range(40):
+            post(con, f"{uid}f{i}", uid, f"filler{i} padding{i} chatter{i}", days_ago=2)
+    for i in range(400):
+        post(con, f"o{i}", "out", "rareword commentary regarding budgets", days_ago=1)
+    terms = {t["term"] for t in mine(con, ["seed1", "seed2", "seed3"])}
+    assert "rareword" not in terms
+
+    ungated = {t["term"] for t in mine(con, ["seed1", "seed2", "seed3"], min_lift=0.0)}
+    assert "rareword" in ungated  # only the lift gate was keeping it out
+
+
+def test_generic_filler_is_stoplisted(con):
+    for i in (1, 2, 3):
+        add(con, f"u{i}", f"seed{i}")
+    for uid in ("u1", "u2", "u3"):
+        for i in range(10):
+            post(con, f"{uid}p{i}", uid, "haha since trying without down end made")
+    terms = {t["term"] for t in mine(con, ["seed1", "seed2", "seed3"], min_lift=0.0)}
+    assert not terms & {"haha", "since", "trying", "without", "down", "end", "made"}
 
 
 def test_examples_are_returned_for_review(con):
