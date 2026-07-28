@@ -15,9 +15,19 @@ from kenya_monitor.config import (
     CYCLE_COOLDOWN_MIN_S,
     FOLLOW_CRAWL_MAX_PER_RUN,
     FOLLOW_CRAWL_REFRESH_DAYS,
+    FOLLOW_CRAWL_TOP_HATE,
     FOLLOW_CRAWL_TOP_SUSPICIOUS,
     FOLLOW_FETCH_LIMIT,
     FOLLOW_MAX_ACCOUNTS,
+    HATE_MINE_AUTOPROMOTE,
+    HATE_SEED_MAX_ACCOUNTS,
+    HATE_SEEK_CONCURRENCY,
+    HATE_SEEK_ENABLED,
+    HATE_SEEK_EVERY_N_CYCLES,
+    HATE_SEEK_MAX_TERMS,
+    HATE_SEEK_RECENT_DAYS,
+    HATE_SEEK_WINDOW_LIMIT,
+    HATE_TERMS_PATH,
     METRICS_MAX_POSTS_FLOOR,
     METRICS_MAX_POSTS_PER_ACCOUNT,
     SEARCH_BACKFILL_WINDOW_DAYS,
@@ -27,6 +37,7 @@ from kenya_monitor.config import (
     PlatformTargets,
     R2Config,
     load_accounts,
+    load_hate_terms,
     load_targets,
 )
 from kenya_monitor.runner import (
@@ -92,6 +103,121 @@ async def run_once(
     return counts
 
 
+async def run_hate_seek_once(
+    terms: list[str] | None = None,
+    limit: int = HATE_SEEK_WINDOW_LIMIT,
+    max_terms: int = HATE_SEEK_MAX_TERMS,
+    recent_days: int = HATE_SEEK_RECENT_DAYS,
+) -> dict[str, int]:
+    """One hate-seeking search pass over the rotated coded-term register."""
+    from kenya_monitor import hate_seek as hs
+    from kenya_monitor.runner import collect_hate_seek
+
+    register = load_hate_terms(HATE_TERMS_PATH)
+    state = hs.load_state()
+    if terms:
+        wanted = {t.lower() for t in terms}
+        queries = [
+            q
+            for q in hs.select_terms(register, max_terms=len(register.terms) + 99, max_targets=99)
+            if q.term.lower() in wanted
+        ]
+        if not queries:
+            log.warning("hate-seek: no register term matched %s", terms)
+            return {}
+    else:
+        from kenya_monitor import mined_terms as mt
+
+        mined = mt.active(mt.load(), autopromote=HATE_MINE_AUTOPROMOTE)
+        queries = hs.select_terms(register, mined=mined, state=state, max_terms=max_terms)
+    if not queries:
+        return {}
+    storage = Storage(R2Config.from_env())
+    collector = await build_x_collector(load_accounts())
+    counts = await collect_hate_seek(
+        collector,
+        storage,
+        queries,
+        register.anchors,
+        search_windows=recent_windows(recent_days),
+        min_faves=SEARCH_MIN_FAVES,
+        window_limit=limit,
+        concurrency=HATE_SEEK_CONCURRENCY,
+    )
+    hs.save_state(hs.mark_searched(queries, state))
+    log.info("hate-seek run complete (%d terms): %s", len(queries), counts)
+    return counts
+
+
+def _hate_seed_handles(storage: Storage, n: int) -> list[str]:
+    """Top-N hate-network seeds, falling back to the generic suspicion ranking
+    when the enrich worker has stopped writing scores - selecting on stale
+    scores would silently freeze the seed set."""
+    from kenya_monitor import hate_signal as hsig
+    from kenya_monitor.suspicion import top_suspicious_handles
+
+    hate_view = storage.hatespeech_view(platform="x")
+    posts_view = storage.posts_view(platform="x")
+    authors_view = storage.authors_view(platform="x")
+    if hsig.scores_are_stale(storage.con, hate_view):
+        log.warning("hate scores are stale or missing; falling back to suspicion ranking")
+        return top_suspicious_handles(storage.con, authors_view, posts_view, n=n)
+    handles = hsig.top_hate_seeds(
+        storage.con, hate_view, posts_view, authors_view,
+        storage.engagements_view(platform="x"), n=n,
+    )
+    if not handles:
+        log.info("no accounts cleared the hate-seed floors; falling back to suspicion ranking")
+        return top_suspicious_handles(storage.con, authors_view, posts_view, n=n)
+    return handles
+
+
+async def run_hate_expand_once(
+    top_hate: int = HATE_SEED_MAX_ACCOUNTS, timeline_limit: int = 40
+) -> dict[str, int]:
+    """Expand around the hate seeds: their full timelines plus a toxic-object
+    snowball. Timelines are the highest-value pass here - they need no search
+    operator and no model, so they recover the coded register that the
+    classifier structurally cannot see.
+
+    Everything lands in quarantined partitions. Seeds are never added to
+    `targets.accounts`: promoting them into baseline collection would inflate
+    their post counts and co-action degree, making them look more coordinated
+    next run purely because we watched them harder."""
+    storage = Storage(R2Config.from_env())
+    handles = _hate_seed_handles(storage, top_hate)
+    if not handles:
+        log.info("hate expand: no seed accounts")
+        return {}
+    collector = await build_x_collector(load_accounts())
+    counts = await collect_x(
+        collector,
+        storage,
+        PlatformTargets(accounts=handles),
+        search_windows=[],
+        min_faves=0,
+        window_limit=0,
+        timeline_limit=timeline_limit,
+        keywords=False,
+        accounts=True,
+        timeline_type="hate_timeline",
+    )
+    from kenya_monitor import hate_signal as hsig
+
+    objects = hsig.hot_toxic_objects(
+        storage.con, storage.hatespeech_view(platform="x"), storage.posts_view(platform="x")
+    )
+    if any(objects):
+        counts.update(
+            await collect_snowball(
+                collector, storage, objects=objects, type_prefix="hate_"
+            )
+        )
+    counts["seed_accounts"] = len(handles)
+    log.info("hate expand complete (%d seeds): %s", len(handles), counts)
+    return counts
+
+
 async def run_snowball_once(**overrides) -> dict[str, int]:
     """One snowball pass over hot objects (see runner.collect_snowball)."""
     storage = Storage(R2Config.from_env())
@@ -106,13 +232,17 @@ async def run_follows_once(
     limit: int = FOLLOW_FETCH_LIMIT,
     max_accounts: int = FOLLOW_MAX_ACCOUNTS,
     top_suspicious: int | None = None,
+    top_hate: int | None = None,
 ) -> dict[str, int]:
     """Follower/following edges for explicit handles, flagged-cluster members,
-    or the top-N most suspicious accounts in R2."""
+    the top-N hate-network seeds, or the top-N most suspicious accounts."""
     from kenya_monitor.suspicion import top_suspicious_handles
 
     storage = Storage(R2Config.from_env())
-    if top_suspicious:
+    if top_hate:
+        handles = _hate_seed_handles(storage, top_hate)
+        log.info("follows: selected %d hate-seed accounts (requested top %d)", len(handles), top_hate)
+    elif top_suspicious:
         handles = top_suspicious_handles(
             storage.con,
             storage.authors_view(platform="x"),
@@ -142,6 +272,7 @@ async def run_follow_crawl_once(
     refresh_days: int = FOLLOW_CRAWL_REFRESH_DAYS,
     from_edges: bool = True,
     top_suspicious: int | None = None,
+    top_hate: int | None = None,
 ) -> dict[str, int]:
     """Recursive BFS follow-graph crawl with persisted per-account state."""
     from kenya_monitor.follow_crawl import crawl_follows, crawl_summary, load_crawl_state
@@ -149,6 +280,8 @@ async def run_follow_crawl_once(
 
     storage = Storage(R2Config.from_env())
     seeds = list(seed_handles or [])
+    if top_hate:
+        seeds.extend(_hate_seed_handles(storage, top_hate))
     if top_suspicious:
         seeds.extend(
             top_suspicious_handles(
@@ -242,15 +375,25 @@ async def run_scheduler(limit: int) -> None:
                 if do_backfill:
                     last_backfill["date"] = today
 
+            # Hate-seeking runs after baseline posts/snowball on purpose: when
+            # the account pool hits a rate-limit wall it must hit discretionary
+            # work first, never baseline coverage.
+            hate_due = HATE_SEEK_ENABLED and cycle % max(1, HATE_SEEK_EVERY_N_CYCLES) == 0
             steps = [
                 ("posts", _posts),
                 ("snowball", run_snowball_once),
                 ("metrics", run_metrics_once),
                 (
                     "follow_crawl",
-                    lambda: run_follow_crawl_once(top_suspicious=FOLLOW_CRAWL_TOP_SUSPICIOUS),
+                    lambda: run_follow_crawl_once(
+                        top_suspicious=FOLLOW_CRAWL_TOP_SUSPICIOUS,
+                        top_hate=FOLLOW_CRAWL_TOP_HATE if HATE_SEEK_ENABLED else None,
+                    ),
                 ),
             ]
+            if hate_due:
+                steps.insert(2, ("hate_seek", run_hate_seek_once))
+                steps.insert(3, ("hate_expand", run_hate_expand_once))
             for name, step in steps:
                 try:
                     await step()

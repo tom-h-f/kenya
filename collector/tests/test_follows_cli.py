@@ -17,7 +17,9 @@ def test_follows_without_handle():
     ) as run:
         result = runner.invoke(app, ["follows"])
         assert result.exit_code == 0, result.stdout + result.stderr
-        run.assert_awaited_once_with(handles=None, limit=500, max_accounts=30, top_suspicious=None)
+        run.assert_awaited_once_with(
+            handles=None, limit=500, max_accounts=30, top_suspicious=None, top_hate=None
+        )
 
 
 def test_follows_with_explicit_handle():
@@ -33,6 +35,7 @@ def test_follows_with_explicit_handle():
             limit=10,
             max_accounts=30,
             top_suspicious=None,
+            top_hate=None,
         )
         assert "follow_edges" in result.stdout
 
@@ -50,4 +53,5 @@ def test_follows_top_suspicious():
             limit=500,
             max_accounts=1000,
             top_suspicious=1000,
+            top_hate=None,
         )

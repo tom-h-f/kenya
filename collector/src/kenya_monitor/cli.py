@@ -223,6 +223,127 @@ def snowball(
     typer.echo(f"snowball: {counts}")
 
 
+@app.command("hate-seek")
+def hate_seek_cmd(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the rendered queries; makes no network requests"
+    ),
+    terms: list[str] = typer.Option(None, "--terms", help="explicit register terms (else rotated)"),
+    limit: int = typer.Option(None, help="max posts per term per window (default from env)"),
+    max_terms: int = typer.Option(None, help="terms per pass (default from env)"),
+) -> None:
+    """One hate-seeking search pass over the coded-term register.
+
+    The register (config/hate_terms.yaml) holds documented NCIC/PeaceTech coded
+    incitement markers. A hit is a triage seed, never a verdict - most of these
+    words have innocent everyday senses, which is what fp_risk anchoring is for.
+    Results land in quarantined partitions excluded from prevalence stats.
+    """
+    from kenya_monitor import hate_seek as hs
+    from kenya_monitor.collectors.x import recent_windows
+    from kenya_monitor.config import (
+        HATE_SEEK_MAX_TERMS,
+        HATE_SEEK_RECENT_DAYS,
+        HATE_SEEK_WINDOW_LIMIT,
+        HATE_TERMS_PATH,
+        load_hate_terms,
+    )
+
+    register = load_hate_terms(HATE_TERMS_PATH)
+    if dry_run:
+        wanted = {t.lower() for t in (terms or [])}
+        if wanted:
+            everything = hs.select_terms(register, max_terms=10_000, max_targets=10_000)
+            queries = [q for q in everything if q.term.lower() in wanted]
+        else:
+            queries = hs.select_terms(
+                register, state=hs.load_state(), max_terms=max_terms or HATE_SEEK_MAX_TERMS
+            )
+        windows = recent_windows(HATE_SEEK_RECENT_DAYS)
+        since, until = windows[0]
+        for q in queries:
+            typer.echo(f"[{q.source}/{q.fp_risk}] {q.term} -> {q.target_type}")
+            typer.echo(f"    {hs.render(q, register.anchors, since=since, until=until)}")
+        typer.echo(f"\n{len(queries)} quer(ies), {len(windows)} window(s); nothing requested.")
+        return
+
+    from kenya_monitor.scheduler import run_hate_seek_once
+
+    counts = asyncio.run(
+        run_hate_seek_once(
+            terms=list(terms) if terms else None,
+            limit=limit or HATE_SEEK_WINDOW_LIMIT,
+            max_terms=max_terms or HATE_SEEK_MAX_TERMS,
+        )
+    )
+    typer.echo(f"hate-seek: {counts}")
+
+
+@app.command("hate-mine")
+def hate_mine_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="show candidates without saving"),
+    cohort: int = typer.Option(30, help="hate-seed accounts to mine vocabulary from"),
+    limit: int = typer.Option(25, help="max candidates to report"),
+    approve: list[str] = typer.Option(None, "--approve", help="mark terms human-approved"),
+) -> None:
+    """Mine emergent coded terms from the hate-seed cohort's vocabulary.
+
+    The classifier cannot see the 2026 coded register, so the cohort is located
+    by explicit toxicity and coordination and its *language* is mined by
+    contrast against the corpus. Candidates are never searched until a human
+    approves them (--approve) or HATE_MINE_AUTOPROMOTE is set.
+    """
+    from kenya_monitor import hate_signal as hsig
+    from kenya_monitor import mined_terms as mt
+    from kenya_monitor.config import HATE_MINE_AUTOPROMOTE
+    from kenya_monitor.scheduler import _hate_seed_handles
+
+    storage = _storage()
+    if approve:
+        terms = mt.load()
+        wanted = {a.lower() for a in approve}
+        hit = [t for t in terms if t.term.lower() in wanted]
+        for t in hit:
+            t.approved = True
+        mt.save(terms)
+        typer.echo(f"approved {len(hit)} term(s): {', '.join(t.term for t in hit)}")
+        missing = wanted - {t.term.lower() for t in hit}
+        if missing:
+            typer.echo(f"not found in candidates: {', '.join(sorted(missing))}")
+        return
+
+    handles = _hate_seed_handles(storage, cohort)
+    posts_view = storage.posts_view(platform="x")
+    candidates = hsig.mine_terms(
+        storage.con, posts_view, storage.authors_view(platform="x"), handles, n=limit
+    )
+    if not candidates:
+        typer.echo("no candidate terms cleared the floors")
+        return
+    examples = {
+        c["term"]: hsig.term_examples(storage.con, posts_view, c["term"]) for c in candidates
+    }
+    typer.echo(f"cohort: {len(handles)} accounts\n")
+    for c in candidates:
+        typer.echo(
+            f"{c['term']:24} novelty={c['novelty']:6.2f} lift={c['lift']:6.2f} "
+            f"cohort={c['c_in']:4} authors={c['a_in']:3} corpus={c['c_all']:6}"
+        )
+        for ex in examples[c["term"]][:2]:
+            typer.echo(f"    {ex[:150].replace(chr(10), ' ')}")
+    if dry_run:
+        typer.echo(f"\n{len(candidates)} candidate(s) (dry run, not saved)")
+        return
+    merged = mt.merge(mt.load(), candidates, examples)
+    mt.save(merged)
+    n_active = len(mt.active(merged, autopromote=HATE_MINE_AUTOPROMOTE))
+    typer.echo(
+        f"\nsaved {len(merged)} candidate(s); {n_active} will be searched "
+        f"(autopromote={'on' if HATE_MINE_AUTOPROMOTE else 'off'}). "
+        "Approve with: monitor hate-mine --approve <term>"
+    )
+
+
 @app.command()
 def adapt(
     dry_run: bool = typer.Option(False, "--dry-run", help="compute promotions without saving"),
@@ -251,6 +372,9 @@ def follows(
     top_suspicious: int = typer.Option(
         None, "--top-suspicious", help="fetch follows for top-N suspicion-ranked accounts"
     ),
+    top_hate: int = typer.Option(
+        None, "--top-hate", help="fetch follows for top-N hate-network seed accounts"
+    ),
 ) -> None:
     """Fetch follower/following edges for flagged-cluster members."""
     from kenya_monitor.config import FOLLOW_FETCH_LIMIT, FOLLOW_MAX_ACCOUNTS
@@ -260,8 +384,9 @@ def follows(
         run_follows_once(
             handles=handle,
             limit=limit or FOLLOW_FETCH_LIMIT,
-            max_accounts=max_accounts or (top_suspicious or FOLLOW_MAX_ACCOUNTS),
+            max_accounts=max_accounts or (top_hate or top_suspicious or FOLLOW_MAX_ACCOUNTS),
             top_suspicious=top_suspicious,
+            top_hate=top_hate,
         )
     )
     typer.echo(f"follows: {counts}")
@@ -275,6 +400,9 @@ def crawl_follows_cmd(
     refresh_days: int = typer.Option(None, help="re-crawl after this many days"),
     top_suspicious: int = typer.Option(
         None, "--top-suspicious", help="also seed from top-N suspicion-ranked accounts"
+    ),
+    top_hate: int = typer.Option(
+        None, "--top-hate", help="also seed from top-N hate-network seed accounts"
     ),
     no_edges: bool = typer.Option(
         False, "--no-edges", help="do not queue uncrawled accounts already seen in follows/"
@@ -315,6 +443,7 @@ def crawl_follows_cmd(
             refresh_days=refresh_days or FOLLOW_CRAWL_REFRESH_DAYS,
             from_edges=not no_edges,
             top_suspicious=top_suspicious,
+            top_hate=top_hate,
         )
     )
     typer.echo(f"crawl-follows: {counts}")

@@ -22,6 +22,7 @@ import duckdb
 from kenya_monitor.config import (
     BURST_MIN_POSTS,
     BURST_ZSCORE,
+    CLUSTER_MIN_CHANNELS,
     DYNAMIC_EXPIRY_DAYS,
     DYNAMIC_HASHTAG_MIN_COUNT,
     DYNAMIC_HASHTAG_RATIO,
@@ -100,9 +101,19 @@ def bursting_hashtags(
 
 
 def cluster_accounts(
-    con: duckdb.DuckDBPyConnection, clusters_view: str, authors_view: str
+    con: duckdb.DuckDBPyConnection,
+    clusters_view: str,
+    authors_view: str,
+    min_channels: int = CLUSTER_MIN_CHANNELS,
 ) -> list[str]:
-    """Handles of members of the most recent persisted coordination clusters."""
+    """Handles of members of the most recent persisted coordination clusters,
+    restricted to clusters corroborated across at least `min_channels` channels.
+
+    The corroboration floor is what makes this a signal. On the live corpus
+    single-channel clusters cover most of the active author base, so promoting
+    them all would target nearly everyone; cross-channel agreement is the
+    strongest evidence available short of ground truth. Ordered strongest
+    first so the caller's cap keeps the best candidates."""
     try:
         rows = con.sql(
             f"""
@@ -115,13 +126,18 @@ def cluster_accounts(
                     PARTITION BY platform, platform_user_id ORDER BY collected_at DESC
                 ) = 1
             )
-            SELECT DISTINCT la.handle
+            SELECT la.handle,
+                   max(c.n_channels) AS n_channels,
+                   max(c.internal_edge_share) AS density
             FROM latest_run c JOIN la ON c.author_id = la.platform_user_id
             WHERE la.handle IS NOT NULL
+              AND COALESCE(c.n_channels, 1) >= {int(min_channels)}
+            GROUP BY la.handle
+            ORDER BY n_channels DESC, density DESC NULLS LAST
             """
         ).fetchall()
     except duckdb.Error:
-        return []  # no clusters persisted yet
+        return []  # no clusters persisted yet, or an older schema without n_channels
     return [r[0] for r in rows]
 
 
