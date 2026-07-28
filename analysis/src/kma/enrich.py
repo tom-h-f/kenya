@@ -9,6 +9,7 @@ narrative scorecards read these prefixes, so this is what stops them going stale
 
     python -m kma.enrich --once            # one bounded pass
     python -m kma.enrich --loop            # forever (deploy target)
+    python -m kma.enrich --loop --coord-hours 0   # skip coordination refresh
     python -m kma.enrich --loop --limit 500
 
 Runs wherever torch runs (MPS on the Mac, CPU on a server); the models pick the
@@ -41,6 +42,13 @@ BATCH_SIZE = int(os.getenv("ENRICH_BATCH_SIZE", "64"))
 BUSY_COOLDOWN_S = int(os.getenv("ENRICH_BUSY_COOLDOWN_S", "45"))
 IDLE_MIN_S = int(os.getenv("ENRICH_IDLE_MIN_S", "600"))
 IDLE_MAX_S = int(os.getenv("ENRICH_IDLE_MAX_S", "1200"))
+
+# Coordination refresh. The collector's `adaptive.cluster_accounts` reads the
+# LATEST persisted cluster run, so without a schedule the cluster half of the
+# targeting loop freezes at whenever someone last ran it by hand. Much slower
+# than the enrichment passes (a full projection + significance test over the
+# corpus), hence its own timer rather than every cycle. 0 disables.
+COORD_REFRESH_HOURS = float(os.getenv("COORD_REFRESH_HOURS", "6"))
 
 
 def run_once(
@@ -93,6 +101,22 @@ def _subprocess_pass(flags: list[str], limit: int | None, batch_size: int) -> in
         return 0
 
 
+def _coordination_pass() -> bool:
+    """Rebuild and persist coordination clusters in a fresh subprocess.
+
+    Subprocess for the same reason as the model passes: igraph plus the full
+    embedding matrix is the heaviest thing this worker does, and it must not
+    stay resident between cycles. Failure is logged, never fatal - a stale
+    cluster run degrades targeting, a dead worker stops enrichment entirely."""
+    cmd = [sys.executable, "-m", "kma.coordination_run", "--persist"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        log.error("coordination refresh failed (rc=%d): %s", proc.returncode, proc.stderr[-500:])
+        return False
+    log.info("coordination refreshed and persisted")
+    return True
+
+
 def run_loop(
     limit: int | None = BATCH_LIMIT,
     batch_size: int = BATCH_SIZE,
@@ -100,17 +124,28 @@ def run_loop(
     classify: bool = True,
     hate: bool = True,
     isolate: bool = True,
+    coord_hours: float = COORD_REFRESH_HOURS,
 ) -> None:
     """Forever: bounded passes back to back while there is a backlog, then a
     jittered idle once caught up. A per-pass failure is logged and retried, so a
     transient R2 / model hiccup never kills the worker.
 
     `isolate` (default) runs embed, classify and hate in separate subprocesses so
-    their models never coexist in memory - keep it on for < ~6GB hosts."""
+    their models never coexist in memory - keep it on for < ~6GB hosts.
+
+    Every `coord_hours` the coordination clusters are rebuilt and persisted, so
+    the collector's cluster-based targeting stays live instead of frozen at the
+    last manual run."""
     cycle = 0
+    next_coord = time.monotonic() if coord_hours > 0 else float("inf")
     while True:
         cycle += 1
         done = 0
+        if time.monotonic() >= next_coord:
+            # Scheduled before the enrichment passes so a long backlog cannot
+            # keep postponing it indefinitely.
+            _coordination_pass()
+            next_coord = time.monotonic() + coord_hours * 3600
         try:
             if isolate:
                 if embed:
@@ -143,13 +178,20 @@ def main() -> None:
         "--no-isolate", action="store_true",
         help="load all models in one process (faster, needs ~6GB RAM)",
     )
+    ap.add_argument(
+        "--coord-hours", type=float, default=COORD_REFRESH_HOURS,
+        help="hours between coordination cluster refreshes (0 disables)",
+    )
     args = ap.parse_args()
     embed, classify, hate = not args.no_embed, not args.no_classify, not args.no_hate
     if args.once:
         counts = run_once(args.limit, args.batch_size, embed, classify, hate)
         print(f"enriched: {counts}")
     else:
-        run_loop(args.limit, args.batch_size, embed, classify, hate, isolate=not args.no_isolate)
+        run_loop(
+            args.limit, args.batch_size, embed, classify, hate,
+            isolate=not args.no_isolate, coord_hours=args.coord_hours,
+        )
 
 
 if __name__ == "__main__":
