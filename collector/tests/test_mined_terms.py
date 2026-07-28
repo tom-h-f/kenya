@@ -137,6 +137,23 @@ def test_generic_filler_is_stoplisted(con):
     assert not terms & {"haha", "since", "trying", "without", "down", "end", "made"}
 
 
+def test_handles_hashtags_and_urls_are_not_mined(con):
+    """A username or campaign tag is an entity, not a register marker. The
+    first gated live run returned three usernames among eight candidates
+    because their word bodies tokenised like ordinary text."""
+    for i in (1, 2, 3):
+        add(con, f"u{i}", f"seed{i}")
+    for uid in ("u1", "u2", "u3"):
+        for i in range(10):
+            post(
+                con, f"{uid}p{i}", uid,
+                "@murimamaestro zzcoded #rutomustgo https://t.co/abcdefg",
+            )
+    terms = {t["term"] for t in mine(con, ["seed1", "seed2", "seed3"], min_lift=0.0)}
+    assert "zzcoded" in terms
+    assert not terms & {"murimamaestro", "rutomustgo", "abcdefg", "https"}
+
+
 def test_examples_are_returned_for_review(con):
     add(con, "u1", "seed1")
     post(con, "p1", "u1", "a post containing zzcoded here")

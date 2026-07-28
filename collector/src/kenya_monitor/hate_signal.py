@@ -346,10 +346,23 @@ def mine_terms(
                 FROM lp p LEFT JOIN cohort c USING (author_id)
                 WHERE p.text IS NOT NULL
                   AND p.created_at > now() - INTERVAL {int(lookback_days)} DAY
+            ), scrubbed AS (
+                -- Strip URLs, @mentions and #hashtags before tokenising. Their
+                -- word bodies are otherwise extracted as ordinary terms, and a
+                -- handle or a campaign tag is an entity, not a register marker:
+                -- the first gated live run (2026-07-28) returned three usernames
+                -- among eight candidates. Hashtags are already promoted
+                -- separately by adaptive.bursting_hashtags.
+                SELECT author_id, in_cohort, is_new,
+                       regexp_replace(
+                           regexp_replace(lower(text), 'https?://[^\\s]+', ' ', 'g'),
+                           '[@#][\\w_]+', ' ', 'g'
+                       ) AS clean
+                FROM recent
             ), toks AS (
                 SELECT author_id, in_cohort, is_new,
-                       unnest(regexp_extract_all(lower(text), '[\\p{{L}}][\\p{{L}}''-]{{2,}}')) AS term
-                FROM recent
+                       unnest(regexp_extract_all(clean, '[\\p{{L}}][\\p{{L}}''-]{{2,}}')) AS term
+                FROM scrubbed
             ), kept AS (
                 SELECT * FROM toks WHERE term NOT IN ({stop_sql})
             ), agg AS (
