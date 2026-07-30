@@ -217,3 +217,17 @@ def test_hate_term_set_lookup(terms):
     assert terms.by_name("mende").fp_risk == "high"
     assert terms.by_name("nope") is None
     assert isinstance(terms.terms[0], HateTerm)
+
+
+def test_days_option_widens_the_swept_window():
+    """`--days` must reach back far enough to fill a collection gap; the default
+    only covers the last two days, which cannot recover an outage."""
+    from kenya_monitor.collectors.x import recent_windows
+
+    assert len(recent_windows(2)) == 2
+    assert len(recent_windows(14)) == 14
+    # windows are daily and ordered oldest-first, so the first one is the
+    # furthest back - that is what determines gap coverage.
+    oldest_default, _ = recent_windows(2)[0]
+    oldest_wide, _ = recent_windows(14)[0]
+    assert oldest_wide < oldest_default

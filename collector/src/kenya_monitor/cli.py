@@ -231,6 +231,9 @@ def hate_seek_cmd(
     terms: list[str] = typer.Option(None, "--terms", help="explicit register terms (else rotated)"),
     limit: int = typer.Option(None, help="max posts per term per window (default from env)"),
     max_terms: int = typer.Option(None, help="terms per pass (default from env)"),
+    days: int = typer.Option(
+        None, "--days", help="day-windows to sweep back (default from env; raise to fill a gap)"
+    ),
 ) -> None:
     """One hate-seeking search pass over the coded-term register.
 
@@ -259,7 +262,7 @@ def hate_seek_cmd(
             queries = hs.select_terms(
                 register, state=hs.load_state(), max_terms=max_terms or HATE_SEEK_MAX_TERMS
             )
-        windows = recent_windows(HATE_SEEK_RECENT_DAYS)
+        windows = recent_windows(days or HATE_SEEK_RECENT_DAYS)
         since, until = windows[0]
         for q in queries:
             typer.echo(f"[{q.source}/{q.fp_risk}] {q.term} -> {q.target_type}")
@@ -274,6 +277,7 @@ def hate_seek_cmd(
             terms=list(terms) if terms else None,
             limit=limit or HATE_SEEK_WINDOW_LIMIT,
             max_terms=max_terms or HATE_SEEK_MAX_TERMS,
+            recent_days=days or HATE_SEEK_RECENT_DAYS,
         )
     )
     typer.echo(f"hate-seek: {counts}")
