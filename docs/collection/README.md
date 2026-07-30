@@ -353,6 +353,30 @@ monitor crawl-follows --handle seed1 --refresh-days 14 --limit 200
 - Synced into twscrape SQLite pool (`state/accounts.db`).
 - LRU rotation (`TWS_ACCOUNT_ORDER`), per-account request pacing, periodic relogin.
 
+### twscrape version is load-bearing
+
+X periodically changes how `x-client-transaction-id` is derived, and a stale
+twscrape silently collects **nothing** - every request fails while the pool
+still reports accounts as active, so `monitor stats` looks healthy and the
+volume just goes to zero.
+
+Seen 2026-07-30: twscrape 0.19.1 against
+[issue #320](https://github.com/vladkens/twscrape/issues/320) - X stopped
+serving the transaction-ID indices script to logged-out requests, so anonymous
+asset fetches could no longer compute the header. Symptom in the logs:
+
+```
+XClIdGen creation attempt 3/3 failed: Exception: Couldn't get XClientTxId indices script
+```
+
+Fix is an upgrade, not a patch: 0.19.2 makes those asset requests use each
+account's cookies and effective proxy. We previously carried a local monkeypatch
+over `XClIdGen.create` / `XClIdGenStore.get` / `Ctx.req` for the older issue
+#248; **that has been removed** - 0.19.2 contains the same 404-retry logic and
+handles the proxy better than our copy did.
+
+**If collection volume drops to zero, check the twscrape changelog first.**
+
 **CLI:**
 
 ```bash
