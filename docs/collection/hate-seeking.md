@@ -135,25 +135,60 @@ that term is in the register".
 reading the `hatespeech/` prefix the analysis side already wrote. The collector
 runs no models.
 
-**One toxic post is not a network.** Three hard floors run before any scoring,
-so thin evidence never ranks: `n_posts >= 10`, `n_toxic >= 3`, and
-`n_cotoxic_peers >= 2`. An account with one flagged post, or three that nobody
-else amplified, is a loud individual - not a network.
+**One toxic post is not a network.** But the floors that enforced that were
+originally ANDed, which quietly broke the thing they were protecting. Measured
+2026-07-31: `n_posts >= 10 AND n_toxic >= 3` cut 37,211 authors to 29, and the
+peer floor to 8 - discarding **936 of 939 brigade participants**, so
+`n_brigade_convs` was exactly 0 for every seed and the `brigade` component
+(weight 0.20) contributed nothing at all. Brigading is many accounts each posting
+once; a sustained-volume floor removes brigaders by construction.
 
-The weighting is deliberately dominated by coordination shape rather than by
-toxicity level:
+Qualification is therefore **permissive across three independent routes**, and
+*ranking* is what stays selective:
 
-| component | weight | what it measures |
+| route | qualifies on | catches |
 |---|---|---|
-| `co_amplify` | 0.25 | distinct peers sharing the toxic objects it amplified |
-| `toxic_rate_lb` | 0.25 | Wilson **lower bound**, so 1/1 cannot outrank 40/300 |
-| `brigade` | 0.20 | co-presence in toxic reply pile-ons (>= 3 distinct repliers) |
-| `persistence` | 0.15 | share of active days carrying a toxic post |
-| `suspicion` | 0.15 | ordinary bot-likeness, reusing `suspicion._score_sql` verbatim |
+| volume | `n_posts >= 10 AND n_toxic >= 3` | sustained solo toxic poster |
+| co-amplification | `n_repeat_peers >= 2` | retweet ring member |
+| brigade | `n_brigade_convs >= 2` | repeat pile-on participant |
 
-Coordination shape carries 0.45 against toxicity's 0.25. That ratio is the
-design's central claim: a well-connected moderate is a better network lead than
-an isolated extremist.
+A lone ranter still qualifies on volume - it is worth watching - but with no
+co-amplification and no brigade it forfeits 0.45 of the weight and never reaches
+the top of the list. Putting coordination in the floor instead is what caused the
+bug above.
+
+### Co-amplification needs a hub cap and a repetition bar
+
+Measured on the same corpus: of 385 toxic objects, **9 had more than 50 distinct
+amplifiers (max 223), and those 9 alone produced 43% of every co-amplification
+row**. Without guards, "peers" mostly means "we both retweeted the same viral
+post", which is organic. With a hub cap and a repetition requirement, 1,559
+accounts clearing `peers >= 2` collapse to 29 that repeatedly co-amplify with the
+same partner. `HUB_CAP_MIN`/`HUB_CAP_PCT`/`AMP_MIN_REPETITION` mirror
+`kma.coordination`.
+
+**Persisted `coordination/` edges are deliberately not reused here.** They looked
+like the obvious answer - already hub-capped, repetition-filtered and
+FDR-validated - but they are built over *all* posts, so they mean "these two
+coordinate", not "these two co-amplify toxic content". Measured three ways:
+substituting them gave a 500+ cohort sharing only 2 of the top 20 with the toxic
+projection; intersecting gave `n_repeat_peers = 0` for every account. The local
+toxic-scoped projection is what ships. `coordination/` keeps its proper role -
+cluster-membership promotion in `adaptive`.
+
+### Observation effort must not buy rank
+
+`n_repeat_peers` and `n_brigade_convs` are raw counts, so expanding an account
+collects more of its activity and inflates its own next score. Those two
+components are therefore ranked **within observation-volume strata**
+(`ntile(4)` over `n_posts`): pulling more of a timeline moves an account to a
+higher-volume bucket rather than up the ranking. At the current cohort of 50 the
+buckets come out 13/13/12/12. Bounded components (`toxic_rate_lb`,
+`persistence`, `suspicion`) rank globally.
+
+Below `MIN_COHORT_FOR_RANK` accounts, `percent_rank` is not a ranking (0 for one
+row, 1/(n-1) steps): the score is suppressed to `NULL` and the evidence reported
+instead.
 
 Co-amplification unions collected retweets with the snowballed retweeter census
 (`engagements/`), so it does not depend on our having happened to collect each

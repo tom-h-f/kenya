@@ -26,7 +26,7 @@ def entry(uid_handle: str, days_ago: float = 0, status: str = "ok", attempts: in
 def test_state_round_trips(tmp_path):
     path = tmp_path / "hate_expand.json"
     assert hf.load(path) == {}
-    entries = {"u1": entry("alpha", n_posts := 0)}
+    entries = {"u1": entry("alpha")}
     hf.save(entries, path)
     back = hf.load(path)
     assert back["u1"].handle == "alpha"
