@@ -285,6 +285,22 @@ class Storage:
         glob = self._uri(f"follows/platform={platform}/dt=*/run=*.parquet")
         return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
 
+    def coordination_edges_view(
+        self, platform: str = "*", channel: str = "*", method: str = "svn_fdr"
+    ) -> str:
+        """Persisted, statistically validated coordination edges (analysis-side).
+
+        These are hub-capped, repetition-filtered and FDR-corrected by
+        `kma.coordination`; preferring them over a local projection is what
+        keeps the collector from re-deriving a weaker version of the same
+        signal. Defaults to the `svn_fdr` method - the one the analysis side
+        treats as its working edge set."""
+        glob = self._uri(
+            f"coordination/platform={platform}/kind=edges"
+            f"/channel={channel}/method={method}/dt=*/run=*.parquet"
+        )
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
     def clusters_view(self, platform: str = "*") -> str:
         """Persisted coordination clusters (written by the analysis side)."""
         glob = self._uri(f"coordination/platform={platform}/kind=clusters/dt=*/run=*.parquet")

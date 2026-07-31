@@ -90,12 +90,24 @@ def test_no_scores_yet_returns_empty(con):
     assert hsig.hate_accounts(con, "_missing_view", POSTS, AUTHORS) == []
 
 
-def test_lone_ranter_is_not_a_seed(con):
-    """Plenty of toxic posts, but nobody amplified them - a loud individual,
-    not a network."""
+def test_lone_ranter_ranks_below_a_coordinated_account(con):
+    """Qualification is permissive (three routes); ranking is what is selective.
+
+    A prolific solo toxic poster still qualifies on the volume route - it is a
+    legitimate thing to watch - but with no co-amplification and no brigade it
+    forfeits 0.45 of the weight, so it must never outrank a coordinated account.
+    Putting coordination in the FLOOR instead (the previous design) is what
+    silently discarded every brigade participant."""
     add_author(con, "u1", "ranter")
     add_posts(con, "u1", 20, 15, prefix="r")
-    assert seeds(con) == []
+    _network(con)
+    ranked = seeds(con)
+    by_handle = {s["handle"]: s for s in ranked}
+    assert "ranter" in by_handle
+    assert by_handle["ranter"]["n_repeat_peers"] == 0
+    assert by_handle["ranter"]["n_brigade_convs"] == 0
+    order = [s["handle"] for s in ranked]
+    assert order.index("ranter") > max(order.index(h) for h in ("net1", "net2", "net3"))
 
 
 def test_single_toxic_post_is_not_a_seed(con):
@@ -135,8 +147,7 @@ def test_mutually_amplifying_network_is_seeded(con):
     got = {s["handle"] for s in seeds(con)}
     assert got == {"net1", "net2", "net3"}
     for s in seeds(con):
-        assert s["n_cotoxic_peers"] >= hsig.HATE_SEED_MIN_PEERS
-        assert 0.0 <= s["hate_seed_score"] <= 1.0
+        assert s["n_repeat_peers"] >= hsig.HATE_MIN_REPEAT_PEERS
 
 
 def test_wilson_bound_beats_raw_rate(con):
@@ -250,3 +261,124 @@ def test_off_domain_posts_are_excluded_once_scope_is_persisted(con):
     assert {s["handle"] for s in seeds(con)} == {"net1", "net2", "net3"}
     con.execute("UPDATE _hate SET in_kenya_scope = FALSE")
     assert seeds(con) == []
+
+
+# --- co-amplification guards -------------------------------------------------
+
+
+def test_hub_objects_do_not_create_peers(con):
+    """Measured 2026-07-31: 9 objects with >50 amplifiers produced 43% of all
+    co-amplification rows. Two accounts both retweeting one viral toxic post is
+    organic, not coordination."""
+    add_author(con, "a", "alpha")
+    add_author(con, "b", "beta")
+    add_posts(con, "a", 12, 4, prefix="ap")
+    add_posts(con, "b", 12, 4, prefix="bp")
+    # One toxic object amplified by a crowd well over HUB_CAP_MIN.
+    for i in range(hsig.HUB_CAP_MIN + 20):
+        add_amplification(con, f"crowd{i}", ["ap0"])
+    add_amplification(con, "a", ["ap0"])
+    add_amplification(con, "b", ["ap0"])
+    by_handle = {s["handle"]: s for s in seeds(con)}
+    assert by_handle["alpha"]["n_repeat_peers"] == 0
+    assert by_handle["beta"]["n_repeat_peers"] == 0
+
+
+def test_one_shared_object_is_not_repeat_co_amplification(con):
+    add_author(con, "a", "alpha")
+    add_author(con, "b", "beta")
+    add_posts(con, "a", 12, 4, prefix="ap")
+    add_posts(con, "b", 12, 4, prefix="bp")
+    for uid in ("a", "b"):
+        add_amplification(con, uid, ["ap0"])          # one shared object only
+    assert all(s["n_repeat_peers"] == 0 for s in seeds(con))
+
+    for uid in ("a", "b"):
+        add_amplification(con, uid, ["ap1"])          # now two -> repeat
+    by_handle = {s["handle"]: s for s in seeds(con)}
+    assert by_handle["alpha"]["n_repeat_peers"] >= 1
+    assert by_handle["beta"]["n_repeat_peers"] >= 1
+
+
+# --- qualification routes ----------------------------------------------------
+
+
+def test_repeat_brigader_qualifies_without_volume(con):
+    """The bug this whole change exists for: brigading is many accounts each
+    posting once, so a volume floor removed 936 of 939 brigade participants and
+    left the brigade component at exactly 0 for every seed."""
+    for i in range(4):
+        add_author(con, f"b{i}", f"brig{i}")
+    # Two separate pile-ons, each with 4 distinct toxic repliers, 1 post each.
+    for conv in ("conv1", "conv2"):
+        for i in range(4):
+            add_posts(con, f"b{i}", 1, 1, prefix=f"{conv}_{i}_", conversation=conv, reply=True)
+    got = {s["handle"]: s for s in seeds(con)}
+    assert set(got) == {"brig0", "brig1", "brig2", "brig3"}
+    for s in got.values():
+        assert s["n_posts"] < hsig.HATE_MIN_POSTS      # nowhere near the volume floor
+        assert s["n_brigade_convs"] >= hsig.HATE_MIN_BRIGADES
+
+
+def test_single_brigade_is_not_enough(con):
+    for i in range(4):
+        add_author(con, f"b{i}", f"brig{i}")
+    for i in range(4):
+        add_posts(con, f"b{i}", 1, 1, prefix=f"c_{i}_", conversation="conv1", reply=True)
+    assert seeds(con) == []
+
+
+# --- observation-effort control ---------------------------------------------
+
+
+def test_volume_bucketing_stops_effort_buying_rank(con):
+    """Collecting more of an account's timeline must move it to a higher-volume
+    stratum, not up the ranking."""
+    sql_low, sql_high = [], []
+    for i in range(6):                      # low-volume cohort
+        add_author(con, f"l{i}", f"low{i}")
+        add_posts(con, f"l{i}", 12, 4, prefix=f"l{i}p")
+    for i in range(6):                      # high-volume cohort, same behaviour
+        add_author(con, f"h{i}", f"high{i}")
+        add_posts(con, f"h{i}", 120, 40, prefix=f"h{i}p")
+    for grp in ("l", "h"):
+        for i in range(6):
+            add_amplification(con, f"{grp}{i}", [f"{grp}0p0", f"{grp}0p1"])
+    rows = seeds(con)
+    buckets = {r["handle"]: r["volume_bucket"] for r in rows}
+    assert len({buckets[h] for h in buckets if h.startswith("low")}) >= 1
+    # the two cohorts must not share a bucket - that is the whole point
+    low_buckets = {b for h, b in buckets.items() if h.startswith("low")}
+    high_buckets = {b for h, b in buckets.items() if h.startswith("high")}
+    assert low_buckets.isdisjoint(high_buckets)
+
+
+def test_thin_cohort_suppresses_the_score(con):
+    """percent_rank is 0 for one row and 1/(n-1) steps for a few; report the
+    evidence rather than dressing noise up as a ranking."""
+    add_author(con, "u1", "solo")
+    add_posts(con, "u1", 20, 15, prefix="s")
+    rows = seeds(con)
+    assert len(rows) < hsig.MIN_COHORT_FOR_RANK
+    assert all(r["hate_seed_score"] is None for r in rows)
+
+
+# --- coordination edges are deliberately NOT used for peer counts ------------
+
+
+def test_edge_staleness_probe_tolerates_a_missing_prefix(con):
+    """`edges_are_stale` still guards `adaptive`'s cluster promotion, which is
+    where persisted coordination edges DO belong."""
+    assert hsig.edges_are_stale(con, "_no_such_edges") is True
+
+
+def test_co_amplification_is_scoped_to_toxic_objects(con):
+    """Sharing a non-toxic object must not create a peer edge. This is why the
+    all-posts coordination edges could not be substituted here."""
+    add_author(con, "a", "alpha")
+    add_author(con, "b", "beta")
+    add_posts(con, "a", 12, 1, prefix="ap")   # ap0 toxic, ap1+ not
+    add_posts(con, "b", 12, 1, prefix="bp")
+    for uid in ("a", "b"):
+        add_amplification(con, uid, ["ap2", "ap3"])   # two shared NON-toxic objects
+    assert all(s["n_repeat_peers"] == 0 for s in seeds(con))

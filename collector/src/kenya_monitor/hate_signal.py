@@ -39,9 +39,34 @@ HATE_SEED_WEIGHTS = {
 HATE_LOOKBACK_DAYS = 14
 HATE_MIN_POSTS = 10  # too few posts to estimate a rate from
 HATE_MIN_TOXIC_POSTS = 3  # one bad day is not a pattern
-HATE_SEED_MIN_PEERS = 2  # nobody else amplified it -> not a network
 BRIGADE_MIN_AUTHORS = 3  # distinct toxic repliers before a thread is a pile-on
 SCORES_STALE_HOURS = 24
+COORD_STALE_HOURS = 24
+
+# Co-amplification guards, mirroring kma.coordination (do not import it - the
+# collector stays free of the analysis dependency stack).
+#
+# Measured on the live corpus 2026-07-31: of 385 toxic objects, 9 had more than
+# 50 distinct amplifiers (max 223) and those 9 alone produced 43% of all
+# co-amplification rows. Without the cap, "peers" mostly means "we both
+# retweeted the same viral post", which is organic, not coordination. With the
+# cap AND a repetition requirement, 1,559 accounts clearing `peers >= 2`
+# collapse to 29 that repeatedly co-amplify with the same partner.
+HUB_CAP_MIN = 50
+HUB_CAP_PCT = 0.05
+AMP_MIN_REPETITION = 2  # distinct shared toxic objects before a pair counts
+
+# Qualification. An account may seed by ANY of three routes; requiring the
+# volume floor for all of them is what previously discarded the entire
+# coordination signal (936 of 939 brigade participants, leaving the `brigade`
+# component at exactly 0 for every seed).
+HATE_MIN_REPEAT_PEERS = 2  # partners it repeatedly co-amplifies with
+HATE_MIN_BRIGADES = 2  # distinct pile-ons joined
+
+# percent_rank is (rank-1)/(n-1): it returns 0 for a single row and moves in
+# 1/(n-1) steps. Below this cohort size the weighted score is not meaningful.
+MIN_COHORT_FOR_RANK = 8
+VOLUME_BUCKETS = 4  # ntile strata for observation-effort-controlled ranking
 
 
 def _toxic_expr(cols: set[str]) -> str:
@@ -78,6 +103,26 @@ def scores_are_stale(
     return bool(row[0])
 
 
+def edges_are_stale(
+    con: duckdb.DuckDBPyConnection, edges_view: str, max_age_hours: int = COORD_STALE_HOURS
+) -> bool:
+    """True when persisted coordination edges are missing or older than the
+    refresh interval. The 6-hourly refresh lives in the analysis worker; if that
+    is not running, these edges freeze and the local projection is the honest
+    fallback."""
+    try:
+        row = con.sql(
+            f"""
+            SELECT max(computed_at) IS NULL
+                OR max(computed_at) < now() - INTERVAL {int(max_age_hours)} HOUR
+            FROM {edges_view}
+            """
+        ).fetchone()
+    except duckdb.Error:
+        return True
+    return bool(row[0])
+
+
 def _hate_account_sql(
     hatespeech_view: str,
     posts_view: str,
@@ -87,9 +132,19 @@ def _hate_account_sql(
     lookback_days: int,
     min_posts: int,
     min_toxic: int,
-    min_peers: int,
+    min_repeat_peers: int,
+    min_brigades: int,
     has_quote: bool,
 ) -> str:
+    """Rank accounts as hate-network seeds.
+
+    Components are computed for EVERY author, then qualification is applied, then
+    ranking. The previous order (filter on volume, then compute) is what made the
+    brigade component dead: brigading is many accounts each posting once, so a
+    `n_toxic >= 3` pre-filter removes the brigaders before they can be scored.
+
+    Co-amplification is hub-capped and repetition-filtered (see below).
+    """
     # Retweet incidence unions collected retweets with the snowballed retweeter
     # census, so co-amplification does not depend on us happening to have
     # collected each retweet as a post.
@@ -102,6 +157,50 @@ def _hate_account_sql(
         if engagements_view
         else ""
     )
+    # Co-amplification is computed locally and scoped to TOXIC objects.
+    #
+    # Persisted `coordination/` edges were the obvious thing to reuse - they are
+    # hub-capped, repetition-filtered and FDR-validated - but they are built over
+    # ALL posts, so they mean "these two coordinate", not "these two co-amplify
+    # toxic content". Measured three ways on the live corpus (2026-07-31):
+    #
+    #   substitute validated edges -> 500+ cohort, only 2 of top 20 shared with
+    #                                 the toxic projection: a different question
+    #   intersect with them        -> 32 cohort, n_repeat_peers = 0 for EVERY
+    #                                 account: validated pairs and toxic-co-
+    #                                 amplifying pairs barely overlap
+    #   toxic projection alone     -> 50 cohort, signal intact
+    #
+    # So the guards are reproduced here rather than borrowed. `coordination/`
+    # keeps its proper role: cluster-membership promotion in `adaptive`.
+    amp_cte = f"""
+        objdeg AS (
+            SELECT obj, count(DISTINCT author_id) AS deg FROM trt GROUP BY obj
+        ),
+        hub AS (
+            SELECT greatest({int(HUB_CAP_MIN)},
+                            cast({HUB_CAP_PCT} * count(DISTINCT author_id) AS BIGINT)) AS cap
+            FROM trt
+        ),
+        nohub AS (
+            SELECT t.* FROM trt t JOIN objdeg d USING (obj), hub
+            WHERE d.deg <= hub.cap
+        ),
+        pairs AS (
+            SELECT a.author_id, b.author_id AS peer, count(DISTINCT a.obj) AS shared
+            FROM nohub a JOIN nohub b USING (obj)
+            WHERE a.author_id <> b.author_id
+            GROUP BY a.author_id, b.author_id
+        ),
+        amp AS (
+            SELECT p.author_id,
+                   count(*) FILTER (WHERE p.shared >= {int(AMP_MIN_REPETITION)})
+                       AS n_repeat_peers,
+                   count(*) AS n_any_peers
+            FROM pairs p
+            GROUP BY p.author_id
+        )"""
+
     return f"""
     WITH lp AS (
         SELECT * FROM {posts_view}
@@ -127,16 +226,6 @@ def _hate_account_sql(
                    AS toxic_days,
                count(DISTINCT date_trunc('day', created_at)) AS active_days
         FROM recent GROUP BY author_id
-    ), rated AS (
-        SELECT *,
-            -- Wilson lower bound: 1/1 must not outrank 40/300.
-            (n_toxic * 1.0 / n_posts + 1.9208 / (2 * n_posts)
-             - 1.96 * sqrt((n_toxic * 1.0 / n_posts * (1 - n_toxic * 1.0 / n_posts)
-                            + 0.9604 / n_posts) / n_posts))
-            / (1 + 3.8416 / n_posts) AS toxic_rate_lb,
-            toxic_days * 1.0 / greatest(active_days, 1) AS persistence
-        FROM acct
-        WHERE n_posts >= {int(min_posts)} AND n_toxic >= {int(min_toxic)}
     ), toxic_obj AS (
         SELECT platform_post_id FROM flag WHERE toxic
     ), rt AS (
@@ -144,14 +233,9 @@ def _hate_account_sql(
         {census}
     ), trt AS (
         SELECT rt.* FROM rt JOIN toxic_obj ON rt.obj = toxic_obj.platform_post_id
-    ), amp AS (
-        SELECT a.author_id,
-               count(DISTINCT b.author_id) AS n_cotoxic_peers,
-               count(DISTINCT a.obj) AS n_toxic_objects_amplified
-        FROM trt a JOIN trt b USING (obj)
-        WHERE a.author_id <> b.author_id
-        GROUP BY a.author_id
-    ), toxic_replies AS (
+    ),
+    {amp_cte},
+    toxic_replies AS (
         SELECT conversation_id, author_id
         FROM recent
         WHERE toxic AND in_reply_to_id IS NOT NULL AND conversation_id IS NOT NULL
@@ -170,33 +254,55 @@ def _hate_account_sql(
         QUALIFY row_number() OVER (
             PARTITION BY platform, platform_user_id ORDER BY collected_at DESC
         ) = 1
-    ), joined AS (
+    ), metrics AS (
         SELECT
             la.handle,
-            r.author_id, r.n_posts, r.n_toxic, r.toxic_rate_lb, r.persistence,
-            COALESCE(amp.n_cotoxic_peers, 0) AS n_cotoxic_peers,
-            COALESCE(amp.n_toxic_objects_amplified, 0) AS n_toxic_objects_amplified,
+            a.author_id, a.n_posts, a.n_toxic,
+            -- Wilson lower bound: 1/1 must not outrank 40/300.
+            (a.n_toxic * 1.0 / a.n_posts + 1.9208 / (2 * a.n_posts)
+             - 1.96 * sqrt((a.n_toxic * 1.0 / a.n_posts * (1 - a.n_toxic * 1.0 / a.n_posts)
+                            + 0.9604 / a.n_posts) / a.n_posts))
+            / (1 + 3.8416 / a.n_posts) AS toxic_rate_lb,
+            a.toxic_days * 1.0 / greatest(a.active_days, 1) AS persistence,
+            COALESCE(amp.n_repeat_peers, 0) AS n_repeat_peers,
+            COALESCE(amp.n_any_peers, 0) AS n_any_peers,
             COALESCE(brig.n_brigade_convs, 0) AS n_brigade_convs,
             COALESCE(susp.suspicion, 0.0) AS suspicion
-        FROM rated r
-        JOIN la ON r.author_id = la.platform_user_id
+        FROM acct a
+        JOIN la ON a.author_id = la.platform_user_id
         LEFT JOIN amp USING (author_id)
         LEFT JOIN brig USING (author_id)
         LEFT JOIN susp ON susp.handle = la.handle
         WHERE la.handle IS NOT NULL AND trim(la.handle) <> ''
-          AND COALESCE(amp.n_cotoxic_peers, 0) >= {int(min_peers)}
+    ), qualified AS (
+        -- Three independent routes. The coordination routes carry no toxicity
+        -- floor because they cannot be reached without one: an account only
+        -- enters `trt` by amplifying a toxic object, or `toxic_replies` by
+        -- posting a toxic reply.
+        SELECT * FROM metrics
+        WHERE (n_posts >= {int(min_posts)} AND n_toxic >= {int(min_toxic)})
+           OR n_repeat_peers >= {int(min_repeat_peers)}
+           OR n_brigade_convs >= {int(min_brigades)}
+    ), bucketed AS (
+        SELECT *, ntile({int(VOLUME_BUCKETS)}) OVER (ORDER BY n_posts) AS volume_bucket
+        FROM qualified
     )
     SELECT *,
-        -- Percentile-rank each component so one heavy-tailed count cannot
-        -- dominate, then weight. Counts are log1p'd first.
+        -- Count-derived components are ranked WITHIN observation-volume strata,
+        -- so pulling more of an account's timeline moves it to a higher-volume
+        -- bucket rather than up the ranking. Bounded components rank globally.
+        -- ln(1+x) is monotone, so it only changes the co_amplify ordering,
+        -- where it balances the two summed addends.
         {HATE_SEED_WEIGHTS["co_amplify"]} * percent_rank() OVER (
-            ORDER BY ln(1 + n_cotoxic_peers) + ln(1 + n_toxic_objects_amplified))
+            PARTITION BY volume_bucket
+            ORDER BY ln(1 + n_repeat_peers) + ln(1 + n_any_peers))
       + {HATE_SEED_WEIGHTS["toxic_rate_lb"]} * percent_rank() OVER (ORDER BY toxic_rate_lb)
-      + {HATE_SEED_WEIGHTS["brigade"]} * percent_rank() OVER (ORDER BY ln(1 + n_brigade_convs))
+      + {HATE_SEED_WEIGHTS["brigade"]} * percent_rank() OVER (
+            PARTITION BY volume_bucket ORDER BY ln(1 + n_brigade_convs))
       + {HATE_SEED_WEIGHTS["persistence"]} * percent_rank() OVER (ORDER BY persistence)
       + {HATE_SEED_WEIGHTS["suspicion"]} * percent_rank() OVER (ORDER BY suspicion)
         AS hate_seed_score
-    FROM joined
+    FROM bucketed
     """
 
 
@@ -209,11 +315,15 @@ def hate_accounts(
     lookback_days: int = HATE_LOOKBACK_DAYS,
     min_posts: int = HATE_MIN_POSTS,
     min_toxic: int = HATE_MIN_TOXIC_POSTS,
-    min_peers: int = HATE_SEED_MIN_PEERS,
+    min_repeat_peers: int = HATE_MIN_REPEAT_PEERS,
+    min_brigades: int = HATE_MIN_BRIGADES,
     n: int = 50,
 ) -> list[dict]:
     """Accounts ranked as hate-network seeds, strongest first, with the evidence
-    that put them there. Returns [] when nothing has been scored yet."""
+    that put them there. Returns [] when nothing has been scored yet.
+
+    Co-amplification is scoped to toxic objects and computed locally; see
+    `_hate_account_sql` for why persisted coordination edges are not used."""
     try:
         hate_cols = set(con.sql(f"SELECT * FROM {hatespeech_view} LIMIT 0").columns)
     except duckdb.Error:
@@ -222,15 +332,31 @@ def hate_accounts(
     has_quote = "is_quote" in _post_columns(con, posts_view)
     sql = _hate_account_sql(
         hatespeech_view, posts_view, authors_view, engagements_view,
-        _toxic_expr(hate_cols), lookback_days, min_posts, min_toxic, min_peers, has_quote,
+        _toxic_expr(hate_cols), lookback_days, min_posts, min_toxic,
+        min_repeat_peers, min_brigades, has_quote,
     )
     try:
         rel = con.sql(f"SELECT * FROM ({sql}) ORDER BY hate_seed_score DESC LIMIT {int(n)}")
         cols = rel.columns
-        return [dict(zip(cols, row)) for row in rel.fetchall()]
+        rows = [dict(zip(cols, row)) for row in rel.fetchall()]
     except duckdb.Error:
         log.exception("hate_signal: seed query failed")
         return []
+    if 0 < len(rows) < MIN_COHORT_FOR_RANK:
+        # percent_rank over a handful of rows is not a ranking: it is 0 for a
+        # single row and moves in 1/(n-1) steps. Report the evidence and say so
+        # rather than dressing noise up as a score.
+        log.warning(
+            "hate_signal: only %d qualifying account(s) (< %d); ranking suppressed",
+            len(rows), MIN_COHORT_FOR_RANK,
+        )
+        for r in rows:
+            r["hate_seed_score"] = None
+        rows.sort(
+            key=lambda r: (r["n_repeat_peers"], r["n_brigade_convs"], r["toxic_rate_lb"]),
+            reverse=True,
+        )
+    return rows
 
 
 def top_hate_seeds(
