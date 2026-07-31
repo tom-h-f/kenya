@@ -13,5 +13,24 @@ services:
       - hf_cache:/app/hf_cache   # transformer weights, downloaded once
     restart: unless-stopped
 
+  # Coordination refresh only - no model passes. `kma.semantic` imports torch
+  # lazily (inside `_model()`), and the default channels (co_retweet, co_reply)
+  # never touch embeddings, so this loads nothing heavier than duckdb + igraph.
+  # That makes it viable on a RAM-tight host where `enrich` is not, which
+  # matters because the collector's `adaptive.cluster_accounts` and
+  # `hate_signal.validated_peers` both read the LATEST persisted run - without
+  # a scheduled refresh, cluster-based targeting freezes at whenever someone
+  # last ran it by hand.
+  #
+  # Opt-in via profile so it does not start on hosts already running `enrich`:
+  #   docker compose --profile coordination up -d coordination
+  coordination:
+    profiles: ["coordination"]
+    build: .
+    env_file: ../.env
+    command: ["--loop", "--no-embed", "--no-classify", "--no-hate", "--coord-hours", "6"]
+    mem_limit: 2g
+    restart: unless-stopped
+
 volumes:
   hf_cache:
