@@ -16,6 +16,7 @@ from kenya_monitor.config import (
     FOLLOW_CRAWL_MAX_PER_RUN,
     FOLLOW_CRAWL_REFRESH_DAYS,
     FOLLOW_CRAWL_TOP_HATE,
+    FRONTIER_OVERSAMPLE,
     FOLLOW_CRAWL_TOP_SUSPICIOUS,
     FOLLOW_FETCH_LIMIT,
     FOLLOW_MAX_ACCOUNTS,
@@ -149,6 +150,21 @@ async def run_hate_seek_once(
     return counts
 
 
+def _hate_seed_rows(storage: Storage, n: int) -> list[dict]:
+    """Ranked seed rows (handle + evidence), or [] when scores are unusable."""
+    from kenya_monitor import hate_signal as hsig
+
+    hate_view = storage.hatespeech_view(platform="x")
+    if hsig.scores_are_stale(storage.con, hate_view):
+        log.warning("hate scores are stale or missing; no seed rows")
+        return []
+    return hsig.hate_accounts(
+        storage.con, hate_view, storage.posts_view(platform="x"),
+        storage.authors_view(platform="x"),
+        storage.engagements_view(platform="x"), n=n,
+    )
+
+
 def _hate_seed_handles(storage: Storage, n: int) -> list[str]:
     """Top-N hate-network seeds, falling back to the generic suspicion ranking
     when the enrich worker has stopped writing scores - selecting on stale
@@ -184,11 +200,25 @@ async def run_hate_expand_once(
     `targets.accounts`: promoting them into baseline collection would inflate
     their post counts and co-action degree, making them look more coordinated
     next run purely because we watched them harder."""
+    from kenya_monitor import hate_frontier as hf
+
     storage = Storage(R2Config.from_env())
-    handles = _hate_seed_handles(storage, top_hate)
-    if not handles:
-        log.info("hate expand: no seed accounts")
+    # Ask for more than we will expand: the frontier drops recently-expanded
+    # accounts, so without headroom a stable top-N would leave nothing due.
+    ranked = _hate_seed_rows(storage, top_hate * FRONTIER_OVERSAMPLE)
+    entries = hf.prune(hf.load())
+    batch = hf.select_frontier(ranked, entries, max_accounts=top_hate)
+    if not batch:
+        log.info(
+            "hate expand: %d ranked seed(s), none due for expansion (%s)",
+            len(ranked), hf.summary(entries),
+        )
         return {}
+    handles = [r["handle"] for r in batch]
+    log.info(
+        "hate expand: %d/%d ranked seeds due; frontier %s",
+        len(batch), len(ranked), hf.summary(entries),
+    )
     collector = await build_x_collector(load_accounts())
     counts = await collect_x(
         collector,
@@ -213,7 +243,11 @@ async def run_hate_expand_once(
                 collector, storage, objects=objects, type_prefix="hate_"
             )
         )
+    for row in batch:
+        entries = hf.record(entries, row, n_posts=int(row.get("n_posts") or 0))
+    hf.save(entries)
     counts["seed_accounts"] = len(handles)
+    counts.update({f"frontier_{k}": v for k, v in hf.summary(entries).items()})
     log.info("hate expand complete (%d seeds): %s", len(handles), counts)
     return counts
 

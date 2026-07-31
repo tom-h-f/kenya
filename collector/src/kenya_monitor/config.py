@@ -74,6 +74,13 @@ HATE_TERMS_PATH = Path(os.getenv("HATE_TERMS_PATH", DEFAULT_HATE_TERMS_PATH))
 HATE_MINE_AUTOPROMOTE = os.getenv("HATE_MINE_AUTOPROMOTE", "0") not in ("0", "false", "")
 HATE_SEED_MAX_ACCOUNTS = int(os.getenv("HATE_SEED_MAX_ACCOUNTS", "20"))  # seeds per expand pass
 FOLLOW_CRAWL_TOP_HATE = int(os.getenv("FOLLOW_CRAWL_TOP_HATE", "10"))
+# Expansion frontier. Without a ledger the top-N seeds are re-expanded every
+# pass and the frontier never advances outward.
+HATE_EXPAND_REFRESH_DAYS = int(os.getenv("HATE_EXPAND_REFRESH_DAYS", "3"))
+HATE_EXPAND_MAX_ATTEMPTS = int(os.getenv("HATE_EXPAND_MAX_ATTEMPTS", "3"))
+HATE_EXPAND_KEEP_DAYS = int(os.getenv("HATE_EXPAND_KEEP_DAYS", "30"))
+# Rank this many times the batch size so the frontier has due candidates to pick.
+FRONTIER_OVERSAMPLE = int(os.getenv("FRONTIER_OVERSAMPLE", "5"))
 
 BURST_ZSCORE = float(os.getenv("BURST_ZSCORE", "3.0"))
 BURST_MIN_POSTS = int(os.getenv("BURST_MIN_POSTS", "100"))  # hourly floor before a burst counts
@@ -103,6 +110,7 @@ SNOWBALL_STATE_PATH = Path(os.getenv("SNOWBALL_STATE_PATH", STATE_DIR / "snowbal
 FOLLOW_CRAWL_STATE_PATH = Path(os.getenv("FOLLOW_CRAWL_STATE_PATH", STATE_DIR / "follow_crawl.json"))
 HATE_SEEK_STATE_PATH = Path(os.getenv("HATE_SEEK_STATE_PATH", STATE_DIR / "hate_seek.json"))
 MINED_TERMS_PATH = Path(os.getenv("MINED_TERMS_PATH", STATE_DIR / "mined_terms.json"))
+HATE_EXPAND_STATE_PATH = Path(os.getenv("HATE_EXPAND_STATE_PATH", STATE_DIR / "hate_expand.json"))
 
 
 @dataclass(frozen=True)

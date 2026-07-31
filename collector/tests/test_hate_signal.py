@@ -334,7 +334,6 @@ def test_single_brigade_is_not_enough(con):
 def test_volume_bucketing_stops_effort_buying_rank(con):
     """Collecting more of an account's timeline must move it to a higher-volume
     stratum, not up the ranking."""
-    sql_low, sql_high = [], []
     for i in range(6):                      # low-volume cohort
         add_author(con, f"l{i}", f"low{i}")
         add_posts(con, f"l{i}", 12, 4, prefix=f"l{i}p")
