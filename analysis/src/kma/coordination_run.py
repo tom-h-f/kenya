@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 
 import duckdb
 
@@ -40,6 +41,34 @@ DEFAULT_CHANNELS = ["co_retweet", "co_reply"]
 
 EDGE_METHODS = [("svn_fdr", "sig_fdr"), ("svn_bonf", "sig_bonferroni"), ("pct", "sig_percentile")]
 
+# DuckDB sizes its memory budget from the HOST, not the container cgroup, so on a
+# small box with a generous `mem_limit` it happily plans past physical RAM and
+# dies mid-projection instead of spilling. Observed on tf1 (3.7Gi host, 6g
+# mem_limit): OutOfMemoryException at `projected_edges`, "2.7 GiB/2.9 GiB used".
+# An explicit limit makes it spill to disk instead - slower, but it finishes.
+COORD_MEMORY_LIMIT = os.getenv("COORD_MEMORY_LIMIT", "1500MB")
+COORD_THREADS = int(os.getenv("COORD_THREADS", "2"))
+
+
+def tune(con: duckdb.DuckDBPyConnection | None) -> None:
+    """Constrain DuckDB so the projection spills rather than OOMs.
+
+    Best-effort: settings names drift between DuckDB versions, and a tuning
+    failure must not take down a run that would otherwise have succeeded."""
+    if con is None:
+        return
+    for stmt in (
+        f"SET memory_limit='{COORD_MEMORY_LIMIT}'",
+        f"SET threads={int(COORD_THREADS)}",
+        # The projection is a large self-join; row order is irrelevant to the
+        # result and preserving it costs memory.
+        "SET preserve_insertion_order=false",
+    ):
+        try:
+            con.execute(stmt)
+        except Exception:
+            log.warning("coordination: could not apply %r", stmt)
+
 
 def run(
     con: duckdb.DuckDBPyConnection,
@@ -53,6 +82,7 @@ def run(
     """One coordination pass. Returns a summary dict; writes nothing unless
     `persist`. Channels default to the two that validate on live data."""
     channels = channels or DEFAULT_CHANNELS
+    tune(con)
     layers = co.build_layers(con, channels=channels, platform=platform, method=method)
     members, summary = co.clusters(layers, resolution=resolution, min_size=min_size)
     log.info(

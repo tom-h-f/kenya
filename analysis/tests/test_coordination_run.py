@@ -95,3 +95,33 @@ def test_persist_noop_when_no_clusters(stub, monkeypatch):
 def test_cli_rejects_unknown_channel():
     with pytest.raises(SystemExit):
         cr.main(["--channels", "co_retweet,not_a_channel"])
+
+
+def test_tune_constrains_duckdb_so_it_spills_instead_of_oom():
+    """DuckDB sizes its budget from the host, not the container cgroup, so on a
+    small box it plans past physical RAM and dies mid-projection. Observed on
+    tf1: OutOfMemoryException at projected_edges, 2.7GiB/2.9GiB used."""
+    import duckdb
+
+    con = duckdb.connect()
+    cr.tune(con)
+    settings = {
+        r[0]: r[1]
+        for r in con.sql(
+            "SELECT name, value FROM duckdb_settings() "
+            "WHERE name IN ('memory_limit','threads','preserve_insertion_order')"
+        ).fetchall()
+    }
+    assert settings["preserve_insertion_order"] == "false"
+    assert int(settings["threads"]) == cr.COORD_THREADS
+    # memory_limit is echoed back in DuckDB's own units, so assert it is bounded
+    # rather than string-equal to the input.
+    assert settings["memory_limit"] not in ("", None)
+
+
+def test_run_tunes_before_building_layers(stub, monkeypatch):
+    """The tuning must apply to the connection the projection actually uses."""
+    called: list[str] = []
+    monkeypatch.setattr(cr, "tune", lambda con: called.append("tuned"))
+    cr.run(con=None, persist=False)
+    assert called == ["tuned"]
