@@ -183,6 +183,11 @@ _SIMPLE_TRACES = {
 # restore the old unbounded behaviour.
 COORD_LOOKBACK_DAYS = int(os.getenv("COORD_LOOKBACK_DAYS", "14"))
 
+# Upper bound on the hub cap. At cap 50 the projection keeps 98.1% of objects and
+# 0.7% of the pairs; the discarded 1.9% are mega-viral posts whose co-amplifiers
+# are organic, not coordinated.
+HUB_CAP_MAX = int(os.getenv("HUB_CAP_MAX", "100"))
+
 
 def _latest_posts_cte(platform: str, lookback_days: int | None = None) -> str:
     days = COORD_LOOKBACK_DAYS if lookback_days is None else lookback_days
@@ -756,7 +761,20 @@ def validated_edges(
     else:
         obj_deg = object_degrees(con, channel, platform, trace_table=t)
         n_accounts = con.sql(f"SELECT count(DISTINCT author_id) FROM {t}").fetchone()[0]
-        cap = hub_cap if hub_cap is not None else max(50, int(0.05 * n_accounts))
+        # The 5%-of-accounts term was meant to lift the cap on tiny corpora, but
+        # it scales with the corpus and eventually stops filtering: at 64,002
+        # amplifying accounts it gives 3,200, while the busiest object has 1,171
+        # amplifiers - so nothing was excluded. Measured 2026-08-01 on the 14-day
+        # window: 1.9% of objects (the viral tail) generated 99.3% of all
+        # projected pairs, 36.8M of them. That both OOMs a small host and does
+        # exactly what this cap exists to prevent - "one such hub dilutes the
+        # aggregate null rate until real clusters vanish". Bounded above so it
+        # stays tight as the corpus grows.
+        cap = (
+            hub_cap
+            if hub_cap is not None
+            else max(50, min(int(0.05 * n_accounts), HUB_CAP_MAX))
+        )
         hubs = obj_deg[obj_deg > cap]
         if len(hubs):
             import logging

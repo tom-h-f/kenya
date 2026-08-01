@@ -54,6 +54,10 @@ COORD_STALE_HOURS = 24
 # collapse to 29 that repeatedly co-amplify with the same partner.
 HUB_CAP_MIN = 50
 HUB_CAP_PCT = 0.05
+# Bound the percentage term above, or it stops filtering as the corpus grows:
+# on the analysis side the same rule reached a cap of 3,200 against a busiest
+# object of 1,171 amplifiers, i.e. excluded nothing.
+HUB_CAP_MAX = 100
 AMP_MIN_REPETITION = 2  # distinct shared toxic objects before a pair counts
 
 # Qualification. An account may seed by ANY of three routes; requiring the
@@ -179,7 +183,8 @@ def _hate_account_sql(
         ),
         hub AS (
             SELECT greatest({int(HUB_CAP_MIN)},
-                            cast({HUB_CAP_PCT} * count(DISTINCT author_id) AS BIGINT)) AS cap
+                            least(cast({HUB_CAP_PCT} * count(DISTINCT author_id) AS BIGINT),
+                                  {int(HUB_CAP_MAX)})) AS cap
             FROM trt
         ),
         nohub AS (

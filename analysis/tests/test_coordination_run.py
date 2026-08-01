@@ -154,3 +154,18 @@ def test_window_precedes_the_dedup_qualify():
 
     sql = co._latest_posts_cte("x")
     assert sql.index("created_at >") < sql.index("QUALIFY")
+
+
+def test_hub_cap_is_bounded_above():
+    """The 5%-of-accounts term scales with the corpus and eventually excludes
+    nothing: at 64,002 amplifiers it gave 3,200 against a busiest object of
+    1,171. Measured 2026-08-01: 1.9% of objects produced 99.3% of all pairs."""
+    from kma import coordination as co
+
+    def cap(n_accounts):
+        return max(50, min(int(0.05 * n_accounts), co.HUB_CAP_MAX))
+
+    assert cap(100) == 50          # tiny corpus -> floor
+    assert cap(1_600) == 80        # mid -> the percentage governs
+    assert cap(64_002) == co.HUB_CAP_MAX   # large -> bounded, not 3200
+    assert cap(1_000_000) == co.HUB_CAP_MAX
