@@ -124,3 +124,31 @@ pool's sustained throughput before raising them - do not guess limits.
 
 TikTok/Facebook actors, archival beyond `MAX_AGE_DAYS`, WhatsApp. Tracked in
 the roadmap, not here.
+
+
+## Census selection is banded, not "most amplified"
+
+Measured 2026-08-01. Censusing the most-reposted objects looks obviously right and
+is close to useless: **420 of 422 censused objects had more than 100 amplifiers**,
+and `coordination.validated_edges` discards exactly those - a pair sharing only a
+mega-viral tweet is organic, and one such hub dilutes the aggregate null until
+real clusters vanish. Of 128,556 amplifier accounts collected, **11,393 (8.9%)**
+survived the cap and could become cluster members.
+
+The economics invert once measured:
+
+| object | requests | accounts | usable for coordination |
+|---|---|---|---|
+| hub (>100 amplifiers) | ~3 (paginated) | ~300 | **0** |
+| mid-band (3-100) | 1 | ~27 | **all** |
+
+Selection is therefore banded to `SNOWBALL_BAND_MIN`..`SNOWBALL_BAND_MAX`
+(3..100), the upper bound sharing an env var with `coordination.HUB_CAP_MAX` so
+the two cannot drift apart.
+
+**Do not "fix" this by lowering `SNOWBALL_RETWEETERS_LIMIT`.** Capping the fetch
+at 100 would make a 5,000-retweet object *look* like a legitimate mid-degree
+object and inject it into the projection. The lever is selection, not fetch depth.
+
+The metric that matters is **amplifiers surviving the hub cap**, not accounts
+discovered. The latter is uncorrelated with cluster membership.

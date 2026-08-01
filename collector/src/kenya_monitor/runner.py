@@ -18,6 +18,8 @@ from kenya_monitor.config import (
     COLLECT_CONCURRENCY,
     SEARCH_INCLUDE_RETWEETS,
     SEARCH_PRODUCT,
+    SNOWBALL_BAND_MAX,
+    SNOWBALL_BAND_MIN,
     SNOWBALL_FLUSH_EVERY,
     SNOWBALL_HYDRATE_LIMIT,
     SNOWBALL_LOOKBACK_DAYS,
@@ -279,6 +281,8 @@ def hot_objects(
     top_retweeted: int = SNOWBALL_TOP_RETWEETED,
     top_conversations: int = SNOWBALL_TOP_CONVERSATIONS,
     hydrate_limit: int = SNOWBALL_HYDRATE_LIMIT,
+    band_min: int = SNOWBALL_BAND_MIN,
+    band_max: int = SNOWBALL_BAND_MAX,
 ) -> tuple[list[str], list[str], list[str]]:
     """Snowball targets from already-collected posts: the most-amplified
     objects, the busiest conversations, and referenced ids we never fetched.
@@ -301,6 +305,9 @@ def hot_objects(
             SELECT repost_of_id FROM recent
             WHERE repost_of_id IS NOT NULL
             GROUP BY 1
+            HAVING max(repost_count) BETWEEN {int(band_min)} AND {int(band_max)}
+            -- Densest-first WITHIN the band: nearer the hub cap means more
+            -- co-amplification pairs per request, without crossing it.
             ORDER BY max(repost_count) DESC, count(*) DESC
             LIMIT {int(top_retweeted)}
             """

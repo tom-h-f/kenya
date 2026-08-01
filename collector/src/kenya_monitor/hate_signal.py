@@ -21,9 +21,11 @@ Three hard floors run before any scoring, so thin evidence never ranks at all.
 from __future__ import annotations
 
 import logging
+import os
 
 import duckdb
 
+from kenya_monitor.config import SNOWBALL_BAND_MAX, SNOWBALL_BAND_MIN
 from kenya_monitor.suspicion import _post_columns, _score_sql
 
 log = logging.getLogger("kenya_monitor")
@@ -42,6 +44,12 @@ HATE_MIN_TOXIC_POSTS = 3  # one bad day is not a pattern
 BRIGADE_MIN_AUTHORS = 3  # distinct toxic repliers before a thread is a pile-on
 SCORES_STALE_HOURS = 24
 COORD_STALE_HOURS = 24
+
+# Toxic object selection was pinned to 2 days, so an object created 3 days ago
+# and scored today was invisible to the census forever - the enrich backlog could
+# never be worked, at any cap. 14 matches MAX_AGE_DAYS (how far search reaches),
+# HATE_LOOKBACK_DAYS and COORD_LOOKBACK_DAYS.
+TOXIC_LOOKBACK_DAYS = int(os.getenv("TOXIC_LOOKBACK_DAYS", "14"))
 
 # Co-amplification guards, mirroring kma.coordination (do not import it - the
 # collector stays free of the analysis dependency stack).
@@ -556,9 +564,11 @@ def hot_toxic_objects(
     con: duckdb.DuckDBPyConnection,
     hatespeech_view: str,
     posts_view: str,
-    lookback_days: int = 2,
+    lookback_days: int = TOXIC_LOOKBACK_DAYS,
     top_retweeted: int = 250,
     top_conversations: int = 60,
+    band_min: int = SNOWBALL_BAND_MIN,
+    band_max: int = SNOWBALL_BAND_MAX,
 ) -> tuple[list[str], list[str], list[str]]:
     """Snowball targets ranked by toxic density rather than raw engagement.
 
@@ -569,6 +579,9 @@ def hot_toxic_objects(
     try:
         hate_cols = set(con.sql(f"SELECT * FROM {hatespeech_view} LIMIT 0").columns)
     except duckdb.Error:
+        # The one exit path that used to be silent. A toxic census that returns
+        # nothing looks identical to one that found nothing.
+        log.warning("hate_signal: hatespeech view unreadable; no toxic objects selected")
         return [], [], []
     toxic = _toxic_expr(hate_cols)
     base = f"""
@@ -597,7 +610,8 @@ def hot_toxic_objects(
                 f"""
                 {base}
                 SELECT platform_post_id FROM recent
-                WHERE toxic AND COALESCE(repost_count, 0) > 0 AND NOT COALESCE(is_repost, FALSE)
+                WHERE toxic AND NOT COALESCE(is_repost, FALSE)
+                  AND COALESCE(repost_count, 0) BETWEEN {int(band_min)} AND {int(band_max)}
                 ORDER BY repost_count DESC NULLS LAST, p_hate DESC NULLS LAST
                 LIMIT {int(top_retweeted)}
                 """

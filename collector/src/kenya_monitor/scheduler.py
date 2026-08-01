@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import random
+import time
 from datetime import datetime, timedelta, timezone
 
 from kenya_monitor import adaptive
@@ -43,6 +44,7 @@ from kenya_monitor.config import (
 )
 from kenya_monitor.runner import (
     build_x_collector,
+    hot_objects,
     collect_backfill,
     collect_follows,
     collect_metrics,
@@ -56,6 +58,14 @@ log = logging.getLogger("kenya_monitor")
 # Metrics pass defaults (cap computed from pool size at runtime).
 METRICS_SINCE_DAYS = 5
 METRICS_TOP_PCT = 0.05
+
+
+def _cycle_estimate_s(cycle: int, started_mono: float, default_s: float = 1800.0) -> float:
+    """Mean cycle duration so far, so the hate cadence stays "every Nth cycle"
+    in spirit while surviving restarts. Falls back before the first cycle ends."""
+    if cycle < 1:
+        return default_s
+    return max(60.0, (time.monotonic() - started_mono) / cycle)
 
 
 def _adaptive_targets(
@@ -240,6 +250,9 @@ async def run_hate_expand_once(
     entries = hf.prune(hf.load())
     batch = hf.select_frontier(ranked, entries, max_accounts=top_hate)
     if not batch:
+        # Object census and account expansion are separate concerns. The toxic
+        # retweeter census now rides the baseline snowball (run_snowball_once),
+        # so a saturated account frontier no longer silently stops it.
         log.info(
             "hate expand: %d ranked seed(s), none due for expansion (%s)",
             len(ranked), hf.summary(entries),
@@ -284,9 +297,38 @@ async def run_hate_expand_once(
 
 
 async def run_snowball_once(**overrides) -> dict[str, int]:
-    """One snowball pass over hot objects (see runner.collect_snowball)."""
+    """One snowball pass over hot objects (see runner.collect_snowball).
+
+    Toxic-ranked objects are merged into the RETWEETER CENSUS only. Engagement
+    rows carry no `type` partition (`storage.write_engagements`), so this cannot
+    contaminate a prevalence denominator - unlike reply threads, which stay on
+    the hate path writing the quarantined `hate_replies`.
+
+    Toxic ids are APPENDED after the baseline ids on purpose. `collect_snowball`
+    walks the list in order and flushes every `SNOWBALL_FLUSH_EVERY`, so a
+    rate-limit abort truncates the tail - the discretionary work - preserving the
+    deliberate baseline-first ordering of the cycle."""
+    from kenya_monitor import hate_signal as hsig
+
     storage = Storage(R2Config.from_env())
     collector = await build_x_collector(load_accounts())
+
+    if "objects" not in overrides:
+        retweeted, conversations, missing = hot_objects(
+            storage.con, storage.posts_view(platform="x")
+        )
+        tox_rt, _tox_conv, _ = hsig.hot_toxic_objects(
+            storage.con, storage.hatespeech_view(platform="x"), storage.posts_view(platform="x")
+        )
+        seen = set(retweeted)
+        extra = [o for o in tox_rt if o not in seen]
+        if extra:
+            log.info(
+                "snowball: +%d toxic-ranked objects appended to %d baseline",
+                len(extra), len(retweeted),
+            )
+        overrides["objects"] = (retweeted + extra, conversations, missing)
+
     counts = await collect_snowball(collector, storage, **overrides)
     log.info("snowball run complete: %s", counts)
     return counts
@@ -428,6 +470,8 @@ async def run_scheduler(limit: int) -> None:
     maintenance = asyncio.create_task(_maintain_accounts_loop())
     last_backfill: dict[str, object] = {"date": None}
     cycle = 0
+    started_mono = time.monotonic()
+    next_hate = started_mono  # fire on the first cycle, then on elapsed time
     try:
         while True:
             cycle += 1
@@ -443,7 +487,14 @@ async def run_scheduler(limit: int) -> None:
             # Hate-seeking runs after baseline posts/snowball on purpose: when
             # the account pool hits a rate-limit wall it must hit discretionary
             # work first, never baseline coverage.
-            hate_due = HATE_SEEK_ENABLED and cycle % max(1, HATE_SEEK_EVERY_N_CYCLES) == 0
+            # Wall-clock, not cycle count. `cycle` resets to 0 on every restart,
+            # so a cycle-modulo schedule pushed the hate steps back ~3 hours on
+            # each redeploy - under frequent deploys they never ran at all
+            # (observed: 0 executions across a container lifetime).
+            now_mono = time.monotonic()
+            hate_due = HATE_SEEK_ENABLED and now_mono >= next_hate
+            if hate_due:
+                next_hate = now_mono + HATE_SEEK_EVERY_N_CYCLES * _cycle_estimate_s(cycle, started_mono)
             steps = [
                 ("posts", _posts),
                 ("snowball", run_snowball_once),

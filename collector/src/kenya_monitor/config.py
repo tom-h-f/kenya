@@ -47,6 +47,22 @@ SNOWBALL_REFRESH_HOURS = int(os.getenv("SNOWBALL_REFRESH_HOURS", "12"))  # per-o
 # objects/pass.
 SNOWBALL_FLUSH_EVERY = int(os.getenv("SNOWBALL_FLUSH_EVERY", "25"))
 
+# Census only objects inside a repost-count BAND. Measured 2026-08-01: 420 of
+# 422 censused objects (99.5%) had >100 amplifiers, and the coordination hub cap
+# discards exactly those - "pairs sharing only a mega-viral tweet are organic".
+# Of 128,556 amplifier accounts collected, only 11,393 (8.9%) survived the cap
+# and could ever become cluster members.
+#
+# The economics invert once you look: a hub costs ~3 paginated requests for ~300
+# accounts that are all discarded; a mid-band object costs 1 request for ~27
+# accounts that all count. Banding is both cheaper and strictly more useful.
+#
+# SNOWBALL_BAND_MAX must track the hub cap on the analysis side
+# (kma.coordination.HUB_CAP_MAX), or the census silently fills with objects the
+# projection will throw away.
+SNOWBALL_BAND_MIN = int(os.getenv("SNOWBALL_BAND_MIN", "3"))
+SNOWBALL_BAND_MAX = int(os.getenv("HUB_CAP_MAX", "100"))
+
 DYNAMIC_MAX_KEYWORDS = int(os.getenv("DYNAMIC_MAX_KEYWORDS", "10"))
 DYNAMIC_MAX_ACCOUNTS = int(os.getenv("DYNAMIC_MAX_ACCOUNTS", "60"))
 DYNAMIC_EXPIRY_DAYS = int(os.getenv("DYNAMIC_EXPIRY_DAYS", "7"))

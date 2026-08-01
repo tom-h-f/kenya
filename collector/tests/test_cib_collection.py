@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import pytest
+import time
 
 from datetime import datetime, timedelta, timezone
 
@@ -20,7 +21,10 @@ from kenya_monitor.adaptive import (
     save_state,
 )
 from kenya_monitor.collectors.x import build_query
-from kenya_monitor.config import PlatformTargets
+import pathlib
+
+import kenya_monitor.config
+from kenya_monitor.config import PlatformTargets, SNOWBALL_BAND_MAX
 from kenya_monitor.collectors.base import Engagement
 from kenya_monitor.runner import _due, collect_snowball, hot_objects
 
@@ -92,9 +96,44 @@ def test_hot_objects_selection_and_missing_refs():
     retweeted, conversations, missing = hot_objects(
         con, view, lookback_days=2, top_retweeted=1, top_conversations=1, hydrate_limit=10
     )
-    assert retweeted == ["X"]
+    # X has 500 reposts - above the band, so the coordination hub cap would
+    # discard every pair it produced. The quieter object is the useful one.
+    assert retweeted == ["4"]
     assert conversations == ["5"]
     assert "X" in missing and "4" not in missing
+
+
+def test_hot_objects_excludes_hubs_and_singletons():
+    """Measured 2026-08-01: 420 of 422 censused objects were hubs (>100
+    amplifiers) and contributed 0 usable pairs, because the projection discards
+    them. A hub costs ~3 paginated requests for ~300 accounts that are all
+    thrown away; a mid-band object costs 1 request for ~27 that all count."""
+    rows = [
+        {"platform_post_id": "h1", "author_id": "a", "repost_of_id": "HUB", "repost_count": 5000},
+        {"platform_post_id": "m1", "author_id": "b", "repost_of_id": "MID", "repost_count": 42},
+        {"platform_post_id": "s1", "author_id": "c", "repost_of_id": "LONE", "repost_count": 1},
+    ]
+    con, view = _con_with_posts(rows)
+    retweeted, _, _ = hot_objects(con, view, lookback_days=2, top_retweeted=10)
+    assert retweeted == ["MID"]
+    assert "HUB" not in retweeted, "above the hub cap - pairs would be discarded"
+    assert "LONE" not in retweeted, "below the floor - unpairable"
+
+
+def test_census_band_is_wired_to_the_analysis_hub_cap_env_var():
+    """The band max must track `kma.coordination.HUB_CAP_MAX`, or the census
+    silently refills with objects the projection will discard.
+
+    The collector cannot import `kma` - that separation is deliberate and load
+    bearing - so the coupling is the shared env var name. Asserted against the
+    source because reloading the module to test it rebuilds `HateTerm` and
+    breaks `isinstance` for anything already constructed."""
+    src = (
+        pathlib.Path(kenya_monitor.config.__file__).read_text().splitlines()
+    )
+    line = next(ln for ln in src if ln.startswith("SNOWBALL_BAND_MAX"))
+    assert 'os.getenv("HUB_CAP_MAX"' in line, line
+    assert SNOWBALL_BAND_MAX == 100  # matches coordination.HUB_CAP_MAX default
 
 
 def test_hot_objects_respects_lookback():
@@ -330,3 +369,17 @@ def test_objects_are_marked_only_after_their_write(tmp_path):
     state = json.loads((tmp_path / "snowball.json").read_text())
     assert set(state) == {"a", "b"}
     assert storage.engagement_writes == [3, 3]
+
+
+def test_hate_cadence_survives_restarts():
+    """`cycle` resets to 0 on every container restart, so a `cycle % N` schedule
+    pushed the hate steps back ~3h on each redeploy. Observed on pi0: zero hate
+    executions across a whole container lifetime. The schedule is now wall-clock."""
+    from kenya_monitor.scheduler import _cycle_estimate_s
+
+    # Before any cycle completes we cannot know the period; fall back, do not divide by zero.
+    assert _cycle_estimate_s(0, time.monotonic()) == 1800.0
+    # After cycles complete, estimate from elapsed time, floored so a fast cycle
+    # cannot collapse the cadence to nothing.
+    assert _cycle_estimate_s(4, time.monotonic() - 7200) == pytest.approx(1800, rel=0.1)
+    assert _cycle_estimate_s(1000, time.monotonic() - 10) >= 60.0

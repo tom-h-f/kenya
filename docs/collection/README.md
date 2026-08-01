@@ -199,7 +199,7 @@ co-retweet structure.
 
 | Step | Picks | Fetches | Writes |
 |------|-------|---------|--------|
-| Retweeter census | top reposted tweet IDs (`SNOWBALL_TOP_RETWEETED`) | `retweeters()` per object | `engagements/` (kind=retweet) + authors |
+| Retweeter census | reposted tweet IDs **inside the band** (`SNOWBALL_BAND_MIN`..`MAX`) | `retweeters()` per object | `engagements/` (kind=retweet) + authors |
 | Reply threads | top conversations by `reply_count` | `replies()` per root | `posts/type=replies` |
 | Hydration | referenced IDs not yet in corpus | `hydrate()` by id | `posts/type=hydrated` |
 
@@ -437,7 +437,10 @@ Grouped env vars (defaults in `kenya_monitor.config`). Set in repo root `.env`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SNOWBALL_TOP_RETWEETED` | 15 | Hot reposted objects |
+| `SNOWBALL_TOP_RETWEETED` | 250 | Objects censused per pass |
+| `SNOWBALL_BAND_MIN` / `SNOWBALL_BAND_MAX` | 3 / 100 | Repost-count band for census selection |
+| `SNOWBALL_FLUSH_EVERY` | 25 | Objects per write (checkpointed) |
+| `TOXIC_LOOKBACK_DAYS` | 14 | How far back the toxic selector reaches |
 | `SNOWBALL_TOP_CONVERSATIONS` | 10 | Hot reply threads |
 | `SNOWBALL_RETWEETERS_LIMIT` | 300 | Max retweeters per object |
 | `SNOWBALL_REPLIES_LIMIT` | 150 | Max replies per thread |
