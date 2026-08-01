@@ -42,6 +42,10 @@ SNOWBALL_REPLIES_LIMIT = int(os.getenv("SNOWBALL_REPLIES_LIMIT", "150"))
 SNOWBALL_HYDRATE_LIMIT = int(os.getenv("SNOWBALL_HYDRATE_LIMIT", "50"))
 SNOWBALL_LOOKBACK_DAYS = int(os.getenv("SNOWBALL_LOOKBACK_DAYS", "2"))
 SNOWBALL_REFRESH_HOURS = int(os.getenv("SNOWBALL_REFRESH_HOURS", "12"))  # per-object TTL
+# Objects per write. A single end-of-pass write meant a restart mid-census threw
+# away every API call made since it started - ~40 minutes of pool budget at 250
+# objects/pass.
+SNOWBALL_FLUSH_EVERY = int(os.getenv("SNOWBALL_FLUSH_EVERY", "25"))
 
 DYNAMIC_MAX_KEYWORDS = int(os.getenv("DYNAMIC_MAX_KEYWORDS", "10"))
 DYNAMIC_MAX_ACCOUNTS = int(os.getenv("DYNAMIC_MAX_ACCOUNTS", "60"))

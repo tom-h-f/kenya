@@ -18,6 +18,7 @@ from kenya_monitor.config import (
     COLLECT_CONCURRENCY,
     SEARCH_INCLUDE_RETWEETS,
     SEARCH_PRODUCT,
+    SNOWBALL_FLUSH_EVERY,
     SNOWBALL_HYDRATE_LIMIT,
     SNOWBALL_LOOKBACK_DAYS,
     SNOWBALL_REFRESH_HOURS,
@@ -377,6 +378,7 @@ async def collect_snowball(
     state_path: Path = SNOWBALL_STATE_PATH,
     objects: tuple[list[str], list[str], list[str]] | None = None,
     type_prefix: str = "",
+    flush_every: int = SNOWBALL_FLUSH_EVERY,
 ) -> dict[str, int]:
     """Census pass over hot objects: full retweeter lists (-> engagements/),
     full reply threads (-> posts/type=replies), and hydration of referenced
@@ -401,29 +403,68 @@ async def collect_snowball(
     state = _load_snowball_state(state_path)
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # Flush in batches rather than once at the end. At the original 15 objects a
+    # pass took a couple of minutes; at 250 it is ~40 minutes, and a single write
+    # at the end means a restart or a rate-limit abort discards every API call
+    # made in that window - the expensive resource here is pool budget, not CPU.
+    #
+    # Order within a batch matters: write FIRST, then mark the objects done, then
+    # checkpoint. A crash before the write leaves them unmarked and they retry;
+    # a crash between write and checkpoint re-fetches them next pass, which is
+    # harmless because reads dedup on (platform, platform_post_id).
     due_rt = _due(retweeted, state, refresh_hours)
-    engagements: list[Engagement] = []
-    for oid in due_rt:
+    counts["retweeters"] = 0
+    batch: list[Engagement] = []
+    pending: list[str] = []
+
+    def _flush_engagements() -> None:
+        nonlocal batch, pending
+        if not batch:
+            return
+        key = storage.write_engagements(batch)
+        counts["retweeters"] += len(batch)
+        if key:
+            log.info("wrote %d engagement rows -> %s", len(batch), key)
+        for done_id in pending:
+            state[done_id] = now_iso
+        _save_snowball_state(state, state_path)
+        batch, pending = [], []
+
+    for i, oid in enumerate(due_rt, 1):
         got = [e async for e in collector.retweeters(oid, limit=retweeters_limit)]
         log.info("retweeters of %s -> %d", oid, len(got))
-        engagements.extend(got)
-        state[oid] = now_iso
-    key = storage.write_engagements(engagements)
-    counts["retweeters"] = len(engagements)
-    if key:
-        log.info("wrote %d engagement rows -> %s", len(engagements), key)
+        batch.extend(got)
+        pending.append(oid)
+        if i % max(1, flush_every) == 0:
+            _flush_engagements()
+    _flush_engagements()
 
     due_conv = _due(conversations, state, refresh_hours)
-    reply_posts: list[Post] = []
-    for cid in due_conv:
+    counts["replies"] = 0
+    reply_batch: list[Post] = []
+    reply_pending: list[str] = []
+
+    def _flush_replies() -> None:
+        nonlocal reply_batch, reply_pending
+        if not reply_batch:
+            return
+        key = storage.write_posts(reply_batch, target_type=f"{type_prefix}replies")
+        counts["replies"] += len(reply_batch)
+        if key:
+            log.info("wrote %d reply posts -> %s", len(reply_batch), key)
+        for done_id in reply_pending:
+            state[f"conv:{done_id}"] = now_iso
+        _save_snowball_state(state, state_path)
+        reply_batch, reply_pending = [], []
+
+    for i, cid in enumerate(due_conv, 1):
         got = [p async for p in collector.replies(cid, limit=replies_limit)]
         log.info("replies under %s -> %d", cid, len(got))
-        reply_posts.extend(got)
-        state[f"conv:{cid}"] = now_iso
-    key = storage.write_posts(reply_posts, target_type=f"{type_prefix}replies")
-    counts["replies"] = len(reply_posts)
-    if key:
-        log.info("wrote %d reply posts -> %s", len(reply_posts), key)
+        reply_batch.extend(got)
+        reply_pending.append(cid)
+        if i % max(1, flush_every) == 0:
+            _flush_replies()
+    _flush_replies()
 
     hydrated = [p async for p in collector.hydrate(missing)]
     key = storage.write_posts(hydrated, target_type=f"{type_prefix}hydrated")

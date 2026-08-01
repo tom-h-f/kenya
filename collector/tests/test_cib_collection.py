@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import json
+
+import pytest
+
 from datetime import datetime, timedelta, timezone
 
 import duckdb
@@ -16,7 +21,8 @@ from kenya_monitor.adaptive import (
 )
 from kenya_monitor.collectors.x import build_query
 from kenya_monitor.config import PlatformTargets
-from kenya_monitor.runner import _due, hot_objects
+from kenya_monitor.collectors.base import Engagement
+from kenya_monitor.runner import _due, collect_snowball, hot_objects
 
 NOW = datetime.now(timezone.utc)
 
@@ -220,3 +226,107 @@ def test_promoted_accounts_are_separated_from_baseline_targets():
     assert "suspect1" not in merged.accounts    # accounts do NOT
     assert merged.accounts == ["WilliamsRuto"]
     assert promoted_accounts == ["suspect1"]
+
+
+# --- snowball write batching -------------------------------------------------
+
+
+class _FakeStorage:
+    """Records writes; view methods are unused because `objects` is supplied."""
+
+    def __init__(self):
+        self.engagement_writes: list[int] = []
+        self.post_writes: list[tuple[str, int]] = []
+        self.con = None
+
+    def write_engagements(self, rows, now=None):
+        if not rows:
+            return None
+        self.engagement_writes.append(len(rows))
+        return f"engagements/run={len(self.engagement_writes)}.parquet"
+
+    def write_posts(self, posts, target_type, now=None):
+        if not posts:
+            return None
+        self.post_writes.append((target_type, len(posts)))
+        return f"posts/{target_type}.parquet"
+
+    def write_authors(self, authors, now=None):
+        return None
+
+
+class _FakeCollector:
+    platform = "x"
+
+    def __init__(self, fail_on: str | None = None, per_object: int = 3):
+        self.fail_on = fail_on
+        self.per_object = per_object
+        self.fetched: list[str] = []
+
+    async def retweeters(self, post_id, limit):
+        self.fetched.append(post_id)
+        if post_id == self.fail_on:
+            raise RuntimeError("rate limit abort")
+        for i in range(self.per_object):
+            yield Engagement(
+                platform="x", platform_post_id=post_id,
+                platform_user_id=f"{post_id}_u{i}", kind="retweet",
+            )
+
+    async def replies(self, post_id, limit):
+        return
+        yield  # pragma: no cover
+
+    async def hydrate(self, post_ids):
+        return
+        yield  # pragma: no cover
+
+    def collected_authors(self):
+        return []
+
+
+def _run_snowball(tmp_path, collector, storage, oids, flush_every):
+    return asyncio.run(
+        collect_snowball(
+            collector, storage,
+            objects=(oids, [], []),
+            state_path=tmp_path / "snowball.json",
+            flush_every=flush_every,
+        )
+    )
+
+
+def test_snowball_flushes_in_batches_not_once_at_the_end(tmp_path):
+    """A single end-of-pass write meant a restart mid-census discarded every API
+    call made since it began - ~40 minutes of rate-limited pool budget at 250
+    objects per pass."""
+    storage, collector = _FakeStorage(), _FakeCollector()
+    oids = [f"o{i}" for i in range(10)]
+    counts = _run_snowball(tmp_path, collector, storage, oids, flush_every=4)
+    assert storage.engagement_writes == [12, 12, 6]   # 4 + 4 + 2 objects x 3 rows
+    assert counts["retweeters"] == 30
+
+
+def test_completed_batches_survive_a_mid_pass_failure(tmp_path):
+    """The durability property: work already flushed stays written, and only the
+    unflushed objects are retried."""
+    storage = _FakeStorage()
+    collector = _FakeCollector(fail_on="o5")
+    oids = [f"o{i}" for i in range(10)]
+    with pytest.raises(RuntimeError):
+        _run_snowball(tmp_path, collector, storage, oids, flush_every=4)
+
+    assert storage.engagement_writes == [12]          # first batch persisted
+    state = json.loads((tmp_path / "snowball.json").read_text())
+    assert set(state) == {"o0", "o1", "o2", "o3"}     # only flushed objects marked
+    assert "o4" not in state, "unflushed work must not be marked done"
+
+
+def test_objects_are_marked_only_after_their_write(tmp_path):
+    """Ordering guard: marking before writing would lose data silently, because
+    a marked object is skipped by the TTL on the next pass."""
+    storage, collector = _FakeStorage(), _FakeCollector()
+    _run_snowball(tmp_path, collector, storage, ["a", "b"], flush_every=1)
+    state = json.loads((tmp_path / "snowball.json").read_text())
+    assert set(state) == {"a", "b"}
+    assert storage.engagement_writes == [3, 3]
