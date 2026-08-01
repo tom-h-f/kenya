@@ -1,6 +1,6 @@
 # Hate-seeking collection: status report
 
-**As of 2026-07-31.** Covers the hate-seeking build, the pi0 outage and recovery,
+**As of 2026-08-01.** Covers the hate-seeking build, the pi0 outage and recovery,
 and the seed-selection rebuild. Everything below is measured on the live corpus;
 where a number is an estimate it says so.
 
@@ -21,7 +21,7 @@ collector   hate_signal + adaptive.promote  ->  next pass's targets
 |---|---|
 | corpus | **193,862 posts**, all partitions collected within the hour |
 | hate scoring | **193,862 scored, 0 unscored**, all carrying measure columns |
-| coordination | 1,078 clusters / 6,243 accounts; **12 clusters / 47 accounts corroborated** across both channels |
+| coordination | 298 clusters / 1,406 accounts; **14 clusters / 60 accounts corroborated** across both channels; refreshed 6-hourly on tf1 |
 | seed cohort | **217 accounts**, 68 with brigade evidence, 95 with repeat co-amplification |
 | adaptive promotion | 30 dynamic targets, including coordination-cluster accounts |
 
@@ -30,7 +30,7 @@ Hosts:
 | host | role | state |
 |---|---|---|
 | **pi0** (arm64, 3.7G) | collector daemon | healthy, current code, hate-seek enabled |
-| **tf1** (x86_64, 3.7G) | enrich + coordination | rebuilt at HEAD, 34G free, `COORD_REFRESH_HOURS=6` |
+| **tf1** (x86_64, 3.7G) | enrich + coordination | coordination refreshing on schedule; **hate pass blocked on missing `HF_TOKEN`** |
 | Modal (A100) | GPU drain | used for the 59k catch-up |
 
 ---
@@ -115,6 +115,41 @@ observation-volume strata (`ntile(4)` over `n_posts`) — collecting more of a
 timeline moves an account to a higher-volume bucket rather than up the ranking.
 At n=217 the buckets are 55/54/54/54.
 
+### The hub cap had stopped filtering entirely
+`hub_cap = max(50, 5% of accounts)`. The percentage term was meant to lift the cap
+on small corpora, but it scales *with* the corpus: at 64,002 amplifying accounts
+it gave 3,200, while the busiest object had 1,171 amplifiers. It excluded nothing.
+
+Measured 2026-08-01 on the 14-day window: **1.9% of objects - the viral tail -
+generated 99.3% of all 36.8M projected pairs**. That OOMed tf1 and did exactly
+what the cap exists to prevent; `coordination.py`'s own docstring warns "one such
+hub dilutes the aggregate null rate until real clusters vanish".
+
+Bounded above (`HUB_CAP_MAX=100`). The effect is better detection, not just lower
+memory:
+
+| | vacuous cap (3,200) | bounded (100) |
+|---|---|---|
+| clusters | 1,078 | 298 |
+| corroborated | 12 (47 accounts) | **14 (60 accounts)** |
+| corroboration rate | 1.1% | **4.7%** |
+
+~780 spurious single-channel clusters disappeared *and* more real clusters
+survived the significance test. The same latent flaw was fixed in `hate_signal`,
+where the rule had not yet degraded but would have.
+
+Process note: this took four attempts. Three wrong fixes (a DuckDB memory cap, a
+spilling hypothesis disproved by my own test, a time window that halved the wrong
+thing) preceded the one measurement - degree distribution against pair count -
+that found it. That query should have come first.
+
+### Coordination is now time-bounded
+`_latest_posts_cte` had no time bound, so every run processed the whole corpus.
+Now scoped to `COORD_LOOKBACK_DAYS=14`, matching `MAX_AGE_DAYS` (collection) and
+`HATE_LOOKBACK_DAYS` (seeding). Persisted clusters now mean "coordinated in the
+last 14 days" rather than "ever" - a change in meaning worth knowing when
+comparing against runs before 2026-08-01.
+
 ### An X query-precedence bug
 X binds implicit AND tighter than OR, so `fukuza OR wafukuzwe (Kenya OR ...)`
 parsed as `fukuza OR (wafukuzwe AND Kenya...)` — the leading alternative escaping
@@ -189,6 +224,7 @@ Cleared with a Modal A100 drain (**59,083 posts**) and a tf1 rebuild.
 | item | note |
 |---|---|
 | **`accounts.txt` is committed to git** | 53 `username:password:email` lines, now cloned to pi0 and tf1, and in the history. Needs a decision. |
+| **`HF_TOKEN` missing on tf1** | The hate pass fails on the private model repo, so no post collected after the Modal drain is being scored. The stale-score guard degrades hate targeting to suspicion ranking within 24h. **Blocking.** |
 | **Coordination retry backoff** | `_coordination_pass` waits the full 6h after a failure rather than retrying. pi0's attempt died on an R2 HTTP timeout and then idled for hours. |
 | **`HATE_SEED_WEIGHTS` unvalidated** | The 0.20 on `brigade` is live for the first time. Re-examining the weights properly needs labelled seeds. |
 | **Anchoring may cost too much recall** | In the 14-day sweep, 92% of yield came from four *unanchored* low-risk terms; the anchored high-risk terms returned almost nothing and ethnonym x menace returned zero. |
