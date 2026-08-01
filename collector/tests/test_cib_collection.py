@@ -383,3 +383,58 @@ def test_hate_cadence_survives_restarts():
     # cannot collapse the cadence to nothing.
     assert _cycle_estimate_s(4, time.monotonic() - 7200) == pytest.approx(1800, rel=0.1)
     assert _cycle_estimate_s(1000, time.monotonic() - 10) >= 60.0
+
+
+def test_selection_excludes_recently_censused_objects():
+    """Selection is deterministic (repost_count DESC), so without a TTL-aware
+    filter the same objects are re-picked every pass and then discarded by
+    `_due`. Observed on pi0: 495 selected, 10-35 actually fetched, while ~2,900
+    uncensused in-band objects went untouched."""
+    rows = [
+        {"platform_post_id": "r1", "author_id": "a", "repost_of_id": "DONE", "repost_count": 99},
+        {"platform_post_id": "r2", "author_id": "b", "repost_of_id": "FRESH", "repost_count": 50},
+    ]
+    con, view = _con_with_posts(rows)
+    eng = pa.table({
+        "platform": pa.array(["x"], type=pa.string()),
+        "platform_post_id": pa.array(["DONE"], type=pa.string()),
+        "platform_user_id": pa.array(["u1"], type=pa.string()),
+        "kind": pa.array(["retweet"], type=pa.string()),
+        "collected_at": pa.array([NOW], type=pa.timestamp("us", tz="UTC")),
+    })
+    con.register("eng_tbl", eng)
+
+    # Without the filter, DONE outranks FRESH and consumes the budget.
+    unfiltered, _, _ = hot_objects(con, view, lookback_days=2, top_retweeted=1)
+    assert unfiltered == ["DONE"]
+
+    # With it, the budget goes to work that has not been done.
+    filtered, _, _ = hot_objects(
+        con, view, lookback_days=2, top_retweeted=1,
+        engagements_view="eng_tbl", refresh_hours=12,
+    )
+    assert filtered == ["FRESH"]
+
+
+def test_selection_filter_tolerates_a_missing_engagements_view():
+    rows = [{"platform_post_id": "r1", "author_id": "a", "repost_of_id": "X", "repost_count": 50}]
+    con, view = _con_with_posts(rows)
+    got, _, _ = hot_objects(con, view, lookback_days=2, engagements_view="_nope")
+    assert got == ["X"]
+
+
+def test_censused_objects_return_once_the_ttl_lapses():
+    """The filter is a TTL, not a permanent exclusion - hot objects still get
+    re-censused to pick up new amplifiers."""
+    rows = [{"platform_post_id": "r1", "author_id": "a", "repost_of_id": "OLD", "repost_count": 50}]
+    con, view = _con_with_posts(rows)
+    eng = pa.table({
+        "platform": pa.array(["x"], type=pa.string()),
+        "platform_post_id": pa.array(["OLD"], type=pa.string()),
+        "platform_user_id": pa.array(["u1"], type=pa.string()),
+        "kind": pa.array(["retweet"], type=pa.string()),
+        "collected_at": pa.array([NOW - timedelta(hours=20)], type=pa.timestamp("us", tz="UTC")),
+    })
+    con.register("eng_tbl", eng)
+    assert hot_objects(con, view, lookback_days=2, engagements_view="eng_tbl", refresh_hours=12)[0] == ["OLD"]
+    assert hot_objects(con, view, lookback_days=2, engagements_view="eng_tbl", refresh_hours=48)[0] == []

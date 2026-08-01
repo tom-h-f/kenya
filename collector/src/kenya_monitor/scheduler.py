@@ -315,7 +315,9 @@ async def run_snowball_once(**overrides) -> dict[str, int]:
 
     if "objects" not in overrides:
         retweeted, conversations, missing = hot_objects(
-            storage.con, storage.posts_view(platform="x")
+            storage.con,
+            storage.posts_view(platform="x"),
+            engagements_view=storage.engagements_view(platform="x"),
         )
         tox_rt, _tox_conv, _ = hsig.hot_toxic_objects(
             storage.con, storage.hatespeech_view(platform="x"), storage.posts_view(platform="x")

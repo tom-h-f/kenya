@@ -283,6 +283,8 @@ def hot_objects(
     hydrate_limit: int = SNOWBALL_HYDRATE_LIMIT,
     band_min: int = SNOWBALL_BAND_MIN,
     band_max: int = SNOWBALL_BAND_MAX,
+    engagements_view: str | None = None,
+    refresh_hours: int = SNOWBALL_REFRESH_HOURS,
 ) -> tuple[list[str], list[str], list[str]]:
     """Snowball targets from already-collected posts: the most-amplified
     objects, the busiest conversations, and referenced ids we never fetched.
@@ -297,13 +299,31 @@ def hot_objects(
             SELECT * FROM lp WHERE created_at > now() - INTERVAL {int(lookback_days)} DAY
         )
     """
+    # Exclude objects censused inside the TTL *during selection*, not after.
+    # Selection ranks by repost_count and is deterministic, so without this the
+    # same densest-in-band objects are re-picked every pass and then discarded
+    # by `_due` - observed: 495 selected, 10-35 actually fetched, while ~2,900
+    # uncensused in-band objects went untouched. R2 is the source of truth here
+    # rather than the local JSON state, so this self-heals if state is lost.
+    censused_filter = ""
+    if engagements_view:
+        try:
+            con.sql(f"SELECT 1 FROM {engagements_view} LIMIT 1").fetchall()
+            censused_filter = f"""
+              AND repost_of_id NOT IN (
+                  SELECT platform_post_id FROM {engagements_view}
+                  WHERE collected_at > now() - INTERVAL {int(refresh_hours)} HOUR
+              )"""
+        except duckdb.Error:
+            pass  # no engagements yet; nothing to exclude
+
     retweeted = [
         r[0]
         for r in con.sql(
             base
             + f"""
             SELECT repost_of_id FROM recent
-            WHERE repost_of_id IS NOT NULL
+            WHERE repost_of_id IS NOT NULL {censused_filter}
             GROUP BY 1
             HAVING max(repost_count) BETWEEN {int(band_min)} AND {int(band_max)}
             -- Densest-first WITHIN the band: nearer the hub cap means more
