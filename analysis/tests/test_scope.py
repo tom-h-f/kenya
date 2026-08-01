@@ -9,6 +9,9 @@ import pytest
 
 from kma import db
 
+# `author_handle` matters: the timeline-leak correction reclassifies
+# `type=timeline` posts whose author is not a curated target. WilliamsRuto is in
+# targets.yaml, so these rows are curated unless a test says otherwise.
 ROWS = [
     # (platform_post_id, type, collected_at) - one post per row unless re-collected
     ("baseline_only", "search", "2026-07-01 00:00:00"),
@@ -27,10 +30,11 @@ def con(monkeypatch):
     c = duckdb.connect()
     c.execute(
         "CREATE TABLE _posts (platform VARCHAR, platform_post_id VARCHAR, "
-        "type VARCHAR, collected_at TIMESTAMP)"
+        "type VARCHAR, collected_at TIMESTAMP, author_handle VARCHAR)"
     )
     c.executemany(
-        "INSERT INTO _posts VALUES ('x', ?, ?, ?::TIMESTAMP)", [list(r) for r in ROWS]
+        "INSERT INTO _posts VALUES ('x', ?, ?, ?::TIMESTAMP, 'WilliamsRuto')",
+        [list(r) for r in ROWS],
     )
 
     def fake_source(platform: str = "*", type: str = "*") -> str:
@@ -85,7 +89,7 @@ def test_ethnonym_partition_is_targeted(con):
 
 
 def test_unknown_type_raises_rather_than_defaulting(con):
-    con.execute("INSERT INTO _posts VALUES ('x', 'mystery', 'future_pass', now())")
+    con.execute("INSERT INTO _posts VALUES ('x', 'mystery', 'future_pass', now(), 'WilliamsRuto')")
     for scope in ("baseline", "targeted"):
         with pytest.raises(duckdb.InvalidInputException, match="unknown post type"):
             db.latest_posts(con, scope=scope).fetchall()
@@ -151,8 +155,8 @@ def test_baseline_rate_is_not_deflated_by_targeted_recollection(con):
     before = len(_ids(db.latest_posts(con, scope="baseline")))
     con.execute(
         "INSERT INTO _posts VALUES "
-        "('x', 'baseline_only', 'hate_search', '2026-07-09'::TIMESTAMP), "
-        "('x', 'timeline_only', 'hate_timeline', '2026-07-09'::TIMESTAMP)"
+        "('x', 'baseline_only', 'hate_search', '2026-07-09'::TIMESTAMP, 'WilliamsRuto'), "
+        "('x', 'timeline_only', 'hate_timeline', '2026-07-09'::TIMESTAMP, 'WilliamsRuto')"
     )
     assert len(_ids(db.latest_posts(con, scope="baseline"))) == before
 
@@ -169,3 +173,53 @@ def test_scope_type_registries_are_disjoint_and_complete():
     assert set(db.BASELINE_TYPES) & set(db.TARGETED_TYPES) == set()
     assert set(db.KNOWN_TYPES) == set(db.BASELINE_TYPES) | set(db.TARGETED_TYPES)
     assert db.scope_predicate("all") == "TRUE"
+
+
+# --- timeline leak correction ------------------------------------------------
+
+
+CURATED = {"williamsruto", "rigathi"}
+
+
+def test_promoted_account_timelines_are_reclassified_as_targeted(con, monkeypatch):
+    """Until 2026-08-01 the accounts pass wrote curated targets AND
+    coordination-promoted accounts to `type=timeline`, a baseline partition.
+    Promoted accounts are selected for looking coordinated, so their timelines
+    are targeted collection. Measured leak: 41,595 posts, 6.7% of baseline."""
+    monkeypatch.setattr(db, "curated_handles", lambda *a, **k: CURATED)
+    con.execute(
+        "INSERT INTO _posts VALUES ('x', 'leaked', 'timeline', now(), 'somePromotedAcct')"
+    )
+    baseline = _ids(db.latest_posts(con, scope="baseline"))
+    targeted = _ids(db.latest_posts(con, scope="targeted"))
+    assert "leaked" not in baseline, "promoted timeline must leave the denominator"
+    assert "leaked" in targeted, "and must land in targeted, not vanish"
+    assert "timeline_only" in baseline, "curated targets stay baseline"
+
+
+def test_reclassification_keeps_scopes_complementary(con, monkeypatch):
+    """Reclassify, never drop: every post must still land in exactly one scope."""
+    monkeypatch.setattr(db, "curated_handles", lambda *a, **k: CURATED)
+    con.execute("INSERT INTO _posts VALUES ('x', 'leaked', 'timeline', now(), 'promoted1')")
+    baseline = _ids(db.latest_posts(con, scope="baseline"))
+    targeted = _ids(db.latest_posts(con, scope="targeted"))
+    every = _ids(db.latest_posts(con, scope="all"))
+    assert baseline | targeted == every
+    assert baseline & targeted == set()
+
+
+def test_correction_is_a_noop_without_the_curated_list(con, monkeypatch):
+    """If targets.yaml is unreachable the correction disables rather than
+    silently reclassifying everything as targeted."""
+    monkeypatch.setattr(db, "curated_handles", lambda *a, **k: set())
+    con.execute("INSERT INTO _posts VALUES ('x', 'leaked', 'timeline', now(), 'anyone')")
+    assert "leaked" in _ids(db.latest_posts(con, scope="baseline"))
+    assert db.effective_type_expr(curated=set()) == "first_type"
+
+
+def test_leak_corrected_reports_whether_the_rule_applied(monkeypatch):
+    """Publish this alongside any rate: uncorrected carries a known 6.7% bias."""
+    monkeypatch.setattr(db, "curated_handles", lambda *a, **k: CURATED)
+    assert db.leak_corrected() is True
+    monkeypatch.setattr(db, "curated_handles", lambda *a, **k: set())
+    assert db.leak_corrected() is False

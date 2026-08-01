@@ -57,6 +57,59 @@ KNOWN_TYPES = BASELINE_TYPES + TARGETED_TYPES
 SCOPES = ("all", "baseline", "targeted")
 
 
+# The curated target list lives on the collector side. Read as DATA, not code -
+# the analysis project takes no dependency on `kenya_monitor`.
+CURATED_TARGETS_PATH = MONOREPO_ROOT / "collector" / "config" / "targets.yaml"
+
+
+def curated_handles(path: Path | None = None, platform: str = "x") -> set[str]:
+    """Lowercased handles the collector tracks deliberately (`targets.yaml`).
+
+    Used to repair a historical misclassification: until 2026-08-01 the accounts
+    pass wrote BOTH curated targets and coordination-promoted accounts into
+    `type=timeline`, a baseline partition. Promoted accounts are selected for
+    looking coordinated, so their timelines are targeted collection and do not
+    belong in a prevalence denominator. Measured leak: 41,595 posts from 407
+    accounts, 6.7% of the baseline corpus.
+
+    Returns an empty set when the file is unavailable, which disables the
+    correction rather than silently dropping data - see `leak_corrected()`.
+    """
+    import yaml
+
+    try:
+        raw = yaml.safe_load((path or CURATED_TARGETS_PATH).read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return set()
+    return {h.strip().lower() for h in (raw.get(platform) or {}).get("accounts") or []}
+
+
+def leak_corrected(path: Path | None = None) -> bool:
+    """Whether the timeline-leak correction can be applied. Publish this: a rate
+    computed without it carries a known 6.7% contamination."""
+    return bool(curated_handles(path))
+
+
+def effective_type_expr(
+    curated: set[str] | None = None, col: str = "first_type", handle_col: str = "author_handle"
+) -> str:
+    """`first_type`, with pre-2026-08-01 promoted-account timelines reclassified
+    to `cib_timeline`.
+
+    A reclassification rather than an exclusion, so `baseline` and `targeted`
+    stay complementary and every post still lands in exactly one scope. Only
+    `timeline` is affected: it is the sole baseline partition the accounts pass
+    ever wrote to."""
+    curated = curated_handles() if curated is None else curated
+    if not curated:
+        return col
+    return f"""CASE
+        WHEN {col} = 'timeline' AND lower({handle_col}) NOT IN ({_sql_list(sorted(curated))})
+            THEN 'cib_timeline'
+        ELSE {col}
+    END"""
+
+
 def _sql_list(values) -> str:
     return ", ".join("'" + v.replace("'", "''") + "'" for v in values)
 
@@ -127,13 +180,14 @@ def latest_posts(
     """
     if scope == "all":
         return con.sql(f"SELECT * FROM {posts_source(platform, type)} {dedup}")
+    eff = effective_type_expr(col="fs.first_type", handle_col="p.author_handle")
     return con.sql(
         f"""
         WITH {first_seen_types_cte(platform)}
-        SELECT p.*, fs.first_type, fs.first_collected_at
+        SELECT p.*, fs.first_collected_at, {eff} AS first_type
         FROM {posts_source(platform, type)} p
         JOIN _first_seen fs USING (platform, platform_post_id)
-        WHERE {scope_predicate(scope, "fs.first_type")}
+        WHERE {scope_predicate(scope, eff)}
         {dedup}
         """
     )

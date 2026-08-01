@@ -148,7 +148,10 @@ long enough to establish the methodology's credibility.
 These apply to every chart and must be visible on the site, not buried:
 
 1. **Baseline scoping.** Every rate uses `scope="baseline"` on first-seen
-   partition. Targeted collection never enters a denominator.
+   partition, with the timeline-leak correction applied
+   (`db.effective_type_expr`). Publish `db.leak_corrected()` - an uncorrected
+   figure carries a known 6.7% contamination from promoted-account timelines
+   that landed in a baseline partition before 2026-08-01.
 2. **Coverage is not census.** We sample X; absence of evidence is not evidence of
    absence. Recall is bounded, precision is not affected.
 3. **Uncertainty shown.** Wilson intervals on proportions; volume floors with
