@@ -198,4 +198,5 @@ weekly. Everything else runs inside the always-on scheduler.
 | `docs/collection/cib-collection.md` | why census-style collection matters |
 | `docs/analysis/data-model.md` | every R2 prefix and column |
 | `docs/analysis/phase-3-coordination.md` | the statistical method in full |
+| `docs/analysis/census-tuning.md` | why census selection is banded, and the open questions |
 | `docs/status/` | what is currently working, and what is not |
