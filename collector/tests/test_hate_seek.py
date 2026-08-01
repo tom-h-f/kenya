@@ -41,8 +41,10 @@ def test_anchor_tiers_scale_with_false_positive_risk(terms):
     med = hs.HateQuery("kwekwe", "kwekwe", "medium", hs.LEXICON)
     high = hs.HateQuery("mende", "mende", "high", hs.LEXICON)
     assert hs.anchors_for(low, terms.anchors) is None
-    assert hs.anchors_for(med, terms.anchors) == terms.anchors["core"]
-    assert hs.anchors_for(high, terms.anchors) == terms.anchors["wide"]
+    # `core` is the SMALLER OR-group, so it is the tighter filter and belongs to
+    # the high-false-positive terms.
+    assert hs.anchors_for(med, terms.anchors) == terms.anchors["wide"]
+    assert hs.anchors_for(high, terms.anchors) == terms.anchors["core"]
     assert len(terms.anchors["wide"]) > len(terms.anchors["core"])
 
 
@@ -155,7 +157,8 @@ def test_mined_terms_take_reserved_slots_and_are_always_high_risk(terms):
     mined_picked = [q for q in picked if q.source == hs.MINED]
     assert {q.term for q in mined_picked} == {"newcoded1", "newcoded2"}
     assert all(q.fp_risk == "high" for q in mined_picked)
-    assert all(hs.anchors_for(q, terms.anchors) == terms.anchors["wide"] for q in mined_picked)
+    # Machine-derived terms have no provenance, so they get the TIGHTEST scoping.
+    assert all(hs.anchors_for(q, terms.anchors) == terms.anchors["core"] for q in mined_picked)
 
 
 def test_rotation_covers_the_whole_register(terms):
@@ -231,3 +234,14 @@ def test_days_option_widens_the_swept_window():
     oldest_default, _ = recent_windows(2)[0]
     oldest_wide, _ = recent_windows(14)[0]
     assert oldest_wide < oldest_default
+
+
+def test_anchor_tightness_increases_with_false_positive_risk(terms):
+    """Anchoring is `term AND (A OR B ...)`, so MORE alternatives is a LOOSER
+    filter. This mapping was originally inverted, giving the everyday words that
+    most need scoping (mende, nyoka, fukuza) the widest, weakest anchor set."""
+    high = terms.anchors[hs.ANCHOR_TIER["high"]]
+    medium = terms.anchors[hs.ANCHOR_TIER["medium"]]
+    assert hs.ANCHOR_TIER["low"] is None
+    assert len(high) < len(medium), "high-risk terms must get the TIGHTER set"
+    assert set(high) <= set(medium), "tiers must nest, so tightness is ordered"

@@ -48,10 +48,14 @@ PARTITIONS = {
     TARGETS_OF_HATE: "hate_target_search",
 }
 
-# Anchor tier per false-positive risk. `low` terms are near-unique phrases where
-# anchoring would cost the recall that matters most; `high` terms are everyday
-# Swahili words that without scoping return a region-wide noise firehose.
-ANCHOR_TIER = {"low": None, "medium": "core", "high": "wide"}
+# Anchor tier per false-positive risk.
+#
+# Anchoring is `term AND (A OR B OR ...)`, so MORE alternatives make the filter
+# LESS restrictive. This mapping was originally inverted - `high` risk got the
+# 12-anchor `wide` set and `medium` got the 6-anchor `core` set, i.e. the
+# everyday words most needing scoping got the loosest filter. `core` is the
+# tighter set and belongs to `high`.
+ANCHOR_TIER = {"low": None, "medium": "wide", "high": "core"}
 
 
 @dataclass(frozen=True)

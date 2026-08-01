@@ -58,9 +58,20 @@ METRICS_SINCE_DAYS = 5
 METRICS_TOP_PCT = 0.05
 
 
-def _adaptive_targets(storage: Storage, dry_run: bool = False) -> PlatformTargets:
-    """Static targets merged with the capped dynamic promotions (hashtag bursts,
-    coordination-cluster members, flagged-story keywords). Never edits targets.yaml."""
+def _adaptive_targets(
+    storage: Storage, dry_run: bool = False
+) -> tuple[PlatformTargets, list[str]]:
+    """(targets to collect as baseline, promoted account handles).
+
+    Promoted ACCOUNTS are returned separately because they must not be collected
+    into the baseline `timeline` partition: they were selected precisely because
+    they look coordinated, so their posts would bias every prevalence measured
+    downstream. They are routed to the quarantined `cib_timeline` partition
+    instead - the same discipline `hate_expand` already applies.
+
+    Promoted KEYWORDS stay in the baseline search pass: chasing a bursting
+    hashtag is a topical widening, not a per-account selection. That is still a
+    sampling bias, just a milder and pre-existing one."""
     static = load_targets().get("x", PlatformTargets())
     try:
         entries = adaptive.promote(
@@ -73,8 +84,11 @@ def _adaptive_targets(storage: Storage, dry_run: bool = False) -> PlatformTarget
         )
     except Exception:
         log.exception("adaptive promotion failed; using static targets")
-        return static
-    return adaptive.merge_targets(static, entries)
+        return static, []
+    promoted_accounts = [e.value for e in entries if e.kind == "account"]
+    keyword_entries = [e for e in entries if e.kind == "keyword"]
+    merged = adaptive.merge_targets(static, keyword_entries)
+    return merged, promoted_accounts
 
 
 async def run_once(
@@ -85,7 +99,7 @@ async def run_once(
     adaptive promotions."""
     storage = Storage(R2Config.from_env())
     collector = await build_x_collector(load_accounts())
-    targets = _adaptive_targets(storage)
+    targets, promoted_accounts = _adaptive_targets(storage)
     windows = recent_windows(SEARCH_RECENT_DAYS)
     if include_backfill:
         windows += backfill_windows(SEARCH_RECENT_DAYS, SEARCH_BACKFILL_WINDOW_DAYS)
@@ -100,6 +114,23 @@ async def run_once(
         keywords=keywords,
         accounts=accounts,
     )
+    if accounts and promoted_accounts:
+        # Quarantined: coordination-promoted accounts never enter the baseline
+        # denominator (kma.db.TARGETED_TYPES).
+        promoted_counts = await collect_x(
+            collector,
+            storage,
+            PlatformTargets(accounts=promoted_accounts),
+            search_windows=[],
+            min_faves=0,
+            window_limit=0,
+            timeline_limit=limit,
+            keywords=False,
+            accounts=True,
+            timeline_type="cib_timeline",
+        )
+        counts.update({k: v for k, v in promoted_counts.items() if k != "authors"})
+        counts["authors"] = counts.get("authors", 0) + promoted_counts.get("authors", 0)
     log.info("posts run complete (backfill=%s, %d windows): %s", include_backfill, len(windows), counts)
     return counts
 

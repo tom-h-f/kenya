@@ -557,8 +557,8 @@ def hot_toxic_objects(
     hatespeech_view: str,
     posts_view: str,
     lookback_days: int = 2,
-    top_retweeted: int = 15,
-    top_conversations: int = 10,
+    top_retweeted: int = 250,
+    top_conversations: int = 60,
 ) -> tuple[list[str], list[str], list[str]]:
     """Snowball targets ranked by toxic density rather than raw engagement.
 

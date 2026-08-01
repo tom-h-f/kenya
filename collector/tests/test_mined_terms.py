@@ -216,8 +216,9 @@ def test_state_round_trips(tmp_path):
     assert back[0].source == mt.SOURCE
 
 
-def test_mined_terms_always_get_widest_anchoring():
-    """A machine-derived term has no provenance, so it gets maximum scoping."""
+def test_mined_terms_always_get_tightest_anchoring():
+    """A machine-derived term has no provenance, so it gets maximum scoping -
+    which is the SMALLER anchor group, since anchoring is an AND over an OR."""
     register = load_hate_terms()
     terms = mt.merge([], [{"term": "zzcoded"}])
     terms[0].approved = True
@@ -227,6 +228,6 @@ def test_mined_terms_always_get_widest_anchoring():
     mined_q = [q for q in picked if q.source == hs.MINED]
     assert len(mined_q) == 1
     assert mined_q[0].fp_risk == "high"
-    assert hs.anchors_for(mined_q[0], register.anchors) == register.anchors["wide"]
+    assert hs.anchors_for(mined_q[0], register.anchors) == register.anchors["core"]
     rendered = hs.render(mined_q[0], register.anchors)
     assert "zzcoded (Kenya OR " in rendered

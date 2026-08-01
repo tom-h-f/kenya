@@ -196,3 +196,27 @@ def test_detect_burst_quiet_on_steady_volume():
     con, view = _con_with_posts(rows)
     bursting, _, _ = detect_burst(con, view, zscore=3.0, min_posts=100)
     assert not bursting
+
+
+def test_promoted_accounts_are_separated_from_baseline_targets():
+    """Coordination-promoted accounts must not reach the baseline `timeline`
+    partition: they were selected for looking coordinated, so collecting them
+    as baseline biases every prevalence measured downstream. `cib_timeline` is
+    already in kma.db.TARGETED_TYPES; nothing was writing it."""
+    from kenya_monitor.adaptive import DynamicEntry, merge_targets
+    from kenya_monitor.config import PlatformTargets
+
+    entries = [
+        DynamicEntry("#burst", "keyword", "hashtag-burst", "t", "t"),
+        DynamicEntry("suspect1", "account", "coordination-cluster", "t", "t"),
+    ]
+    static = PlatformTargets(accounts=["WilliamsRuto"], keywords=["IEBC"])
+
+    keyword_entries = [e for e in entries if e.kind == "keyword"]
+    promoted_accounts = [e.value for e in entries if e.kind == "account"]
+    merged = merge_targets(static, keyword_entries)
+
+    assert "#burst" in merged.keywords          # keywords still widen baseline
+    assert "suspect1" not in merged.accounts    # accounts do NOT
+    assert merged.accounts == ["WilliamsRuto"]
+    assert promoted_accounts == ["suspect1"]
