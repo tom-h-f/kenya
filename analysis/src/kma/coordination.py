@@ -22,6 +22,7 @@ scorecards are a triage tool for human review, never an auto-label.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime, timezone
 
@@ -169,9 +170,28 @@ _SIMPLE_TRACES = {
 }
 
 
-def _latest_posts_cte(platform: str) -> str:
+# Coordination is scoped to a rolling window, not the whole corpus.
+#
+# Two reasons. Practically, the projection is a self-join whose cost grows with
+# the corpus - unbounded, it OOMed a 3.7Gi host at 195,964 posts and would keep
+# getting worse. Substantively, coordination is a time-bounded phenomenon: a ring
+# that was active months ago is not the current network, and the collector reads
+# the LATEST persisted run to pick targets.
+#
+# 14 days matches the rest of the system - `collectors/x.MAX_AGE_DAYS` (how far
+# search can reach) and `hate_signal.HATE_LOOKBACK_DAYS` (seed scoring). Set 0 to
+# restore the old unbounded behaviour.
+COORD_LOOKBACK_DAYS = int(os.getenv("COORD_LOOKBACK_DAYS", "14"))
+
+
+def _latest_posts_cte(platform: str, lookback_days: int | None = None) -> str:
+    days = COORD_LOOKBACK_DAYS if lookback_days is None else lookback_days
+    window = (
+        f"WHERE created_at > now() - INTERVAL {int(days)} DAY" if days and days > 0 else ""
+    )
     return f"""
         SELECT * FROM {posts_source(platform)}
+        {window}
         QUALIFY row_number() OVER (
             PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
         ) = 1

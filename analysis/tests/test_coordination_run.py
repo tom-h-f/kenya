@@ -125,3 +125,32 @@ def test_run_tunes_before_building_layers(stub, monkeypatch):
     monkeypatch.setattr(cr, "tune", lambda con: called.append("tuned"))
     cr.run(con=None, persist=False)
     assert called == ["tuned"]
+
+
+def test_latest_posts_is_windowed_by_default():
+    """Unbounded, the projection's cost grows with the corpus and OOMed a 3.7Gi
+    host at ~196k posts. It is also the wrong claim: a ring active months ago is
+    not the current network."""
+    from kma import coordination as co
+
+    assert co.COORD_LOOKBACK_DAYS == 14
+    sql = co._latest_posts_cte("x")
+    assert "INTERVAL 14 DAY" in sql
+    assert "created_at >" in sql
+
+
+def test_lookback_can_be_overridden_and_disabled():
+    from kma import coordination as co
+
+    assert "INTERVAL 7 DAY" in co._latest_posts_cte("x", lookback_days=7)
+    unbounded = co._latest_posts_cte("x", lookback_days=0)
+    assert "INTERVAL" not in unbounded
+    assert "QUALIFY" in unbounded  # dedup survives
+
+
+def test_window_precedes_the_dedup_qualify():
+    """The filter must narrow the scan before the window function, not after."""
+    from kma import coordination as co
+
+    sql = co._latest_posts_cte("x")
+    assert sql.index("created_at >") < sql.index("QUALIFY")
