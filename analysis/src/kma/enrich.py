@@ -49,6 +49,10 @@ IDLE_MAX_S = int(os.getenv("ENRICH_IDLE_MAX_S", "1200"))
 # than the enrichment passes (a full projection + significance test over the
 # corpus), hence its own timer rather than every cycle. 0 disables.
 COORD_REFRESH_HOURS = float(os.getenv("COORD_REFRESH_HOURS", "6"))
+# A failed refresh should not wait out the whole period. Seen in practice: pi0's
+# first attempt died on a transient R2 timeout and then sat idle for hours,
+# leaving the collector's cluster targeting frozen on a stale run.
+COORD_RETRY_MINUTES = float(os.getenv("COORD_RETRY_MINUTES", "30"))
 
 
 def run_once(
@@ -144,8 +148,10 @@ def run_loop(
         if time.monotonic() >= next_coord:
             # Scheduled before the enrichment passes so a long backlog cannot
             # keep postponing it indefinitely.
-            _coordination_pass()
-            next_coord = time.monotonic() + coord_hours * 3600
+            ok = _coordination_pass()
+            next_coord = time.monotonic() + (
+                coord_hours * 3600 if ok else COORD_RETRY_MINUTES * 60
+            )
         try:
             if isolate:
                 if embed:

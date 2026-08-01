@@ -64,3 +64,25 @@ def test_coordination_failure_does_not_kill_the_worker(loop, monkeypatch):
 
 def test_default_refresh_interval_is_hours_not_minutes():
     assert enrich.COORD_REFRESH_HOURS >= 1
+
+
+def test_failed_coordination_retries_sooner_than_the_full_period(loop, monkeypatch):
+    """A transient failure must not cost a whole refresh period. pi0's first
+    attempt died on an R2 timeout and then idled for hours with the collector's
+    cluster targeting frozen on a stale run."""
+    monkeypatch.setattr(enrich, "_coordination_pass", lambda: False)
+    calls = {"n": 0}
+
+    def counting_fail():
+        calls["n"] += 1
+        return False
+
+    monkeypatch.setattr(enrich, "_coordination_pass", counting_fail)
+    # 1h idle per cycle; retry window is 30min, so every cycle should re-attempt.
+    loop(4, coord_hours=6)
+    assert calls["n"] == 4
+
+
+def test_successful_coordination_waits_the_full_period(loop):
+    """Success must not inherit the retry cadence."""
+    assert loop(4, coord_hours=6)["coord"] == 1
