@@ -381,3 +381,114 @@ def test_co_amplification_is_scoped_to_toxic_objects(con):
     for uid in ("a", "b"):
         add_amplification(con, uid, ["ap2", "ap3"])   # two shared NON-toxic objects
     assert all(s["n_repeat_peers"] == 0 for s in seeds(con))
+
+
+# --- censused-TTL symmetry with the baseline selector ------------------------
+
+
+def _censused(con, object_ids, hours_ago=0):
+    """An engagements table shaped like the R2 prefix (with collected_at)."""
+    con.execute(
+        "CREATE OR REPLACE TABLE _eng_ttl "
+        "(platform VARCHAR, platform_post_id VARCHAR, platform_user_id VARCHAR, "
+        " kind VARCHAR, collected_at TIMESTAMPTZ)"
+    )
+    for oid in object_ids:
+        con.execute(
+            "INSERT INTO _eng_ttl VALUES ('x', ?, 'u1', 'retweet', ?)",
+            [oid, NOW - timedelta(hours=hours_ago)],
+        )
+    return "_eng_ttl"
+
+
+def test_hot_toxic_objects_excludes_recently_censused_objects(con):
+    """The toxic selector is deterministic too, so without the TTL filter it
+    re-picks completed work every pass and `_due` throws it away. This is the
+    same bug that was fixed on the baseline path on 2026-08-01 and left live
+    here."""
+    add_author(con, "u1", "a")
+    add_posts(con, "u1", 6, 6, prefix="h", days=1)
+    con.execute("UPDATE _posts SET repost_count = 50 WHERE platform_post_id = 'h0'")
+    con.execute("UPDATE _posts SET repost_count = 40 WHERE platform_post_id = 'h1'")
+    eng = _censused(con, ["h0"])
+
+    unfiltered, _, _ = hsig.hot_toxic_objects(con, HATE, POSTS)
+    assert "h0" in unfiltered
+
+    filtered, _, _ = hsig.hot_toxic_objects(
+        con, HATE, POSTS, engagements_view=eng, refresh_hours=12
+    )
+    assert "h0" not in filtered
+    assert "h1" in filtered
+
+
+def test_toxic_censused_objects_return_once_the_ttl_lapses(con):
+    add_author(con, "u1", "a")
+    add_posts(con, "u1", 6, 6, prefix="h", days=1)
+    con.execute("UPDATE _posts SET repost_count = 50 WHERE platform_post_id = 'h0'")
+    eng = _censused(con, ["h0"], hours_ago=20)
+
+    within = hsig.hot_toxic_objects(con, HATE, POSTS, engagements_view=eng, refresh_hours=48)[0]
+    lapsed = hsig.hot_toxic_objects(con, HATE, POSTS, engagements_view=eng, refresh_hours=12)[0]
+
+    assert "h0" not in within      # censused 20h ago, TTL 48h -> still done
+    assert "h0" in lapsed          # TTL 12h -> due again
+
+
+def test_toxic_selector_tolerates_a_missing_engagements_view(con):
+    add_author(con, "u1", "a")
+    add_posts(con, "u1", 6, 6, prefix="h", days=1)
+    con.execute("UPDATE _posts SET repost_count = 50 WHERE platform_post_id = 'h0'")
+
+    got, _, _ = hsig.hot_toxic_objects(con, HATE, POSTS, engagements_view="_nope")
+
+    assert "h0" in got
+
+
+def test_both_selectors_use_the_one_censused_filter(monkeypatch):
+    """The two selectors band on different columns and drifted once already:
+    the TTL exclusion was added to `hot_objects` and not to
+    `hot_toxic_objects`, which then re-picked completed work every pass. One
+    helper, called by both, with the column as an argument."""
+    from kenya_monitor import census, runner
+
+    seen: list[str] = []
+
+    def record_expr(con, engagements_view, column, refresh_hours=12):
+        seen.append(column)
+        return "FALSE"
+
+    def record_filter(con, engagements_view, column, refresh_hours=12):
+        seen.append(column)
+        return ""
+
+    monkeypatch.setattr(census, "censused_expr", record_expr)
+    monkeypatch.setattr(census, "censused_filter", record_filter)
+    monkeypatch.setattr(hsig.census_sel, "censused_filter", record_filter)
+
+    c = duckdb.connect()
+    c.execute(
+        "CREATE TABLE p (platform VARCHAR, platform_post_id VARCHAR, author_id VARCHAR,"
+        " created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ, repost_of_id VARCHAR,"
+        " quoted_post_id VARCHAR, in_reply_to_id VARCHAR, conversation_id VARCHAR,"
+        " repost_count BIGINT, reply_count BIGINT, quote_count BIGINT, is_repost BOOLEAN)"
+    )
+    c.execute("CREATE TABLE h (platform_post_id VARCHAR, platform VARCHAR,"
+              " scored_at TIMESTAMPTZ, label VARCHAR, hate_flag BOOLEAN, p_hate DOUBLE)")
+
+    runner.hot_objects(c, "p", engagements_view="e")
+    hsig.hot_toxic_objects(c, "h", "p", engagements_view="e")
+
+    assert seen == ["recent.repost_of_id", "recent.platform_post_id"]
+
+
+def test_censused_column_must_be_table_qualified():
+    """A bare `platform_post_id` binds to the engagements table inside the
+    correlated subquery, making the predicate self-referential and true for
+    every row - so every candidate is excluded and the census stalls silently."""
+    from kenya_monitor import census
+
+    c = duckdb.connect()
+    c.execute("CREATE TABLE e (platform_post_id VARCHAR, collected_at TIMESTAMPTZ)")
+    with pytest.raises(ValueError, match="table-qualified"):
+        census.censused_expr(c, "e", "platform_post_id")

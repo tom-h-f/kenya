@@ -1,6 +1,9 @@
 services:
   enrich:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-}
     env_file: ../.env
     command: ["--loop"]
     # --loop isolates each pass in its own subprocess, so only one model set is
@@ -26,7 +29,10 @@ services:
   #   docker compose --profile coordination up -d coordination
   coordination:
     profiles: ["coordination"]
-    build: .
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-}
     env_file: ../.env
     command: ["--loop", "--no-embed", "--no-classify", "--no-hate", "--coord-hours", "6"]
     mem_limit: 2g

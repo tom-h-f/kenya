@@ -337,6 +337,11 @@ def coordination_source(
         )
     elif kind == "clusters":
         glob = f"r2://{BUCKET}/coordination/platform={platform}/kind=clusters/dt=*/run=*.parquet"
+    elif kind == "run_metrics":
+        glob = (
+            f"r2://{BUCKET}/coordination/platform={platform}"
+            f"/kind=run_metrics/dt=*/run=*.parquet"
+        )
     else:
         raise ValueError(f"unknown coordination kind {kind!r}")
     return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
@@ -368,6 +373,38 @@ def latest_coordination_clusters(con: duckdb.DuckDBPyConnection, platform: str =
             PARTITION BY cluster_id, author_id ORDER BY computed_at DESC
         ) = 1
         """
+    )
+
+
+def coordination_metrics(con: duckdb.DuckDBPyConnection, platform: str = "x"):
+    """Every persisted coordination-pass counter, oldest first.
+
+    Deliberately NOT a `latest_*` helper. The other coordination artifacts are
+    state - you want the newest. This one is a series: the questions it exists
+    to answer ("did corroborated clusters move when the census changed") are
+    only answerable across runs, and reading just the newest row reproduces the
+    exact mistake that made the census-tuning Q2 figure wrong."""
+    return con.sql(
+        f"SELECT * FROM {coordination_source('run_metrics', platform)} "
+        "ORDER BY computed_at, channel"
+    )
+
+
+def census_runs_source(platform: str = "*") -> str:
+    """A read_parquet(...) expression for collector-written census-pass counters.
+
+    Written by `kenya_monitor.storage.write_census_run`. Joining this to
+    `coordination_metrics` is how census supply (candidates, backlog) is read
+    against detection outcome (pairable accounts, corroborated clusters)."""
+    glob = f"r2://{BUCKET}/census_runs/platform={platform}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def census_runs(con: duckdb.DuckDBPyConnection, platform: str = "x"):
+    """Every census pass's counters, oldest first. A series, not a state - see
+    `coordination_metrics`."""
+    return con.sql(
+        f"SELECT * FROM {census_runs_source(platform)} ORDER BY collected_at"
     )
 
 

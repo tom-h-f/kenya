@@ -83,13 +83,30 @@ def run(
     `persist`. Channels default to the two that validate on live data."""
     channels = channels or DEFAULT_CHANNELS
     tune(con)
-    layers = co.build_layers(con, channels=channels, platform=platform, method=method)
+    channel_stats: dict[str, dict] = {}
+    layers = co.build_layers(
+        con, channels=channels, platform=platform, method=method, stats=channel_stats
+    )
     members, summary = co.clusters(layers, resolution=resolution, min_size=min_size)
+
+    # Corroboration (a cluster supported by >= 2 channels) is the outcome
+    # measure for the census work, and until now it was computed nowhere:
+    # `adaptive.cluster_accounts` and `netviz` only read `n_channels` back out
+    # of persisted parquet, so the "14 corroborated (60 accounts)" baseline in
+    # docs/analysis/census-tuning.md was derived by hand and never reproduced.
+    corr_ids: set = set()
+    if len(summary) and "n_channels" in summary.columns:
+        corr_ids = set(summary.loc[summary["n_channels"] >= 2, "cluster_id"])
+    n_corr_accounts = (
+        int(members["cluster_id"].isin(corr_ids).sum()) if len(members) else 0
+    )
     log.info(
-        "layers: %s; clusters: %d (%d accounts)",
+        "layers: %s; clusters: %d (%d accounts); corroborated: %d (%d accounts)",
         {ch: len(e) for ch, e in layers.items()},
         len(summary),
         len(members),
+        len(corr_ids),
+        n_corr_accounts,
     )
 
     out: dict = {
@@ -97,10 +114,44 @@ def run(
         "edges": {ch: int(len(e)) for ch, e in layers.items()},
         "n_clusters": int(len(summary)),
         "n_accounts": int(len(members)),
+        "n_corroborated_clusters": len(corr_ids),
+        "n_corroborated_accounts": n_corr_accounts,
+        "channel_stats": channel_stats,
+        "metrics_key": None,
         "persisted": [],
     }
     if not persist:
         return out
+
+    # Metrics first, deliberately. A run that detects nothing returns at
+    # `members.empty` below, and a run whose edge write fails never reaches the
+    # end - both are exactly the runs whose counters you want. The persisted
+    # keys are left out of the row because an R2 listing recovers them; the
+    # counters are not recoverable after the fact.
+    try:
+        out["metrics_key"] = co.persist_run_metrics(
+            con,
+            channel_stats,
+            {
+                "channels": channels,
+                "method": method,
+                "resolution": float(resolution),
+                "min_size": int(min_size),
+                "n_clusters": int(len(summary)),
+                "n_accounts": int(len(members)),
+                "n_corroborated_clusters": len(corr_ids),
+                "n_corroborated_accounts": n_corr_accounts,
+            },
+            platform=platform,
+        )
+        log.info("persisted %s", out["metrics_key"])
+    except Exception:
+        # `enrich._coordination_pass` reschedules the whole 6-hourly pass on a
+        # non-zero rc. Re-running a full projection because a ~4KB metrics write
+        # hit a transient R2 error is a bad trade on this host; a missing run
+        # row shows up as a gap in the series, which is visible and harmless.
+        log.exception("coordination: run metrics write failed (continuing)")
+
     if members.empty:
         log.info("nothing to persist: no clusters detected")
         return out

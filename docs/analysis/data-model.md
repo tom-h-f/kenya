@@ -43,11 +43,12 @@ all in `analysis/src/kma/db.py`.
 | `metrics/` | collector | `platform`, `dt` | (kept, not deduped) | `metrics_source` |
 | `engagements/` | collector | `platform`, `dt` | `platform, platform_post_id, platform_user_id, kind` | `engagements_source`, `latest_engagements` |
 | `follows/` | collector | `platform`, `dt` | (edge rows) | `follows_source`, `latest_follows` |
+| `census_runs/` | collector | `platform`, `dt` | (series, never deduped) | `census_runs_source`, `census_runs` |
 | `embeddings/` | analysis (`semantic.py`) | `platform`, `model`, `dt` | `platform_post_id` (by `embedded_at`) | `embeddings_source`, `latest_embeddings` |
 | `labels/` | analysis (`classify.py`) | `platform`, `dt` | `platform_post_id` (by `labeled_at`) | `labels_source`, `latest_labels` |
 | `incitement/` | analysis (`incitement.py`) | `platform`, `dt` | `platform_post_id` (by `scored_at`) | `incitement_source`, `latest_incitement` |
 | `hatespeech/` | analysis (`hatespeech.py`) | `platform`, `dt` | `platform_post_id` (by `scored_at`) | `hatespeech_source`, `latest_hatespeech` |
-| `coordination/` | analysis (`coordination.py`) | `platform`, `kind`, (`channel`, `method`), `dt` | per kind | `coordination_source`, `latest_coordination_edges/clusters` |
+| `coordination/` | analysis (`coordination.py`) | `platform`, `kind`, (`channel`, `method`), `dt` | per kind | `coordination_source`, `latest_coordination_edges/clusters`, `coordination_metrics` |
 | `stories/` | analysis (`stories.py`) | `platform`, `dt` | `stable_story_id` (by `computed_at`) | `stories_source`, `latest_stories` |
 
 `type` for `posts/` encodes **collection provenance**, and is one of
@@ -143,6 +144,25 @@ Snowballed retweeter/replier incidence. Columns: `platform_post_id`,
 there is no action timestamp** (the platform does not expose when a retweet
 happened), so these rows feed only untimed coordination channels.
 
+### census_runs/ (`CENSUS_RUN_SCHEMA`)
+
+One row per retweeter-census pass, written by `collect_snowball` whether or not
+the pass fetched anything. Supply (`candidates_in_band`,
+`candidates_uncensused`), selection (`selected_retweeted`, `due_retweeted`,
+`skipped_ttl_retweeted`), and what came back (`degree_p50/p90/max`,
+`n_over_band_max`, `engagement_rows`).
+
+Object-level degree is already recoverable from `engagements/` by grouping on
+`platform_post_id`; the **denominator is not** - how many in-band candidates
+existed and how many were skipped inside their TTL cannot be reconstructed
+afterwards. Without it, "coverage has saturated" is unfalsifiable.
+
+A series, never deduped: `census_runs(con)` returns all of it, oldest first.
+Two cautions. The degree columns measure the **fetch**, which
+`SNOWBALL_RETWEETERS_LIMIT` truncates at 300, so they are sound as a guard but
+not readable as a degree distribution. And never average across a parameter
+change - split on `code_version` first (see census-tuning.md).
+
 ### follows/ (`FOLLOW_SCHEMA`)
 
 Directed follow edges: `follower_id`, `followed_id`, `collected_at`. Produced
@@ -221,6 +241,18 @@ Written by analysis when a run is persisted (see `persist_edges`,
 one row per member post with the scored story columns. These are the
 collector-handoff prefixes: `monitor adapt` reads the latest cluster/story run
 to promote targets.
+
+`coordination/kind=run_metrics` is different in kind: one row per (run,
+channel) holding the pass's own counters - `hub_cap`, `hub_objects`,
+`accounts_all`, `nohub_amp`, `pairable`, edges per method, and the run-level
+`n_clusters` / `n_corroborated_clusters`. Read it with `coordination_metrics`,
+which deliberately returns the **whole series** rather than the latest run:
+these answer "did detection move when X changed", which no single row can.
+
+`pairable` (accounts holding >= `min_repetition` non-hub objects) is the input
+metric of record, not `nohub_amp`. An account with one non-hub trace survives
+the cap but can never appear in an edge; measured 2026-08-01, 25,083 survivors
+against 7,079 pairable.
 
 ## Read path
 

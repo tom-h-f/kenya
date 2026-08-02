@@ -12,9 +12,11 @@ import duckdb
 
 from twscrape import API
 
+from kenya_monitor import census
 from kenya_monitor.collectors.base import Collector, Engagement, FollowEdge, Post
 from kenya_monitor.collectors.x import Window, XCollector, build_api, sync_accounts
 from kenya_monitor.config import (
+    CENSUS_OVER_BAND_WARN,
     COLLECT_CONCURRENCY,
     SEARCH_INCLUDE_RETWEETS,
     SEARCH_PRODUCT,
@@ -285,10 +287,18 @@ def hot_objects(
     band_max: int = SNOWBALL_BAND_MAX,
     engagements_view: str | None = None,
     refresh_hours: int = SNOWBALL_REFRESH_HOURS,
+    *,
+    stats: dict | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Snowball targets from already-collected posts: the most-amplified
     objects, the busiest conversations, and referenced ids we never fetched.
-    Returns (retweeted_ids, conversation_ids, missing_ids)."""
+    Returns (retweeted_ids, conversation_ids, missing_ids).
+
+    `stats`, when given, is filled with the selection counters - in particular
+    `candidates_in_band` and `candidates_uncensused`, the supply and the
+    backlog. Those are what make coverage saturation observable: once the
+    backlog trends to zero, `SNOWBALL_REFRESH_HOURS` and not
+    `SNOWBALL_TOP_RETWEETED` is the parameter that governs discovery."""
     base = f"""
         WITH lp AS (
             SELECT * FROM {posts_view}
@@ -303,36 +313,59 @@ def hot_objects(
     # Selection ranks by repost_count and is deterministic, so without this the
     # same densest-in-band objects are re-picked every pass and then discarded
     # by `_due` - observed: 495 selected, 10-35 actually fetched, while ~2,900
-    # uncensused in-band objects went untouched. R2 is the source of truth here
-    # rather than the local JSON state, so this self-heals if state is lost.
-    censused_filter = ""
-    if engagements_view:
-        try:
-            con.sql(f"SELECT 1 FROM {engagements_view} LIMIT 1").fetchall()
-            censused_filter = f"""
-              AND repost_of_id NOT IN (
-                  SELECT platform_post_id FROM {engagements_view}
-                  WHERE collected_at > now() - INTERVAL {int(refresh_hours)} HOUR
-              )"""
-        except duckdb.Error:
-            pass  # no engagements yet; nothing to exclude
+    # uncensused in-band objects went untouched.
+    censused = census.censused_expr(
+        con, engagements_view, "recent.repost_of_id", refresh_hours
+    )
 
-    retweeted = [
-        r[0]
-        for r in con.sql(
-            base
-            + f"""
-            SELECT repost_of_id FROM recent
-            WHERE repost_of_id IS NOT NULL {censused_filter}
+    # The backlog counts come off the SAME query as the selection. The
+    # GROUP BY ... HAVING result has to be fully materialised before
+    # ORDER BY ... LIMIT anyway, so the windows are free; a second query over
+    # the same CTE would not be. Both windows sit BEFORE the TTL filter, so the
+    # supply figure covers the whole band and not just the part still unworked.
+    rows = con.sql(
+        base
+        + f"""
+        , cand AS (
+            SELECT recent.repost_of_id AS oid,
+                   max(repost_count) AS deg,
+                   count(*) AS n_rt_rows,
+                   {censused} AS censused
+            FROM recent
+            WHERE repost_of_id IS NOT NULL
             GROUP BY 1
             HAVING max(repost_count) BETWEEN {int(band_min)} AND {int(band_max)}
-            -- Densest-first WITHIN the band: nearer the hub cap means more
-            -- co-amplification pairs per request, without crossing it.
-            ORDER BY max(repost_count) DESC, count(*) DESC
-            LIMIT {int(top_retweeted)}
-            """
-        ).fetchall()
-    ]
+        ), ranked AS (
+            SELECT oid, deg, n_rt_rows, censused,
+                   count(*) OVER () AS n_in_band,
+                   sum(CASE WHEN censused THEN 0 ELSE 1 END) OVER () AS n_uncensused
+            FROM cand
+        )
+        SELECT oid, deg, n_in_band, n_uncensused, censused FROM ranked
+        -- Uncensused first, then densest-first WITHIN the band: nearer the hub
+        -- cap means more co-amplification pairs per request, without crossing
+        -- it. Censused rows are ordered last and dropped below rather than
+        -- filtered out here, so that when everything in the band is already
+        -- censused the query still returns a row carrying the window counts.
+        -- That is the saturated state - the one the backlog series exists to
+        -- detect - and it must not report an empty band.
+        ORDER BY censused, deg DESC, n_rt_rows DESC, oid
+        LIMIT {int(top_retweeted)}
+        """
+    ).fetchall()
+    picked = [r for r in rows if not r[4]]
+    retweeted = [r[0] for r in picked]
+    if stats is not None:
+        stats["candidates_in_band"] = int(rows[0][2]) if rows else 0
+        stats["candidates_uncensused"] = int(rows[0][3]) if rows else 0
+        stats["selected_retweeted"] = len(retweeted)
+        stats["selected_deg_min"] = int(picked[-1][1]) if picked else 0
+        stats["selected_deg_max"] = int(picked[0][1]) if picked else 0
+        stats["band_min"] = int(band_min)
+        stats["band_max"] = int(band_max)
+        stats["lookback_days"] = int(lookback_days)
+        stats["refresh_hours"] = int(refresh_hours)
+        stats["top_retweeted"] = int(top_retweeted)
     conversations = [
         r[0]
         for r in con.sql(
@@ -369,7 +402,49 @@ def hot_objects(
             """
         ).fetchall()
     ]
+    if stats is not None:
+        stats["selected_conversations"] = len(conversations)
+        stats["selected_missing"] = len(missing)
     return retweeted, conversations, missing
+
+
+def select_census_objects(
+    con: duckdb.DuckDBPyConnection,
+    posts_view: str,
+    engagements_view: str | None = None,
+    hatespeech_view: str | None = None,
+    *,
+    stats: dict | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Engagement-ranked census targets with toxic-ranked ones appended.
+
+    One place knows about both selectors, so the arguments they must share
+    cannot be passed to one and forgotten on the other - which is how the
+    censused-TTL filter came to be applied on the baseline path only.
+
+    Toxic ids are APPENDED on purpose: `collect_snowball` walks the list in
+    order and flushes every `SNOWBALL_FLUSH_EVERY`, so a rate-limit abort
+    truncates the discretionary tail rather than the baseline."""
+    from kenya_monitor import hate_signal as hsig
+
+    retweeted, conversations, missing = hot_objects(
+        con, posts_view, engagements_view=engagements_view, stats=stats
+    )
+    if hatespeech_view is None:
+        return retweeted, conversations, missing
+
+    tox_rt, _tox_conv, _ = hsig.hot_toxic_objects(con, hatespeech_view, posts_view)
+    seen = set(retweeted)
+    extra = [o for o in tox_rt if o not in seen]
+    if extra:
+        log.info(
+            "snowball: +%d toxic-ranked objects appended to %d baseline",
+            len(extra), len(retweeted),
+        )
+    if stats is not None:
+        stats["pass_kind"] = "merged"
+        stats["selected_retweeted"] = len(retweeted) + len(extra)
+    return retweeted + extra, conversations, missing
 
 
 def _load_snowball_state(path: Path = SNOWBALL_STATE_PATH) -> dict[str, str]:
@@ -406,6 +481,9 @@ async def collect_snowball(
     objects: tuple[list[str], list[str], list[str]] | None = None,
     type_prefix: str = "",
     flush_every: int = SNOWBALL_FLUSH_EVERY,
+    band_max: int = SNOWBALL_BAND_MAX,
+    pass_kind: str = "baseline",
+    stats: dict | None = None,
 ) -> dict[str, int]:
     """Census pass over hot objects: full retweeter lists (-> engagements/),
     full reply threads (-> posts/type=replies), and hydration of referenced
@@ -419,6 +497,7 @@ async def collect_snowball(
     edges have no `type` partition and need none, since they never enter a
     prevalence denominator."""
     counts: dict[str, int] = {}
+    stats = {} if stats is None else stats
     retweeted, conversations, missing = objects or hot_objects(
         storage.con,
         storage.posts_view(platform=collector.platform),
@@ -426,6 +505,7 @@ async def collect_snowball(
         top_retweeted,
         top_conversations,
         hydrate_limit,
+        stats=stats,
     )
     state = _load_snowball_state(state_path)
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -457,9 +537,11 @@ async def collect_snowball(
         _save_snowball_state(state, state_path)
         batch, pending = [], []
 
+    degrees: list[int] = []
     for i, oid in enumerate(due_rt, 1):
         got = [e async for e in collector.retweeters(oid, limit=retweeters_limit)]
         log.info("retweeters of %s -> %d", oid, len(got))
+        degrees.append(len(got))
         batch.extend(got)
         pending.append(oid)
         if i % max(1, flush_every) == 0:
@@ -509,7 +591,72 @@ async def collect_snowball(
     prune = datetime.now(timezone.utc) - timedelta(hours=2 * refresh_hours)
     state = {k: v for k, v in state.items() if datetime.fromisoformat(v) >= prune}
     _save_snowball_state(state, state_path)
+
+    stats.update(
+        {
+            "pass_kind": pass_kind,
+            "retweeters_limit": int(retweeters_limit),
+            "refresh_hours": int(refresh_hours),
+            "band_max": int(band_max),
+            "selected_retweeted": stats.get("selected_retweeted", len(retweeted)),
+            "due_retweeted": len(due_rt),
+            "fetched_retweeted": len(degrees),
+            "skipped_ttl_retweeted": len(retweeted) - len(due_rt),
+            "engagement_rows": counts["retweeters"],
+            "degree_p50": _quantile(degrees, 0.5),
+            "degree_p90": _quantile(degrees, 0.9),
+            "degree_max": max(degrees, default=0),
+            "n_over_band_max": sum(1 for d in degrees if d > band_max),
+            "selected_conversations": stats.get(
+                "selected_conversations", len(conversations)
+            ),
+            "due_conversations": len(due_conv),
+            "reply_rows": counts["replies"],
+            "hydrated_rows": counts["hydrated"],
+            "authors_written": counts["authors"],
+        }
+    )
+    _warn_if_band_is_drifting(stats)
+    storage.write_census_run(stats, platform=collector.platform)
     return counts
+
+
+def _quantile(xs: list[int], q: float) -> int:
+    """Nearest-rank quantile. Deliberately not numpy - the collector's
+    dependency set is model-free and numpy is not a direct dependency."""
+    if not xs:
+        return 0
+    ordered = sorted(xs)
+    idx = min(len(ordered) - 1, max(0, int(round(q * (len(ordered) - 1)))))
+    return int(ordered[idx])
+
+
+def _warn_if_band_is_drifting(stats: dict) -> None:
+    """Standing guard for the census-tuning Q2 regression.
+
+    Objects fetched above the band max are objects the analysis hub cap will
+    discard, so every request spent on them buys zero usable pairs. Before
+    banding, 99.5% of censused objects were hubs; after, the measured rate is
+    6.4%. The threshold sits well clear of the healthy state and trips
+    immediately on a return to the old behaviour.
+
+    Note this measures the FETCH, not the truth: `SNOWBALL_RETWEETERS_LIMIT`
+    truncates, so a 5,000-retweet object registers as 300. That is fine for a
+    guard (300 > band_max trips it) but do not read the degree fields as a
+    distribution, and do not respond by lowering the limit - truncating would
+    disguise a hub as a mid-degree object and inject it into the projection."""
+    fetched = stats.get("fetched_retweeted", 0)
+    if not fetched:
+        return
+    share = stats["n_over_band_max"] / fetched
+    if share > CENSUS_OVER_BAND_WARN:
+        log.warning(
+            "census: %.0f%% of fetched objects came back above the band max (%d) "
+            "- selection is drifting back above the analysis hub cap, where "
+            "objects contribute zero usable pairs",
+            100 * share,
+            stats.get("band_max", SNOWBALL_BAND_MAX),
+        )
 
 
 async def collect_follows(

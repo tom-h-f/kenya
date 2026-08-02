@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from datetime import datetime, timezone
 
@@ -116,6 +117,59 @@ COLLECTION_RUN_SCHEMA = pa.schema(
         ("since", pa.string()),
         ("until", pa.string()),
         ("n_posts", pa.int64()),
+        ("collected_at", pa.timestamp("us", tz="UTC")),
+    ]
+)
+
+
+# One row per census pass. Object-level degree is already recoverable from the
+# engagements/ prefix by grouping on platform_post_id; what is NOT recoverable
+# after the fact is the denominator - how many in-band candidates existed, how
+# many were selected, and how many were skipped because their TTL had not
+# lapsed. Without those, "coverage has saturated" is unfalsifiable, and that is
+# open question Q3 in docs/analysis/census-tuning.md.
+#
+# Separate prefix from collection_runs/ for the same reason incitement/ is
+# separate from labels/: different grain and schema under one glob makes
+# union_by_name reads ambiguous.
+CENSUS_RUN_SCHEMA = pa.schema(
+    [
+        ("run_id", pa.string()),
+        ("platform", pa.string()),
+        ("pass_kind", pa.string()),  # baseline | toxic | merged
+        ("code_version", pa.string()),
+        # parameters in force for this pass
+        ("lookback_days", pa.int64()),
+        ("band_min", pa.int64()),
+        ("band_max", pa.int64()),
+        ("refresh_hours", pa.int64()),
+        ("retweeters_limit", pa.int64()),
+        ("top_retweeted", pa.int64()),
+        # supply: the whole in-band population, and the part not yet worked
+        ("candidates_in_band", pa.int64()),
+        ("candidates_uncensused", pa.int64()),
+        # selection -> work actually done
+        ("selected_retweeted", pa.int64()),
+        ("selected_deg_min", pa.int64()),
+        ("selected_deg_max", pa.int64()),
+        ("due_retweeted", pa.int64()),
+        ("fetched_retweeted", pa.int64()),
+        ("skipped_ttl_retweeted", pa.int64()),
+        # what came back. NOTE: degree_* and n_over_band_max measure the FETCH,
+        # which SNOWBALL_RETWEETERS_LIMIT truncates - a 5,000-retweet object
+        # registers as 300. Sound as a regression guard, not as a distribution.
+        ("engagement_rows", pa.int64()),
+        ("degree_p50", pa.int64()),
+        ("degree_p90", pa.int64()),
+        ("degree_max", pa.int64()),
+        ("n_over_band_max", pa.int64()),
+        # the other arms of the same pass
+        ("selected_conversations", pa.int64()),
+        ("selected_missing", pa.int64()),
+        ("due_conversations", pa.int64()),
+        ("reply_rows", pa.int64()),
+        ("hydrated_rows", pa.int64()),
+        ("authors_written", pa.int64()),
         ("collected_at", pa.timestamp("us", tz="UTC")),
     ]
 )
@@ -242,6 +296,40 @@ class Storage:
         key = f"collection_runs/platform={platform}/dt={_dt_partition(now)}/run={rid}.parquet"
         self._copy_table(table, key)
         return key
+
+    def write_census_run(
+        self, stats: dict, platform: str = "x", now: datetime | None = None
+    ) -> str | None:
+        """One census pass's counters -> census_runs/ prefix.
+
+        Unlike the other writers this does NOT return early on an empty pass. A
+        pass that selected nothing, or fetched nothing because every candidate
+        was inside its TTL, is a real observation - it is the saturation signal
+        Q3 is watching for, and skipping it would make saturation look like an
+        outage."""
+        if not stats:
+            return None
+        now = now or datetime.now(timezone.utc)
+        rid = run_id(now)
+        row = {f.name: None for f in CENSUS_RUN_SCHEMA}
+        row.update({k: v for k, v in stats.items() if k in row})
+        row.update(
+            {
+                "run_id": rid,
+                "platform": platform,
+                "code_version": os.getenv("GIT_SHA", ""),
+                "collected_at": now,
+            }
+        )
+        table = pa.Table.from_pylist([row], schema=CENSUS_RUN_SCHEMA)
+        key = f"census_runs/platform={platform}/dt={_dt_partition(now)}/run={rid}.parquet"
+        self._copy_table(table, key)
+        return key
+
+    def census_runs_view(self, platform: str = "*") -> str:
+        """Per-pass census counters (supply, selection, degree distribution)."""
+        glob = self._uri(f"census_runs/platform={platform}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
 
     def collection_runs_view(self, platform: str = "*") -> str:
         """Rendered-query audit trail for targeted collection passes."""

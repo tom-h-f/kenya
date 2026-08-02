@@ -20,12 +20,14 @@ coordination signal, because *pairs sharing only a mega-viral tweet are organic*
 and one such hub dilutes the aggregate null until real clusters vanish.
 
 The consequence is easy to miss: **an account whose only traces are on hub objects
-disappears from the projection entirely.** `run_channel` rebuilds the trace table
-after the cap and recomputes activity from it, so such an account cannot become a
-cluster member by any path. Collecting it was wasted effort.
+disappears from the projection entirely.** `validated_edges` rebuilds the trace
+table after the cap (`{t}_nohub`) and re-derives both the projection and
+`activity()` from it, so such an account cannot become a cluster member by any
+path. Collecting it was wasted effort.
 
-That makes "accounts discovered" an actively misleading metric. The number that
-matters is **amplifiers surviving the hub cap**.
+That makes "accounts discovered" an actively misleading metric. Surviving the
+cap is the first hurdle — but not the last, and not the metric of record
+either. See §5.
 
 ---
 
@@ -133,13 +135,22 @@ of truth rather than the local JSON state, so it self-heals if state is lost.
 
 | metric | before | after |
 |---|---|---|
-| median censused degree | 295 | **90** |
-| objects above the hub cap | 99.5% | **34.2%** |
-| objects yielding usable pairs | 0.5% | **66%** |
-| amplifiers surviving the cap | 11,393 | **17,349** |
-| survival rate | 8.9% | **12.3%** |
-| usable trace rows | 24,119 | **46,987** |
+| median censused degree | 295 | **73** |
+| objects above the hub cap | 99.5% | **6.4%** [^1] |
 | toxic objects reachable per pass | ~70 | **245** |
+
+Account-level totals are deliberately not in this table. They were computed by
+hand, by two different methods, days apart — which is the failure this document
+is about. They now come from the pipeline's own counters; see §5.
+
+[^1]: An earlier version of this table said **34.2%**. That figure was measured
+over a window that straddled the banding commit (`eb4bc8f`, 2026-08-01 16:19),
+so it averaged the old behaviour with the new. Split by census hour, censuses
+before 16:00 were ~100% hubs at median degree 300-900; from 17:00 onward, 0-2
+hubs per hour at median degree 34-80 and 6.4% above the cap. The lesson is
+§6's, applied to §3: **never measure across a parameter change without
+splitting on the change time.** `census_runs/` now carries `code_version` and a
+timestamp on every pass so this cannot recur silently.
 
 ---
 
@@ -148,12 +159,17 @@ of truth rather than the local JSON state, so it self-heals if state is lost.
 All three share a root: everything above measures **inputs**. None of it
 establishes that cluster *detection* improved.
 
-### Q1 — Is a 12.3% survival rate sufficient?
+### Q1 — Is the survival rate sufficient?
 
-**Plainly:** only about an eighth of the accounts we collect can ever be
+**Plainly:** only a small fraction of the accounts we collect can ever be
 considered as network members. The rest are known to exist but have no usable
-behavioural evidence. That fraction went up, but nobody has checked whether it is
-*enough*.
+behavioural evidence. That fraction went up, but nobody has checked whether it
+is *enough*.
+
+The fraction is also smaller than this document first claimed. It was stated as
+12.3% (survivors / collected); the honest figure is **8.2%** (`pairable` /
+`accounts_all`, 14,898 of 182,391 on 2026-08-02), because surviving the cap is
+not the same as being able to appear in an edge — §5.
 
 Why it is not answerable from what we have:
 - The corpus carries a large historical tail of hub-only traces. Banding changes
@@ -163,39 +179,64 @@ Why it is not answerable from what we have:
   validated edges — the significance test may need a density threshold that we
   are either already past or nowhere near, and the ratio alone does not say which.
 
-**Experiment.** Run `coordination_run --persist` after several TTL-aware passes
-and compare against the recorded baseline: **65,570 co_retweet edges, 1,898
-co_reply, 298 clusters, 14 corroborated (60 accounts)**. The decisive figure is
-corroborated clusters, not total edges — total edges rose under the *broken* cap
-too, which is exactly how the problem hid.
+A third reason it was not answerable: **the ratio was measured against the wrong
+denominator.** See §5 — the population that matters is `pairable`, not
+`nohub_amp`, and it is 3.5x smaller.
 
-**What would falsify the work:** corroborated clusters flat or down while usable
-traces rose. That would mean the census is not the binding constraint and the
-effort belongs elsewhere.
+**Experiment (now automatic).** Every `coordination_run --persist` writes its
+counters to `coordination/kind=run_metrics`, so the comparison is a query over
+the series rather than a hand-recorded baseline:
 
-### Q2 — Is `SNOWBALL_BAND_MAX = 100` the right cutoff?
+```sql
+SELECT computed_at, code_version, channel, pairable, nohub_amp,
+       n_clusters, n_corroborated_clusters, n_corroborated_accounts
+FROM coordination_metrics ORDER BY computed_at;
+```
 
-**Plainly:** we only census posts with 3-100 retweets. Above 100 the maths throws
-the result away. But **34.2% of what we fetch still comes back above 100**,
-because a post keeps being retweeted between the moment we record its count and
-the moment we fetch its retweeters.
+The baseline to beat is the hand-recorded **65,570 co_retweet edges, 1,898
+co_reply, 298 clusters, 14 corroborated (60 accounts)**. First job is to confirm
+the series reproduces it; if it does not, the counters are wrong and nothing
+else follows.
 
-Two candidate explanations, not yet separated:
-1. Genuine growth between snapshot and census.
-2. A selection artefact — `hot_objects` bands on `max(repost_count)` over
-   *retweet rows*, which may understate the original's true count.
+The decisive figure is corroborated clusters, not total edges — total edges rose
+under the *broken* cap too, which is exactly how the problem hid.
 
-The measured ratio of censused degree to recorded `repost_count` is **0.97**,
-which argues *against* systematic growth and therefore *for* explanation 2. That
-also disproves a "snapshot lag" theory advanced earlier in this work — a
-correction was nearly shipped for a lag that does not exist.
+**What would falsify the work:** corroborated clusters flat or down while
+`pairable` rose. That would mean the census is not the binding constraint and
+the effort belongs elsewhere.
 
-**Experiment.** For a sample of selected objects, record `repost_count` at
-selection, the original post's own `repost_count`, and the censused degree.
-Separating (1) from (2) determines whether the fix is a lower band max or a
-corrected selection column. **Do not lower `SNOWBALL_RETWEETERS_LIMIT`** —
-truncating the fetch would disguise a hub as a legitimate mid-degree object and
-inject it into the projection, which is worse than the wasted request.
+### Q2 — Is `SNOWBALL_BAND_MAX = 100` the right cutoff? — **RESOLVED, no change**
+
+**Yes.** The question rested on "34.2% of what we fetch still comes back above
+100", and that number was an artefact of the measurement window (see the
+footnote in §3). Post-deploy the rate is **6.4%**.
+
+Both candidate explanations were tested against the retained snapshots and both
+are refuted:
+
+1. *Growth between snapshot and census.* Median (`repost_count` now /
+   `repost_count` at selection) = **1.00** across 717 objects. There is no
+   systematic growth. This also disposes of the "snapshot lag" theory advanced
+   earlier — a correction was nearly shipped for a lag that does not exist.
+2. *A selection artefact — banding on `max(repost_count)` over retweet rows
+   understating the original's count.* The two candidate columns agree at a
+   median ratio of 1.00. Decisively: of the 945 objects censused on 2026-08-01,
+   the 289 that came back as hubs read ~8,000 on **both** columns
+   (median 8,813 on retweet rows, 8,071 on the original's own row). No column
+   misled selection; those objects were censused before banding existed.
+
+Of the 427 objects that were genuinely in band at selection time, 88 (20.6%)
+exceeded 100 by census time, at median degree 82 — a modest overshoot with no
+single cause worth chasing.
+
+**Do not lower `SNOWBALL_RETWEETERS_LIMIT`** — still correct, still load
+bearing. Truncating the fetch would disguise a hub as a legitimate mid-degree
+object and inject it into the projection, which is worse than the wasted
+request.
+
+**Standing guard:** `n_over_band_max` in `census_runs/`, with a warning above
+15%. The healthy state (6.4%) clears it comfortably; a regression to the
+pre-banding state (99.5%) trips it on the first pass.
 
 ### Q3 — Does coverage plateau?
 
@@ -203,27 +244,66 @@ inject it into the projection, which is worse than the wasted request.
 through what is currently available, the rate of new-account discovery stops
 depending on our settings and starts depending on how fast new content appears.
 
-Current supply, 2-day window: **3,188 in-band candidates, 303 censused.** So there
-is headroom now. What is unknown is the steady state once that gap closes — at
-which point `SNOWBALL_REFRESH_HOURS`, not `SNOWBALL_TOP_RETWEETED`, becomes the
-governing parameter.
+**Saturation is imminent, not hypothetical.** Measured 2026-08-02 by running the
+selector against live R2:
 
-This matters because growth has been reported as though it continues. It may not.
+| | |
+|---|---|
+| in-band candidates, 2-day window | 3,496 |
+| of those, selectable (not censused inside the 12h TTL) | **742** |
+| per-pass budget (`SNOWBALL_TOP_RETWEETED`) | 250 |
+| densest object still selectable | **63** (band max is 100) |
 
-**Experiment.** Track uncensused in-band candidates per pass for a week. If it
-trends to zero, coverage is saturated and the levers change: widen the band
-downward (the 1-2 repost tier is 367 toxic objects, unpairable individually but
-not worthless in aggregate), shorten the TTL, or accept saturation as success.
+Two independent signs the band is nearly worked through: the selectable backlog
+is under three passes' worth, and the upper half of the band is already empty —
+nothing between 63 and 100 remains uncensused.
+
+So `SNOWBALL_REFRESH_HOURS` is about to become the governing parameter, and
+growth should stop being reported as though it continues.
+
+**Experiment (now automatic).** `candidates_uncensused` is written to
+`census_runs/` on every pass. Track it for a week rather than sampling it by
+hand. If it flattens near zero the levers change: widen the band downward (the
+1-2 repost tier is 367 toxic objects, unpairable individually but not worthless
+in aggregate), shorten the TTL, or accept saturation as success. Which one is a
+decision for the data, not for now.
 
 ---
 
 ## 5. The metric of record
 
-**`nohub_amp` — amplifier accounts surviving the hub cap.** Currently 17,349 of
-141,306.
+**`pairable` — accounts holding at least `min_repetition` (2) non-hub objects.**
 
-Not "accounts discovered". That number doubled while contributing almost nothing,
-which is what made it convincing.
+Not "accounts discovered": that number doubled while contributing almost
+nothing, which is what made it convincing.
+
+And **not `nohub_amp`** either, which is what this document originally
+nominated. Surviving the hub cap is necessary but not sufficient.
+`projected_edges` requires `min_repetition = 2` distinct shared objects, so an
+account whose non-hub traces number exactly one cannot appear in any edge, in
+any cluster, ever — no matter what else is collected.
+
+`co_retweet`, from the pipeline's own counters, 2026-08-02:
+
+| | |
+|---|---|
+| accounts with any trace (`accounts_all`) | 182,391 |
+| surviving the hub cap (`nohub_amp`) | 52,871 |
+| **holding >= 2 non-hub objects (`pairable`)** | **14,898** |
+| survivors that can never form an edge | 37,973 |
+
+`nohub_amp` overstates the usable population by **3.5x**. That ratio held at
+3.55x on an independent hand calculation over the 14-day window the day before,
+on a smaller corpus — it is a structural property of the degree distribution,
+not an artefact of one snapshot. `nohub_amp` is kept in
+`coordination/kind=run_metrics` only to show the size of the gap.
+
+This is the same error §6 is about, committed by this document: a number that
+went up, measuring the wrong thing. The check that catches it is the same one —
+trace what consumes the output. Here the consumer is `min_repetition`.
+
+The **outcome** measure remains corroborated clusters (`n_channels >= 2`), now
+computed and persisted per run rather than derived by hand.
 
 ---
 
@@ -241,3 +321,69 @@ parameter, trace what consumes its output and confirm the consumer can use more 
 it. A green test suite did not help — `test_hot_objects_selection_and_missing_refs`
 asserted that the *most-amplified* object wins, encoding the bug, and passed
 throughout.
+
+---
+
+## 7. Found while measuring: the engagement arm ignores the coordination window
+
+Not one of the three questions, and more consequential than two of them.
+
+`traces()` scopes the post-derived arm of `co_retweet` to `COORD_LOOKBACK_DAYS`
+(14) via `_latest_posts_cte`. `_engagement_traces` had **no time filter at
+all** — it read the whole `engagements/` prefix, forever. Measured 2026-08-01:
+
+| | |
+|---|---|
+| engagement traces total | 191,824 |
+| on objects created more than 14 days ago | 34,682 (114 objects) |
+| on objects with no post row at all, so age unknown | 10,629 (121 objects) |
+| **outside the window `COORD_LOOKBACK_DAYS` claims to enforce** | **45,311 (23.6%)** |
+
+Three harms, all silent:
+
+1. `COORD_LOOKBACK_DAYS` did not do what its own comment says it does.
+2. Stale hub-era census rows inflate object degrees. An object pushed over the
+   hub cap by traces from three weeks ago takes **every account whose only
+   traces were on it** out of the projection entirely (§1).
+3. Edges could form out of months-old activity, contradicting the stated
+   rationale — "a ring that was active months ago is not the current network".
+
+**Fix.** The engagement arm semi-joins to `lp`, the same windowed relation the
+post arm already uses, so the window is inherited rather than restated and the
+two cannot drift. Objects with no post row are dropped: a retweet cannot precede
+its object, which makes the object's `created_at` a sound bound, whereas census
+`collected_at` bounds only when we *observed* the incidence — a year-old retweet
+censused this morning would pass that test. The drop is a lag, not a loss:
+those ids are exactly what `hot_objects`' hydration arm exists to fetch, and
+they re-enter on their merits once it does.
+
+---
+
+## 8. How to read the two series
+
+| question | prefix | helper |
+|---|---|---|
+| what did the census have to work with, and what did it do | `census_runs/` | `kma.db.census_runs` |
+| what did detection make of it | `coordination/kind=run_metrics` | `kma.db.coordination_metrics` |
+
+Both are **series, not state** — the helpers return every run, oldest first,
+rather than the latest. That is deliberate: every question here is a difference
+between runs.
+
+**The one rule.** Never aggregate across a parameter change without splitting on
+the change time. That single mistake produced §3's wrong 34.2% and very nearly
+caused a correction to be shipped for a growth effect that does not exist. Both
+prefixes carry `code_version` and a timestamp on every row so the split is
+mechanical:
+
+```sql
+SELECT code_version, count(*) AS passes,
+       median(candidates_uncensused) AS backlog,
+       median(n_over_band_max * 1.0 / nullif(fetched_retweeted, 0)) AS over_band_rate
+FROM census_runs GROUP BY 1 ORDER BY min(collected_at);
+```
+
+Two traps worth stating once. The degree columns in `census_runs/` measure the
+**fetch**, which `SNOWBALL_RETWEETERS_LIMIT` truncates at 300 — sound as a
+guard, not readable as a distribution. And `nohub_amp` is not the metric of
+record; `pairable` is (§5).

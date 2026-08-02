@@ -44,12 +44,12 @@ from kenya_monitor.config import (
 )
 from kenya_monitor.runner import (
     build_x_collector,
-    hot_objects,
     collect_backfill,
     collect_follows,
     collect_metrics,
     collect_snowball,
     collect_x,
+    select_census_objects,
 )
 from kenya_monitor.storage import Storage
 
@@ -284,7 +284,8 @@ async def run_hate_expand_once(
     if any(objects):
         counts.update(
             await collect_snowball(
-                collector, storage, objects=objects, type_prefix="hate_"
+                collector, storage, objects=objects, type_prefix="hate_",
+                pass_kind="toxic",
             )
         )
     for row in batch:
@@ -308,28 +309,19 @@ async def run_snowball_once(**overrides) -> dict[str, int]:
     walks the list in order and flushes every `SNOWBALL_FLUSH_EVERY`, so a
     rate-limit abort truncates the tail - the discretionary work - preserving the
     deliberate baseline-first ordering of the cycle."""
-    from kenya_monitor import hate_signal as hsig
-
     storage = Storage(R2Config.from_env())
     collector = await build_x_collector(load_accounts())
 
+    stats: dict = {}
     if "objects" not in overrides:
-        retweeted, conversations, missing = hot_objects(
+        overrides["objects"] = select_census_objects(
             storage.con,
             storage.posts_view(platform="x"),
             engagements_view=storage.engagements_view(platform="x"),
+            hatespeech_view=storage.hatespeech_view(platform="x"),
+            stats=stats,
         )
-        tox_rt, _tox_conv, _ = hsig.hot_toxic_objects(
-            storage.con, storage.hatespeech_view(platform="x"), storage.posts_view(platform="x")
-        )
-        seen = set(retweeted)
-        extra = [o for o in tox_rt if o not in seen]
-        if extra:
-            log.info(
-                "snowball: +%d toxic-ranked objects appended to %d baseline",
-                len(extra), len(retweeted),
-            )
-        overrides["objects"] = (retweeted + extra, conversations, missing)
+    overrides.setdefault("stats", stats)
 
     counts = await collect_snowball(collector, storage, **overrides)
     log.info("snowball run complete: %s", counts)

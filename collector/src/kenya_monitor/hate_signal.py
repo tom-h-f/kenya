@@ -25,7 +25,12 @@ import os
 
 import duckdb
 
-from kenya_monitor.config import SNOWBALL_BAND_MAX, SNOWBALL_BAND_MIN
+from kenya_monitor import census as census_sel
+from kenya_monitor.config import (
+    SNOWBALL_BAND_MAX,
+    SNOWBALL_BAND_MIN,
+    SNOWBALL_REFRESH_HOURS,
+)
 from kenya_monitor.suspicion import _post_columns, _score_sql
 
 log = logging.getLogger("kenya_monitor")
@@ -569,13 +574,21 @@ def hot_toxic_objects(
     top_conversations: int = 60,
     band_min: int = SNOWBALL_BAND_MIN,
     band_max: int = SNOWBALL_BAND_MAX,
+    engagements_view: str | None = None,
+    refresh_hours: int = SNOWBALL_REFRESH_HOURS,
 ) -> tuple[list[str], list[str], list[str]]:
     """Snowball targets ranked by toxic density rather than raw engagement.
 
     Same (retweeted_ids, conversation_ids, missing_ids) shape as
     `runner.hot_objects`, so it drops straight into `collect_snowball`. The
     third element is always empty: hydration of referenced-but-uncollected
-    originals stays a baseline concern."""
+    originals stays a baseline concern.
+
+    `engagements_view` applies the censused-TTL exclusion during selection, the
+    same way the baseline selector does. The column differs - this ranks
+    ORIGINAL posts by their own `repost_count`, while `hot_objects` ranks
+    `repost_of_id` off retweet rows - which is why the shared helper takes the
+    column as an argument."""
     try:
         hate_cols = set(con.sql(f"SELECT * FROM {hatespeech_view} LIMIT 0").columns)
     except duckdb.Error:
@@ -584,6 +597,9 @@ def hot_toxic_objects(
         log.warning("hate_signal: hatespeech view unreadable; no toxic objects selected")
         return [], [], []
     toxic = _toxic_expr(hate_cols)
+    ttl = census_sel.censused_filter(
+        con, engagements_view, "recent.platform_post_id", refresh_hours
+    )
     base = f"""
         WITH lp AS (
             SELECT * FROM {posts_view}
@@ -609,9 +625,10 @@ def hot_toxic_objects(
             for r in con.sql(
                 f"""
                 {base}
-                SELECT platform_post_id FROM recent
+                SELECT recent.platform_post_id FROM recent
                 WHERE toxic AND NOT COALESCE(is_repost, FALSE)
                   AND COALESCE(repost_count, 0) BETWEEN {int(band_min)} AND {int(band_max)}
+                  {ttl}
                 ORDER BY repost_count DESC NULLS LAST, p_hate DESC NULLS LAST
                 LIMIT {int(top_retweeted)}
                 """
