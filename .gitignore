@@ -24,3 +24,6 @@ node_modules/
 /analysis/notebooks/__marimo__/session
 
 .worktrees/
+
+# Claude Code session state and worktrees (worktrees are embedded git repos)
+.claude/

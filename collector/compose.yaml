@@ -5,6 +5,12 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-}
     env_file: ../.env
+    # Python block-buffers stdout to a pipe, so a freshly started container
+    # shows NO logs until several KB accumulate - indistinguishable from a
+    # stalled one. These are long-lived workers whose logs are the only
+    # live signal; line-buffering costs nothing here.
+    environment:
+      PYTHONUNBUFFERED: "1"
     command: ["run", "--limit", "20"]
     mem_limit: 1g
     volumes:

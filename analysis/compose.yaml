@@ -5,6 +5,12 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-}
     env_file: ../.env
+    # Python block-buffers stdout to a pipe, so a freshly started container
+    # shows NO logs until several KB accumulate - indistinguishable from a
+    # stalled one. These are long-lived workers whose logs are the only
+    # live signal; line-buffering costs nothing here.
+    environment:
+      PYTHONUNBUFFERED: "1"
     command: ["--loop"]
     # --loop isolates each pass in its own subprocess, so only one model set is
     # resident at a time. The largest is the afro-xlmr-large hate model (~2GB
@@ -34,6 +40,12 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-}
     env_file: ../.env
+    # Python block-buffers stdout to a pipe, so a freshly started container
+    # shows NO logs until several KB accumulate - indistinguishable from a
+    # stalled one. These are long-lived workers whose logs are the only
+    # live signal; line-buffering costs nothing here.
+    environment:
+      PYTHONUNBUFFERED: "1"
     command: ["--loop", "--no-embed", "--no-classify", "--no-hate", "--coord-hours", "6"]
     mem_limit: 2g
     restart: unless-stopped
