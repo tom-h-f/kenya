@@ -322,15 +322,34 @@ def content_clusters(
 def _engagement_traces(con: duckdb.DuckDBPyConnection, platform: str) -> str | None:
     """Snowballed retweeter incidence as trace rows (untimed - the platform does
     not expose retweet times, so created_at is NULL and timed variants skip
-    these rows automatically). None when no engagement data exists yet."""
+    these rows automatically). None when no engagement data exists yet.
+
+    Scoped to `lp`, the SAME windowed post relation the post-derived arm uses.
+    Without that join this arm read the whole engagements/ prefix regardless of
+    COORD_LOOKBACK_DAYS. Measured 2026-08-01: 45,311 of 191,824 engagement
+    traces (23.6%) sat outside the 14-day window, and by 2026-08-02 that had
+    grown to 41% as banding made the census more productive - the arm was
+    accumulating without bound while the post arm rolled forward.
+
+    Two harms, both silent. Stale rows inflate object degrees, pushing objects
+    over the hub cap and evicting every account whose only traces were on them;
+    and edges could form from months-old activity, which is the exact thing the
+    COORD_LOOKBACK_DAYS rationale says must not happen.
+
+    A retweet cannot precede its object, so "object created inside the window"
+    is a sound bound on the trace's own unknown time. Census `collected_at` is
+    NOT a sound bound - it records when we observed the incidence, so a
+    year-old retweet censused this morning would pass. Objects with no post row
+    therefore drop out until hydration fetches their original; the hydration arm
+    prioritises exactly those (see `runner.hot_objects`)."""
     src = engagements_source(platform)
     try:
         con.sql(f"SELECT 1 FROM {src} LIMIT 1").fetchall()
     except duckdb.Error:
         return None
     return f"""
-        SELECT platform_user_id AS author_id,
-               platform_post_id AS action_object,
+        SELECT e.platform_user_id AS author_id,
+               e.platform_post_id AS action_object,
                CAST(NULL AS TIMESTAMPTZ) AS created_at
         FROM (
             SELECT * FROM {src}
@@ -338,8 +357,11 @@ def _engagement_traces(con: duckdb.DuckDBPyConnection, platform: str) -> str | N
                 PARTITION BY platform, platform_post_id, platform_user_id, kind
                 ORDER BY collected_at DESC
             ) = 1
-        )
-        WHERE kind = 'retweet'
+        ) e
+        WHERE e.kind = 'retweet'
+          AND EXISTS (
+              SELECT 1 FROM lp WHERE lp.platform_post_id = e.platform_post_id
+          )
     """
 
 

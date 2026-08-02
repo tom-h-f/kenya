@@ -566,3 +566,113 @@ def test_percentile_is_computed_but_never_the_default():
     """It missed even the 20x10 plant on co_retweet (F1 = 0.0). Kept for
     comparison in the persisted edge sets; never used for clustering."""
     assert co.DEFAULT_EDGE_METHOD != "percentile"
+
+
+# --- engagement arm windowing ----------------------------------------------
+
+
+def _con_with_posts_and_engagements(posts, engagements):
+    """Local posts/engagements tables standing in for the R2 prefixes."""
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE p (platform VARCHAR, platform_post_id VARCHAR,"
+        " author_id VARCHAR, created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ,"
+        " repost_of_id VARCHAR, in_reply_to_id VARCHAR)"
+    )
+    for r in posts:
+        con.execute(
+            "INSERT INTO p VALUES ('x', ?, ?, ?, ?, ?, ?)",
+            [r["id"], r.get("author", "a"), r["created_at"], r["created_at"],
+             r.get("repost_of"), r.get("in_reply_to")],
+        )
+    con.execute(
+        "CREATE TABLE e (platform VARCHAR, platform_post_id VARCHAR,"
+        " platform_user_id VARCHAR, kind VARCHAR, collected_at TIMESTAMPTZ)"
+    )
+    for obj, uid in engagements:
+        con.execute(
+            "INSERT INTO e VALUES ('x', ?, ?, 'retweet', now())", [obj, uid]
+        )
+    return con
+
+
+def test_engagement_traces_are_scoped_to_the_post_window(monkeypatch):
+    """41% of engagement traces sat outside COORD_LOOKBACK_DAYS on 2026-08-02,
+    inflating object degrees and pushing objects over the hub cap."""
+    now = pd.Timestamp.now(tz="UTC")
+    con = _con_with_posts_and_engagements(
+        posts=[
+            {"id": "FRESH", "created_at": now - pd.Timedelta(days=1)},
+            {"id": "STALE", "created_at": now - pd.Timedelta(days=40)},
+        ],
+        engagements=[("FRESH", "u1"), ("FRESH", "u2"), ("STALE", "u3")],
+    )
+    monkeypatch.setattr(co, "posts_source", lambda *a, **k: "p")
+    monkeypatch.setattr(co, "engagements_source", lambda *a, **k: "e")
+
+    tr = co.traces(con, "co_retweet").df()
+
+    assert set(tr["action_object"]) == {"FRESH"}
+    assert "u3" not in set(tr["author_id"])
+
+
+def test_engagement_traces_drop_objects_with_no_post_row(monkeypatch):
+    """Census collected_at records when we OBSERVED the incidence, not when it
+    happened, so it is not a sound age bound. These re-enter once the hydration
+    arm - which prioritises them - fetches the original."""
+    now = pd.Timestamp.now(tz="UTC")
+    con = _con_with_posts_and_engagements(
+        posts=[{"id": "KNOWN", "created_at": now - pd.Timedelta(days=1)}],
+        engagements=[("KNOWN", "u1"), ("UNHYDRATED", "u2")],
+    )
+    monkeypatch.setattr(co, "posts_source", lambda *a, **k: "p")
+    monkeypatch.setattr(co, "engagements_source", lambda *a, **k: "e")
+
+    tr = co.traces(con, "co_retweet").df()
+
+    assert set(tr["action_object"]) == {"KNOWN"}
+
+
+def test_engagement_window_is_inherited_not_restated(monkeypatch):
+    """The window must come from `lp`, never a second INTERVAL literal, or the
+    two arms can drift apart silently."""
+    con = _con_with_posts_and_engagements(posts=[], engagements=[])
+    monkeypatch.setattr(co, "engagements_source", lambda *a, **k: "e")
+
+    frag = co._engagement_traces(con, "x")
+
+    assert "INTERVAL" not in frag
+    assert "FROM lp" in frag
+
+
+def test_engagement_arm_is_unbounded_when_lookback_is_zero(monkeypatch):
+    """COORD_LOOKBACK_DAYS=0 restores unbounded behaviour for BOTH arms."""
+    now = pd.Timestamp.now(tz="UTC")
+    con = _con_with_posts_and_engagements(
+        posts=[{"id": "STALE", "created_at": now - pd.Timedelta(days=400)}],
+        engagements=[("STALE", "u1")],
+    )
+    monkeypatch.setattr(co, "posts_source", lambda *a, **k: "p")
+    monkeypatch.setattr(co, "engagements_source", lambda *a, **k: "e")
+    monkeypatch.setattr(co, "COORD_LOOKBACK_DAYS", 0)
+
+    tr = co.traces(con, "co_retweet").df()
+
+    assert set(tr["action_object"]) == {"STALE"}
+
+
+def test_engagement_semi_join_is_null_safe(monkeypatch):
+    """A NULL platform_post_id must not annihilate the whole arm."""
+    now = pd.Timestamp.now(tz="UTC")
+    con = _con_with_posts_and_engagements(
+        posts=[{"id": "KNOWN", "created_at": now - pd.Timedelta(days=1)}],
+        engagements=[("KNOWN", "u1"), (None, "u2")],
+    )
+    monkeypatch.setattr(co, "posts_source", lambda *a, **k: "p")
+    monkeypatch.setattr(co, "engagements_source", lambda *a, **k: "e")
+
+    tr = co.traces(con, "co_retweet").df()
+
+    assert set(tr["action_object"]) == {"KNOWN"}
