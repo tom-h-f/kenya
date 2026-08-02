@@ -538,3 +538,31 @@ def test_persist_run_metrics_writes_a_row_even_with_no_channel_stats(tmp_path):
     df = duckdb.connect().sql(f"SELECT * FROM '{out}'").df()
     assert len(df) == 1
     assert df["n_clusters"].item() == 0
+
+
+def test_clustering_defaults_to_bonferroni_not_fdr():
+    """Measured on the live corpus 2026-08-02, not a preference for caution.
+
+    FDR admits 4% (co_retweet) and 28% (co_reply) of degree-preserving shuffled
+    noise where Bonferroni admits 0 and 1. It buys no recall in exchange: both
+    score F1 = 1.0 on a 20-account/10-object plant. At the detection limit it is
+    strictly worse - with 8 accounts sharing 5 objects both filters contain all
+    28 planted pairs, but Leiden clusters 0 of 8 planted accounts under FDR
+    against 8 of 8 under Bonferroni, because the marginal edges wire the group
+    to unrelated accounts until CPM cannot hold it together.
+
+    Community detection is what fails, not the null. Same dilution the hub cap
+    exists to prevent, one layer down."""
+    import inspect
+
+    from kma import coordination_run as cr
+
+    assert co.DEFAULT_EDGE_METHOD == "bonferroni"
+    assert inspect.signature(co.build_layers).parameters["method"].default == "bonferroni"
+    assert inspect.signature(cr.run).parameters["method"].default == "bonferroni"
+
+
+def test_percentile_is_computed_but_never_the_default():
+    """It missed even the 20x10 plant on co_retweet (F1 = 0.0). Kept for
+    comparison in the persisted edge sets; never used for clustering."""
+    assert co.DEFAULT_EDGE_METHOD != "percentile"

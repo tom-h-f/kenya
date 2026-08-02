@@ -188,6 +188,36 @@ COORD_LOOKBACK_DAYS = int(os.getenv("COORD_LOOKBACK_DAYS", "14"))
 # are organic, not coordinated.
 HUB_CAP_MAX = int(os.getenv("HUB_CAP_MAX", "100"))
 
+# Which edge filter feeds community detection. Bonferroni, not FDR, and this is
+# measured rather than a taste for conservatism.
+#
+# FDR was the default until 2026-08-02, when the retweeter census scaled
+# co_retweet from 3,751 to 140,518 edges in 33 hours and corroborated clusters
+# fell 14 -> 1. Three measurements on the live corpus at that scale:
+#
+#   1. Shuffle control (`null_baseline`): on degree-preserving shuffled traces
+#      Bonferroni admits 0 edges (co_retweet) and 1 (co_reply); FDR admits
+#      1,817 and 256 - 4% and 28% of pure noise. FDR is behaving as specified
+#      (BH allows alpha of DISCOVERIES to be false); the "0/0" recorded on
+#      2026-07-08 was a small-corpus artefact that set a false expectation.
+#   2. Planted-cluster recovery (`inject_synthetic` + `evaluate_recovery`):
+#      identical F1 = 1.0 for both at a 20-account/10-object plant, so FDR's
+#      extra ~139,000 edges buy no recall.
+#   3. At the detection limit they diverge, and NOT in FDR's favour. With 8
+#      accounts sharing 5 objects, both filters contain all 28 planted pairs,
+#      but Leiden places 0 of 8 planted accounts in any cluster under FDR
+#      versus 8 of 8 under Bonferroni. The marginal edges wire the group to
+#      unrelated accounts until CPM can no longer hold it together.
+#
+# So the failure is in community detection, not the null: the same dilution the
+# hub cap exists to prevent, one layer down. Both filters share a sensitivity
+# floor of 3 shared objects, so nothing is given up.
+#
+# `percentile` is disqualified outright - it missed even the 20x10 plant on
+# co_retweet. It is still computed and persisted for comparison; do not cluster
+# on it.
+DEFAULT_EDGE_METHOD = os.getenv("COORD_EDGE_METHOD", "bonferroni")
+
 
 def _latest_posts_cte(platform: str, lookback_days: int | None = None) -> str:
     days = COORD_LOOKBACK_DAYS if lookback_days is None else lookback_days
@@ -876,14 +906,14 @@ def build_layers(
     con: duckdb.DuckDBPyConnection,
     channels: list[str] = WAVE_A,
     platform: str = "x",
-    method: str = "fdr",
+    method: str = DEFAULT_EDGE_METHOD,
     deltas: dict[str, int] | None = None,
     *,
     stats: dict[str, dict] | None = None,
     **params,
 ) -> dict[str, pd.DataFrame]:
     """dict channel -> validated edge list (one multiplex layer per channel).
-    `method` picks the edge filter ("fdr", "bonferroni", "percentile");
+    `method` picks the edge filter ("bonferroni", "fdr", "percentile");
     `deltas` maps a channel to a co-action window for the timed variant.
 
     `stats`, when given, is filled with channel -> counters. It is an explicit
