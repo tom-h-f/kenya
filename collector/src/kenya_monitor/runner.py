@@ -451,7 +451,9 @@ def select_census_objects(
     if hatespeech_view is None:
         return retweeted, conversations, missing
 
-    tox_rt, _tox_conv, _ = hsig.hot_toxic_objects(con, hatespeech_view, posts_view)
+    tox_rt, _tox_conv, _ = hsig.hot_toxic_objects(
+        con, hatespeech_view, posts_view, engagements_view=engagements_view
+    )
     seen = set(retweeted)
     extra = [o for o in tox_rt if o not in seen]
     if extra:
