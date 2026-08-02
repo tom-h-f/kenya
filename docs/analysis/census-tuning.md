@@ -387,3 +387,103 @@ Two traps worth stating once. The degree columns in `census_runs/` measure the
 **fetch**, which `SNOWBALL_RETWEETERS_LIMIT` truncates at 300 — sound as a
 guard, not readable as a distribution. And `nohub_amp` is not the metric of
 record; `pairable` is (§5).
+
+---
+
+## 9. Why corroborated clusters collapsed, and what it was really telling us
+
+Recorded 2026-08-02, immediately after the measurement layer landed. The first
+thing the new series did was falsify a claim this document makes.
+
+### The trajectory
+
+All runs below use hub cap 100, so the cap is not the variable:
+
+| run | co_retweet edges | co_reply | clusters | corroborated |
+|---|---|---|---|---|
+| 08-01 10:35 | 3,751 | 400 | 298 | **14** |
+| 08-01 19:03 | 20,281 | 664 | 414 | 4 |
+| 08-02 01:20 | 63,963 | 793 | 725 | 5 |
+| 08-02 07:31 | 107,366 | 1,227 | 348 | 2 |
+| 08-02 19:40 | 140,518 | 1,210 | 164 | **1** |
+
+Banding shipped at 16:19 on 08-01. co_retweet edges grew **37x in 33 hours**;
+co_reply grew 3x. Layer imbalance went 9:1 to 116:1.
+
+This is the falsification condition Q1 names: corroborated clusters down while
+the input measure rose.
+
+### It is not the census, and not the null
+
+`null_baseline` on degree-preserving shuffled traces:
+
+| channel | input | tested | Bonferroni | FDR |
+|---|---|---|---|---|
+| co_retweet | real | 334,240 | 5,426 | 141,831 |
+| co_retweet | shuffled | 45,323 | **0** | **1,817** |
+| co_reply | real | 1,300 | 28 | 1,238 |
+| co_reply | shuffled | 916 | **1** | **256** |
+
+Bonferroni passes; **the null model is sound**. FDR admits 4% and 28% of pure
+noise. That is not a bug - BH permits alpha of *discoveries* to be false, and
+it always did. The "0/0 on shuffled" recorded 2026-07-08 (doc 03) was a
+small-corpus artefact: back then the shuffled input was too small for BH to
+reject anything, which set a false expectation that survived into this system's
+defaults.
+
+### The failure is in community detection
+
+Planting a known cluster with `inject_synthetic` and scoring with
+`evaluate_recovery`, at a 20-account/10-object plant both filters score
+F1 = 1.0 - FDR's extra ~139,000 edges buy no recall. They diverge at the limit:
+
+| plant (accounts x objects) | Bonferroni | FDR |
+|---|---|---|
+| 20 x 10 | 1.0 | 1.0 |
+| 8 x 5, 4 x 5 | **1.0** | **0.0** |
+| 8 x 3 and below | 0.0 | 0.0 |
+
+At 8 x 5, **both filters contain all 28 planted pairs** - the statistics find
+the group either way. But Leiden places **0 of 8** planted accounts in any
+cluster under FDR, against **8 of 8** under Bonferroni. The marginal edges wire
+the group to unrelated accounts until CPM at resolution 0.05 can no longer hold
+it together.
+
+So the chain is: banding scaled the census honestly -> co_retweet edges grew
+37x -> FDR's marginal tail grew with them -> Leiden dissolved tight groups ->
+clusters became co_retweet blobs -> co_reply's edges rarely landed inside them
+-> corroboration collapsed.
+
+**The census work is exonerated.** It scaled the input; a latent flaw in the
+edge filter converted that into worse detection. Corroboration was doing its
+job - the collapse was the signal that the new clusters were not real.
+
+**Fixed** by defaulting community detection to Bonferroni
+(`DEFAULT_EDGE_METHOD`). Both filters share a sensitivity floor of 3 shared
+objects, so nothing is given up. `percentile` is disqualified outright: it
+missed even the 20 x 10 plant on co_retweet.
+
+### A third measurement error in this document
+
+Q1's baseline - "65,570 co_retweet edges, 1,898 co_reply, 298 clusters, 14
+corroborated" - **conflates two runs two days apart**. The edge counts are the
+07-30 22:37 run; the cluster counts are 08-01 10:36, which actually had 3,751
+and 400 edges. Same error as the Q2 figure in §3 and the account totals in §5.
+
+There is therefore **no known-good baseline to return to**. It has to be
+re-established from a calibrated pipeline, which is what §8's series is for.
+
+### Still open
+
+Two defects found here are not yet fixed, deliberately, so their effects stay
+attributable:
+
+- `aggregate_layers` normalises each layer's weight *magnitude* to <= 1 and
+  then sums, so a layer's influence still scales with its edge **count**. At
+  116:1 the smaller layer contributes nothing. Per-layer mass normalisation or
+  a top-K budget would fix it independently of the filter choice.
+- `co_retweet` unions *complete enumeration* (censused retweeters) with
+  *sampling* (post-derived retweets) in one channel, giving it two sampling
+  probabilities where the null assumes one. Splitting them would make each
+  channel internally homogeneous and yield a genuinely independent third
+  channel for corroboration.

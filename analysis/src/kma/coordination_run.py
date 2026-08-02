@@ -77,7 +77,7 @@ def run(
     platform: str = "x",
     resolution: float = co.DEFAULT_RESOLUTION,
     min_size: int = 3,
-    method: str = "fdr",
+    method: str = co.DEFAULT_EDGE_METHOD,
 ) -> dict:
     """One coordination pass. Returns a summary dict; writes nothing unless
     `persist`. Channels default to the two that validate on live data."""
@@ -183,7 +183,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--platform", default="x")
     p.add_argument("--resolution", type=float, default=co.DEFAULT_RESOLUTION)
     p.add_argument("--min-size", type=int, default=3)
-    p.add_argument("--method", default="fdr", choices=["fdr", "bonferroni", "percentile"])
+    p.add_argument(
+        "--method",
+        default=co.DEFAULT_EDGE_METHOD,
+        choices=["bonferroni", "fdr", "percentile"],
+        help="edge filter feeding community detection (see co.DEFAULT_EDGE_METHOD)",
+    )
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
