@@ -1,6 +1,9 @@
 services:
   monitor:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-}
     env_file: ../.env
     command: ["run", "--limit", "20"]
     mem_limit: 1g
