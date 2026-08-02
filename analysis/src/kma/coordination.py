@@ -738,6 +738,8 @@ def validated_edges(
     n_iter: int = 500,
     trace_table: str | None = None,
     hub_cap: int | None = None,
+    *,
+    stats: dict | None = None,
 ) -> pd.DataFrame:
     """One channel end to end: projection + all three edge filters. Returns the
     tested edges with `p_value`, `sig_bonferroni`, `sig_fdr`, `sig_percentile`.
@@ -749,8 +751,21 @@ def validated_edges(
     signal - pairs sharing only a mega-viral tweet are organic - and one such
     hub otherwise dilutes the aggregate null rate until real clusters vanish
     (doc 02 scaling note). Excluded hubs are logged. Pass `delta` for the
-    Monte-Carlo time-shuffle null instead."""
+    Monte-Carlo time-shuffle null instead.
+
+    `stats`, when given, is filled in place with this channel's counters. Every
+    one of them is a by-product of the pass that already runs - nothing here
+    triggers a second scan of the traces. That is not an optimisation detail:
+    the alternative (a helper that recomputes them) re-runs `traces()` on the
+    host that already OOMs at `projected_edges`."""
     t = trace_table or _register_traces(con, channel, platform, model, tau)
+    n_accounts = con.sql(f"SELECT count(DISTINCT author_id) FROM {t}").fetchone()[0]
+    if stats is not None:
+        stats["channel"] = channel
+        stats["timed"] = delta is not None
+        stats["min_repetition"] = int(min_repetition)
+        stats["accounts_all"] = int(n_accounts)
+        stats["traces_all"] = int(con.sql(f"SELECT count(*) FROM {t}").fetchone()[0])
     if delta is not None:
         mc = lambda m: validate_montecarlo(  # noqa: E731
             con, channel, delta, n_iter=n_iter, alpha=alpha,
@@ -760,7 +775,6 @@ def validated_edges(
         out["sig_bonferroni"] = mc("bonferroni")["validated"]
     else:
         obj_deg = object_degrees(con, channel, platform, trace_table=t)
-        n_accounts = con.sql(f"SELECT count(DISTINCT author_id) FROM {t}").fetchone()[0]
         # The 5%-of-accounts term was meant to lift the cap on tiny corpora, but
         # it scales with the corpus and eventually stops filtering: at 64,002
         # amplifying accounts it gives 3,200, while the busiest object has 1,171
@@ -776,6 +790,11 @@ def validated_edges(
             else max(50, min(int(0.05 * n_accounts), HUB_CAP_MAX))
         )
         hubs = obj_deg[obj_deg > cap]
+        if stats is not None:
+            stats["hub_cap"] = int(cap)
+            stats["hub_objects"] = int(len(hubs))
+            stats["hub_max_degree"] = int(hubs.max()) if len(hubs) else 0
+            stats["objects_all"] = int(len(obj_deg))
         if len(hubs):
             import logging
 
@@ -798,6 +817,19 @@ def validated_edges(
             weighting="tfidf", trace_table=t,
         )
         degrees, m = activity(con, channel, platform, trace_table=t)
+        if stats is not None:
+            # `nohub_amp` counts accounts that survived the hub cap; `pairable`
+            # counts those that can actually appear in an edge. `projected_edges`
+            # requires `min_repetition` distinct shared objects, so an account
+            # holding a single non-hub trace is structurally incapable of being
+            # in any edge, no matter what else is collected. Measured 2026-08-01
+            # on the live corpus: 148,254 accounts collected, 25,083 survivors,
+            # 7,079 pairable - the survivor count overstates by 3.5x. Report
+            # `pairable`; `nohub_amp` is kept only to show the gap.
+            stats["objects_nohub"] = int(m)
+            stats["nohub_amp"] = int(len(degrees))
+            stats["pairable"] = int((degrees["n_objects"] >= min_repetition).sum())
+            stats["traces_nohub"] = int(con.sql(f"SELECT count(*) FROM {t}").fetchone()[0])
         out = validate_svn(
             edges, degrees, m, "fdr_bh", alpha, object_degrees=obj_deg
         ).rename(columns={"validated": "sig_fdr"})
@@ -808,6 +840,15 @@ def validated_edges(
     pct = percentile_filter(out, q)
     keys = set(zip(pct["src"], pct["dst"])) if not pct.empty else set()
     out["sig_percentile"] = [k in keys for k in zip(out["src"], out["dst"])]
+    if stats is not None:
+        stats["edges_tested"] = int(len(out))
+        for name in ("fdr", "bonferroni", "percentile"):
+            stats[f"edges_{name}"] = int(out[f"sig_{name}"].sum()) if len(out) else 0
+        stats["accounts_tested"] = (
+            len(set(out["src"]) | set(out["dst"])) if len(out) else 0
+        )
+        sig = out[out["sig_fdr"]] if len(out) else out
+        stats["accounts_fdr"] = len(set(sig["src"]) | set(sig["dst"])) if len(sig) else 0
     return out
 
 
@@ -837,16 +878,30 @@ def build_layers(
     platform: str = "x",
     method: str = "fdr",
     deltas: dict[str, int] | None = None,
+    *,
+    stats: dict[str, dict] | None = None,
     **params,
 ) -> dict[str, pd.DataFrame]:
     """dict channel -> validated edge list (one multiplex layer per channel).
     `method` picks the edge filter ("fdr", "bonferroni", "percentile");
-    `deltas` maps a channel to a co-action window for the timed variant."""
+    `deltas` maps a channel to a co-action window for the timed variant.
+
+    `stats`, when given, is filled with channel -> counters. It is an explicit
+    parameter rather than part of `**params` on purpose: forwarded through
+    `params` one dict would be shared by every channel and each would overwrite
+    the last."""
     merged_deltas = {**DEFAULT_DELTAS, **(deltas or {})}
     layers = {}
     for ch in channels:
-        e = validated_edges(con, ch, platform, delta=merged_deltas.get(ch), **params)
+        ch_stats: dict | None = {} if stats is not None else None
+        e = validated_edges(
+            con, ch, platform, delta=merged_deltas.get(ch), stats=ch_stats, **params
+        )
         layers[ch] = e[e[f"sig_{method}"]].reset_index(drop=True)
+        if ch_stats is not None:
+            ch_stats["method"] = method
+            ch_stats["edges_kept"] = int(len(layers[ch]))
+            stats[ch] = ch_stats
     return layers
 
 
@@ -1459,6 +1514,85 @@ def persist_clusters(
     key = (
         f"coordination/platform={platform}/kind=clusters"
         f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
+    )
+    con.register("_coord_buf", buf)
+    try:
+        con.execute(
+            f"COPY _coord_buf TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)"
+        )
+    finally:
+        con.unregister("_coord_buf")
+    return key
+
+
+# One row per (run, channel): run-level columns repeat on every row, the shape
+# `persist_clusters` already uses for cluster stats.
+COORD_METRIC_COLUMNS: list[str] = [
+    "run_id", "computed_at", "platform", "code_version",
+    "channels", "method", "resolution", "min_size",
+    "lookback_days", "hub_cap_max",
+    "n_clusters", "n_accounts", "n_corroborated_clusters", "n_corroborated_accounts",
+    "channel", "timed", "min_repetition",
+    "hub_cap", "hub_objects", "hub_max_degree",
+    "objects_all", "objects_nohub", "traces_all", "traces_nohub",
+    "accounts_all", "nohub_amp", "pairable",
+    "edges_tested", "edges_fdr", "edges_bonferroni", "edges_percentile",
+    "edges_kept", "accounts_tested", "accounts_fdr",
+]
+
+# Timed channels leave the hub fields NULL. Without an explicit nullable dtype
+# pandas promotes those columns to float64, so successive runs write int64 and
+# double under one glob and `union_by_name` reads become a dtype error later,
+# far from the cause.
+_COORD_METRIC_INTS: tuple[str, ...] = (
+    "min_size", "lookback_days", "hub_cap_max",
+    "n_clusters", "n_accounts", "n_corroborated_clusters", "n_corroborated_accounts",
+    "min_repetition", "hub_cap", "hub_objects", "hub_max_degree",
+    "objects_all", "objects_nohub", "traces_all", "traces_nohub",
+    "accounts_all", "nohub_amp", "pairable",
+    "edges_tested", "edges_fdr", "edges_bonferroni", "edges_percentile",
+    "edges_kept", "accounts_tested", "accounts_fdr",
+)
+
+
+def persist_run_metrics(
+    con: duckdb.DuckDBPyConnection,
+    channel_stats: dict[str, dict],
+    run_stats: dict,
+    platform: str = "x",
+) -> str:
+    """Write one coordination pass's counters as a Parquet run under the
+    coordination/ prefix (`kind=run_metrics`).
+
+    This prefix exists because every number in docs/analysis/census-tuning.md
+    was hand-computed prose, and the one that turned out to be wrong (Q2's
+    "34.2% of censused objects above the hub cap") was wrong precisely because
+    nothing recorded WHEN each measurement was taken: the window straddled the
+    banding commit, so it averaged the old behaviour with the new. A persisted
+    series is self-dating, and `code_version` makes "before or after commit X"
+    answerable without archaeology."""
+    now = datetime.now(timezone.utc)
+    run_id = f"{now:%Y%m%dT%H%M%SZ}"
+    base = {
+        "run_id": run_id,
+        "computed_at": now,
+        "platform": platform,
+        "code_version": os.getenv("GIT_SHA", ""),
+        "lookback_days": COORD_LOOKBACK_DAYS,
+        "hub_cap_max": HUB_CAP_MAX,
+        **run_stats,
+    }
+    rows = [{**base, **cs} for cs in channel_stats.values()] or [base]
+    buf = pd.DataFrame(rows).reindex(columns=COORD_METRIC_COLUMNS)
+    for col in _COORD_METRIC_INTS:
+        buf[col] = buf[col].astype("Int64")
+    if buf["channels"].notna().any():
+        buf["channels"] = buf["channels"].apply(
+            lambda v: ",".join(v) if isinstance(v, (list, tuple)) else v
+        )
+    key = (
+        f"coordination/platform={platform}/kind=run_metrics"
+        f"/dt={now:%Y-%m-%d}/run={run_id}.parquet"
     )
     con.register("_coord_buf", buf)
     try:

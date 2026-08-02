@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import pytest
 import time
@@ -276,7 +277,12 @@ class _FakeStorage:
     def __init__(self):
         self.engagement_writes: list[int] = []
         self.post_writes: list[tuple[str, int]] = []
+        self.census_runs: list[dict] = []
         self.con = None
+
+    def write_census_run(self, stats, platform="x", now=None):
+        self.census_runs.append(dict(stats))
+        return f"census_runs/run={len(self.census_runs)}.parquet"
 
     def write_engagements(self, rows, now=None):
         if not rows:
@@ -438,3 +444,219 @@ def test_censused_objects_return_once_the_ttl_lapses():
     con.register("eng_tbl", eng)
     assert hot_objects(con, view, lookback_days=2, engagements_view="eng_tbl", refresh_hours=12)[0] == ["OLD"]
     assert hot_objects(con, view, lookback_days=2, engagements_view="eng_tbl", refresh_hours=48)[0] == []
+
+
+# --- census pass telemetry (census-tuning measurement layer) ----------------
+
+
+def _eng_table(pairs):
+    """(object_id, collected_at) -> a one-row-per-pair engagements table."""
+    return pa.table({
+        "platform": pa.array(["x"] * len(pairs), type=pa.string()),
+        "platform_post_id": pa.array([o for o, _ in pairs], type=pa.string()),
+        "platform_user_id": pa.array([f"u{i}" for i in range(len(pairs))], type=pa.string()),
+        "kind": pa.array(["retweet"] * len(pairs), type=pa.string()),
+        "collected_at": pa.array([t for _, t in pairs], type=pa.timestamp("us", tz="UTC")),
+    })
+
+
+def test_backlog_count_is_not_capped_by_the_selection_limit():
+    """`candidates_uncensused` is the Q3 saturation series. Capping it at the
+    per-pass budget would make a full backlog indistinguishable from a drained
+    one, which is the exact thing being watched for."""
+    rows = [
+        {"platform_post_id": f"r{i}", "author_id": f"a{i}",
+         "repost_of_id": f"O{i}", "repost_count": 10 + i}
+        for i in range(5)
+    ]
+    con, view = _con_with_posts(rows)
+    stats: dict = {}
+
+    got, _, _ = hot_objects(con, view, lookback_days=2, top_retweeted=1, stats=stats)
+
+    assert len(got) == 1                       # budget honoured
+    assert stats["candidates_in_band"] == 5    # supply is not truncated by it
+    assert stats["candidates_uncensused"] == 5
+    assert stats["selected_retweeted"] == 1
+
+
+def test_backlog_separates_the_whole_band_from_the_unworked_part():
+    rows = [
+        {"platform_post_id": "r1", "author_id": "a", "repost_of_id": "DONE", "repost_count": 99},
+        {"platform_post_id": "r2", "author_id": "b", "repost_of_id": "F1", "repost_count": 50},
+        {"platform_post_id": "r3", "author_id": "c", "repost_of_id": "F2", "repost_count": 40},
+    ]
+    con, view = _con_with_posts(rows)
+    con.register("eng_tbl", _eng_table([("DONE", NOW)]))
+    stats: dict = {}
+
+    got, _, _ = hot_objects(
+        con, view, lookback_days=2, engagements_view="eng_tbl",
+        refresh_hours=12, stats=stats,
+    )
+
+    assert got == ["F1", "F2"]
+    assert stats["candidates_in_band"] == 3
+    assert stats["candidates_uncensused"] == 2
+
+
+def test_backlog_is_reported_when_the_whole_band_is_already_censused():
+    """The saturated state. An empty selection must not report an empty band -
+    that would read as "no supply" when the truth is "all of it is done"."""
+    rows = [
+        {"platform_post_id": "r1", "author_id": "a", "repost_of_id": "D1", "repost_count": 99},
+        {"platform_post_id": "r2", "author_id": "b", "repost_of_id": "D2", "repost_count": 50},
+    ]
+    con, view = _con_with_posts(rows)
+    con.register("eng_tbl", _eng_table([("D1", NOW), ("D2", NOW)]))
+    stats: dict = {}
+
+    got, _, _ = hot_objects(
+        con, view, lookback_days=2, engagements_view="eng_tbl",
+        refresh_hours=12, stats=stats,
+    )
+
+    assert got == []
+    assert stats["candidates_in_band"] == 2
+    assert stats["candidates_uncensused"] == 0
+
+
+def test_censused_filter_survives_a_null_object_id():
+    """`NOT IN` is NULL-annihilating: under three-valued logic one NULL
+    platform_post_id in engagements/ returns NULL for every candidate and the
+    selector yields nothing - a total stall that looks like a drained backlog."""
+    rows = [{"platform_post_id": "r1", "author_id": "a",
+             "repost_of_id": "X", "repost_count": 50}]
+    con, view = _con_with_posts(rows)
+    eng = pa.table({
+        "platform": pa.array(["x", "x"], type=pa.string()),
+        "platform_post_id": pa.array([None, "OTHER"], type=pa.string()),
+        "platform_user_id": pa.array(["u1", "u2"], type=pa.string()),
+        "kind": pa.array(["retweet", "retweet"], type=pa.string()),
+        "collected_at": pa.array([NOW, NOW], type=pa.timestamp("us", tz="UTC")),
+    })
+    con.register("eng_tbl", eng)
+
+    got, _, _ = hot_objects(
+        con, view, lookback_days=2, engagements_view="eng_tbl", refresh_hours=12
+    )
+
+    assert got == ["X"]
+
+
+def test_census_run_records_ttl_skips_and_degree_shape(tmp_path):
+    storage = _FakeStorage()
+    collector = _FakeCollector(per_object=4)
+    state = {"done1": NOW.isoformat(), "done2": NOW.isoformat()}
+    (tmp_path / "snowball.json").write_text(json.dumps(state))
+
+    asyncio.run(
+        collect_snowball(
+            collector, storage,
+            objects=(["done1", "done2", "fresh1", "fresh2", "fresh3"], [], []),
+            state_path=tmp_path / "snowball.json",
+            refresh_hours=12,
+        )
+    )
+
+    run = storage.census_runs[-1]
+    assert run["selected_retweeted"] == 5
+    assert run["due_retweeted"] == 3
+    assert run["skipped_ttl_retweeted"] == 2
+    assert run["fetched_retweeted"] == 3
+    assert run["degree_p50"] == 4
+    assert run["degree_max"] == 4
+    assert run["engagement_rows"] == 12
+
+
+def test_census_run_counts_objects_returned_above_the_band_max(tmp_path):
+    """The Q2 measurement, now standing. Objects above the band come back to an
+    analysis hub cap that discards them, so the requests buy nothing."""
+    storage = _FakeStorage()
+
+    class _Varying(_FakeCollector):
+        degrees = {"small": 5, "mid": 40, "hub": 150}
+
+        async def retweeters(self, post_id, limit):
+            for i in range(self.degrees[post_id]):
+                yield Engagement(
+                    platform="x", platform_post_id=post_id,
+                    platform_user_id=f"{post_id}_u{i}", kind="retweet",
+                )
+
+    asyncio.run(
+        collect_snowball(
+            _Varying(), storage,
+            objects=(["small", "mid", "hub"], [], []),
+            state_path=tmp_path / "snowball.json",
+            band_max=100,
+        )
+    )
+
+    run = storage.census_runs[-1]
+    assert run["n_over_band_max"] == 1
+    assert run["degree_p50"] == 40
+    assert run["degree_max"] == 150
+    assert run["band_max"] == 100
+
+
+def test_census_over_band_share_warns(tmp_path, caplog):
+    """Pre-banding 99.5% of censused objects were hubs; post-banding 6.4%. The
+    guard has to trip on a return to the old behaviour."""
+    storage = _FakeStorage()
+
+    class _AllHubs(_FakeCollector):
+        async def retweeters(self, post_id, limit):
+            for i in range(200):
+                yield Engagement(
+                    platform="x", platform_post_id=post_id,
+                    platform_user_id=f"{post_id}_u{i}", kind="retweet",
+                )
+
+    with caplog.at_level(logging.WARNING, logger="kenya_monitor"):
+        asyncio.run(
+            collect_snowball(
+                _AllHubs(), storage,
+                objects=(["a", "b"], [], []),
+                state_path=tmp_path / "snowball.json",
+                band_max=100,
+            )
+        )
+
+    assert any("above the band max" in r.message for r in caplog.records)
+
+
+def test_census_over_band_share_is_quiet_at_the_measured_healthy_rate(tmp_path):
+    storage = _FakeStorage()
+    collector = _FakeCollector(per_object=30)   # every object well inside the band
+
+    asyncio.run(
+        collect_snowball(
+            collector, storage,
+            objects=(["a", "b", "c"], [], []),
+            state_path=tmp_path / "snowball.json",
+            band_max=100,
+        )
+    )
+
+    assert storage.census_runs[-1]["n_over_band_max"] == 0
+
+
+def test_census_run_is_written_even_when_nothing_was_due(tmp_path):
+    """A pass with no work is the saturation observation, not an outage."""
+    storage = _FakeStorage()
+    state = {"done": NOW.isoformat()}
+    (tmp_path / "snowball.json").write_text(json.dumps(state))
+
+    asyncio.run(
+        collect_snowball(
+            _FakeCollector(), storage,
+            objects=(["done"], [], []),
+            state_path=tmp_path / "snowball.json",
+            refresh_hours=12,
+        )
+    )
+
+    assert len(storage.census_runs) == 1
+    assert storage.census_runs[0]["fetched_retweeted"] == 0
+    assert storage.census_runs[0]["skipped_ttl_retweeted"] == 1

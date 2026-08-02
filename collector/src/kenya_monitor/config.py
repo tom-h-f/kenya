@@ -63,6 +63,11 @@ SNOWBALL_FLUSH_EVERY = int(os.getenv("SNOWBALL_FLUSH_EVERY", "25"))
 SNOWBALL_BAND_MIN = int(os.getenv("SNOWBALL_BAND_MIN", "3"))
 SNOWBALL_BAND_MAX = int(os.getenv("HUB_CAP_MAX", "100"))
 
+# Warn when this share of fetched objects comes back above the band max. Those
+# objects are discarded by the analysis hub cap, so the requests spent on them
+# buy nothing. Pre-banding the rate was 99.5%; post-banding it measures 6.4%.
+CENSUS_OVER_BAND_WARN = float(os.getenv("CENSUS_OVER_BAND_WARN", "0.15"))
+
 DYNAMIC_MAX_KEYWORDS = int(os.getenv("DYNAMIC_MAX_KEYWORDS", "10"))
 DYNAMIC_MAX_ACCOUNTS = int(os.getenv("DYNAMIC_MAX_ACCOUNTS", "60"))
 DYNAMIC_EXPIRY_DAYS = int(os.getenv("DYNAMIC_EXPIRY_DAYS", "7"))

@@ -10,10 +10,19 @@ from kma import coordination_run as cr
 @pytest.fixture
 def stub(monkeypatch):
     """Stub the expensive pipeline so only the orchestration is under test."""
-    calls = {"persist_edges": [], "persist_clusters": 0, "build_layers": {}}
+    calls = {
+        "persist_edges": [],
+        "persist_clusters": 0,
+        "build_layers": {},
+        "persist_run_metrics": [],
+        "order": [],
+    }
 
-    def fake_build_layers(con, channels, platform="x", method="fdr", **kw):
+    def fake_build_layers(con, channels, platform="x", method="fdr", stats=None, **kw):
         calls["build_layers"] = {"channels": list(channels), "method": method}
+        if stats is not None:
+            for ch in channels:
+                stats[ch] = {"channel": ch, "pairable": 7, "nohub_amp": 25}
         edges = pd.DataFrame(
             {
                 "src": ["a", "b"],
@@ -35,12 +44,20 @@ def stub(monkeypatch):
 
     def fake_persist_edges(con, edges, channel, method, platform="x"):
         calls["persist_edges"].append((channel, method, len(edges)))
+        calls["order"].append("edges")
         return f"coordination/platform={platform}/kind=edges/channel={channel}/method={method}"
 
     def fake_persist_clusters(con, members, summary, platform="x"):
         calls["persist_clusters"] += 1
+        calls["order"].append("clusters")
         return f"coordination/platform={platform}/kind=clusters"
 
+    def fake_persist_run_metrics(con, channel_stats, run_stats, platform="x"):
+        calls["persist_run_metrics"].append((dict(channel_stats), dict(run_stats)))
+        calls["order"].append("metrics")
+        return f"coordination/platform={platform}/kind=run_metrics"
+
+    monkeypatch.setattr(co, "persist_run_metrics", fake_persist_run_metrics)
     monkeypatch.setattr(co, "build_layers", fake_build_layers)
     monkeypatch.setattr(co, "clusters", fake_clusters)
     monkeypatch.setattr(co, "persist_edges", fake_persist_edges)
@@ -169,3 +186,94 @@ def test_hub_cap_is_bounded_above():
     assert cap(1_600) == 80        # mid -> the percentage governs
     assert cap(64_002) == co.HUB_CAP_MAX   # large -> bounded, not 3200
     assert cap(1_000_000) == co.HUB_CAP_MAX
+
+
+def test_corroborated_clusters_count_n_channels_at_least_two(stub, monkeypatch):
+    """Corroboration is the outcome measure for the census work and was computed
+    nowhere: `adaptive` and `netviz` only read `n_channels` back out of persisted
+    parquet, so the "14 corroborated (60 accounts)" baseline in
+    docs/analysis/census-tuning.md was hand-derived and never reproducible."""
+    members = pd.DataFrame(
+        {"author_id": list("abcdefg"), "cluster_id": [0, 0, 0, 1, 1, 2, 2]}
+    )
+    summary = pd.DataFrame(
+        [
+            {"cluster_id": 0, "size": 3, "n_channels": 2},
+            {"cluster_id": 1, "size": 2, "n_channels": 1},
+            {"cluster_id": 2, "size": 2, "n_channels": 3},
+        ]
+    )
+    monkeypatch.setattr(co, "clusters", lambda *a, **k: (members, summary))
+
+    out = cr.run(None, channels=["co_retweet"], persist=False)
+
+    assert out["n_clusters"] == 3
+    assert out["n_corroborated_clusters"] == 2       # clusters 0 and 2
+    assert out["n_corroborated_accounts"] == 5       # a,b,c + f,g
+
+
+def test_single_channel_run_reports_no_corroboration(stub, monkeypatch):
+    """One channel cannot corroborate itself - the count must be 0, not the
+    cluster count."""
+    members = pd.DataFrame({"author_id": list("abc"), "cluster_id": [0, 0, 0]})
+    summary = pd.DataFrame([{"cluster_id": 0, "size": 3, "n_channels": 1}])
+    monkeypatch.setattr(co, "clusters", lambda *a, **k: (members, summary))
+
+    out = cr.run(None, channels=["co_retweet"], persist=False)
+
+    assert out["n_clusters"] == 1
+    assert out["n_corroborated_clusters"] == 0
+    assert out["n_corroborated_accounts"] == 0
+
+
+def test_metrics_are_written_even_when_no_clusters_were_found(stub, monkeypatch):
+    """A pass that detects nothing is exactly the data point Q1 needs. The old
+    control flow returned early at `members.empty` before any write."""
+    empty = pd.DataFrame(columns=["author_id", "cluster_id"])
+    monkeypatch.setattr(
+        co, "clusters", lambda *a, **k: (empty, pd.DataFrame(columns=["cluster_id"]))
+    )
+
+    out = cr.run(None, channels=["co_retweet"], persist=True)
+
+    assert len(stub["persist_run_metrics"]) == 1
+    assert out["metrics_key"] is not None
+    assert stub["persist_edges"] == []      # nothing else was written
+    assert stub["persist_clusters"] == 0
+
+
+def test_metrics_are_written_before_the_edge_and_cluster_artifacts(stub):
+    """Ordering is deliberate: a run whose edge write fails to R2 never reaches
+    the end, and that is a run whose counters you want."""
+    cr.run(None, channels=["co_retweet"], persist=True)
+
+    assert stub["order"][0] == "metrics"
+    assert "edges" in stub["order"] and "clusters" in stub["order"]
+
+
+def test_a_metrics_write_failure_does_not_fail_the_run(stub, monkeypatch):
+    """`enrich._coordination_pass` reschedules the whole 6-hourly pass on a
+    non-zero rc. A flaky ~4KB write must not cost a full re-projection."""
+    def boom(*a, **k):
+        raise RuntimeError("r2 unavailable")
+
+    monkeypatch.setattr(co, "persist_run_metrics", boom)
+
+    out = cr.run(None, channels=["co_retweet"], persist=True)
+
+    assert out["metrics_key"] is None
+    assert stub["persist_clusters"] == 1     # the real artifacts still landed
+
+
+def test_dry_run_writes_no_metrics(stub):
+    out = cr.run(None, channels=["co_retweet"], persist=False)
+
+    assert stub["persist_run_metrics"] == []
+    assert out["metrics_key"] is None
+
+
+def test_channel_stats_are_collected_per_channel(stub):
+    out = cr.run(None, channels=["co_retweet", "co_reply"], persist=False)
+
+    assert set(out["channel_stats"]) == {"co_retweet", "co_reply"}
+    assert out["channel_stats"]["co_retweet"]["pairable"] == 7

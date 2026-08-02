@@ -117,8 +117,27 @@ def _coordination_pass() -> bool:
     if proc.returncode != 0:
         log.error("coordination refresh failed (rc=%d): %s", proc.returncode, proc.stderr[-500:])
         return False
-    log.info("coordination refreshed and persisted")
+    log.info("coordination refreshed and persisted: %s", _coordination_headline(proc.stdout))
     return True
+
+
+def _coordination_headline(stdout: str) -> str:
+    """The run's outcome counters as one log line.
+
+    The metrics of record are in R2 (`coordination/kind=run_metrics`); this only
+    puts them in container logs too, so `docker compose logs` shows whether a
+    pass detected anything without a round trip to the bucket."""
+    import json
+
+    try:
+        out = json.loads(stdout)
+        return (
+            f"{out['n_clusters']} clusters ({out['n_accounts']} accounts), "
+            f"{out['n_corroborated_clusters']} corroborated "
+            f"({out['n_corroborated_accounts']} accounts)"
+        )
+    except Exception:
+        return "(no summary)"
 
 
 def run_loop(
