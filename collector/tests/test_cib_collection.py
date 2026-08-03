@@ -27,6 +27,7 @@ import pathlib
 import kenya_monitor.config
 from kenya_monitor.config import PlatformTargets, SNOWBALL_BAND_MAX
 from kenya_monitor.collectors.base import Engagement
+from kenya_monitor import runner
 from kenya_monitor.runner import _due, collect_snowball, hot_objects
 
 NOW = datetime.now(timezone.utc)
@@ -712,3 +713,97 @@ def test_hydration_skips_refs_whose_original_is_already_collected():
     _, _, missing = hot_objects(con, view, lookback_days=2, hydrate_limit=10)
 
     assert "HAVE" not in missing
+
+
+# --- census-discovered account timelines -------------------------------------
+
+
+def _con_for_census_accounts(engagement_uids, author_rows, post_author_ids):
+    con = duckdb.connect()
+    con.execute("CREATE TABLE eng (platform VARCHAR, platform_post_id VARCHAR,"
+                " platform_user_id VARCHAR, kind VARCHAR, collected_at TIMESTAMPTZ)")
+    for uid in engagement_uids:
+        con.execute("INSERT INTO eng VALUES ('x','o1',?,'retweet',now())", [uid])
+    con.execute("CREATE TABLE auth (platform VARCHAR, platform_user_id VARCHAR,"
+                " handle VARCHAR, collected_at TIMESTAMPTZ)")
+    for uid, handle in author_rows:
+        con.execute("INSERT INTO auth VALUES ('x',?,?,now())", [uid, handle])
+    con.execute("CREATE TABLE po (author_id VARCHAR)")
+    for aid in post_author_ids:
+        con.execute("INSERT INTO po VALUES (?)", [aid])
+    return con
+
+
+def test_census_timeline_candidates_are_accounts_with_no_posts():
+    """These accounts exist only as retweeter ids, so they carry co_retweet
+    traces and can never carry co_reply ones. That disjointness is why
+    corroboration reads 0."""
+    con = _con_for_census_accounts(
+        engagement_uids=["u1", "u2", "u3"],
+        author_rows=[("u1", "alice"), ("u2", "bob"), ("u3", "carol")],
+        post_author_ids=["u2"],          # bob already has posts
+    )
+
+    got = runner.census_discovered_handles(con, "eng", "auth", "po", limit=10)
+
+    assert set(got) == {"alice", "carol"}
+    assert "bob" not in got
+
+
+def test_census_timeline_selection_is_random_not_by_coordination():
+    """Load bearing. Selecting by cluster membership would give the suspected
+    accounts more posts, traces and edges, manufacturing the corroboration it
+    is meant to measure - and the cib_timeline quarantine does not help,
+    because coordination traces are built from all post types."""
+    import inspect
+
+    src = inspect.getsource(runner.census_discovered_handles)
+    # Everything after the docstring. Split on the docstring delimiters and drop
+    # the first two chunks (signature, docstring); the SQL below uses triple
+    # quotes of its own, so the remainder has to be rejoined.
+    body = '"""'.join(src.split('"""')[2:])
+
+    assert "ORDER BY random()" in body
+    for forbidden in ("suspicion", "n_channels", "clusters_view", "cluster_id"):
+        assert forbidden not in body, f"selection must not condition on {forbidden}"
+
+
+def test_census_timeline_state_stops_refetching_accounts_with_no_tweets():
+    """An account with no tweets never gains a post row, so it would otherwise
+    be re-picked forever."""
+    con = _con_for_census_accounts(
+        engagement_uids=["u1"], author_rows=[("u1", "alice")], post_author_ids=[]
+    )
+    state: dict[str, str] = {}
+
+    first = runner.census_discovered_handles(con, "eng", "auth", "po", limit=5, state=state)
+    second = runner.census_discovered_handles(con, "eng", "auth", "po", limit=5, state=state)
+
+    assert first == ["alice"]
+    assert second == [], "already attempted inside the retry window"
+    assert "u1" in state
+
+
+def test_census_timeline_retries_once_the_window_lapses():
+    con = _con_for_census_accounts(
+        engagement_uids=["u1"], author_rows=[("u1", "alice")], post_author_ids=[]
+    )
+    stale = (NOW - timedelta(days=60)).isoformat()
+
+    got = runner.census_discovered_handles(
+        con, "eng", "auth", "po", limit=5, state={"u1": stale}, retry_days=30
+    )
+
+    assert got == ["alice"]
+
+
+def test_census_timeline_skips_accounts_without_a_handle():
+    con = _con_for_census_accounts(
+        engagement_uids=["u1", "u2"],
+        author_rows=[("u1", None), ("u2", "bob")],
+        post_author_ids=[],
+    )
+
+    got = runner.census_discovered_handles(con, "eng", "auth", "po", limit=10)
+
+    assert got == ["bob"]

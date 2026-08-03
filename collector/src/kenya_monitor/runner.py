@@ -17,6 +17,8 @@ from kenya_monitor.collectors.base import Collector, Engagement, FollowEdge, Pos
 from kenya_monitor.collectors.x import Window, XCollector, build_api, sync_accounts
 from kenya_monitor.config import (
     CENSUS_OVER_BAND_WARN,
+    CENSUS_TIMELINE_ACCOUNTS,
+    CENSUS_TIMELINE_RETRY_DAYS,
     COLLECT_CONCURRENCY,
     SEARCH_INCLUDE_RETWEETS,
     SEARCH_PRODUCT,
@@ -465,6 +467,73 @@ def select_census_objects(
         stats["pass_kind"] = "merged"
         stats["selected_retweeted"] = len(retweeted) + len(extra)
     return retweeted + extra, conversations, missing
+
+
+def census_discovered_handles(
+    con: duckdb.DuckDBPyConnection,
+    engagements_view: str,
+    authors_view: str,
+    posts_view: str,
+    limit: int = CENSUS_TIMELINE_ACCOUNTS,
+    state: dict[str, str] | None = None,
+    retry_days: int = CENSUS_TIMELINE_RETRY_DAYS,
+) -> list[str]:
+    """Handles of accounts the census discovered but whose posts we never
+    collected, sampled at random.
+
+    These accounts exist only as retweeter ids, so they carry `co_retweet`
+    traces and can never carry `co_reply` ones - which is why corroboration
+    reads 0 and cannot currently be evaluated at all.
+
+    `ORDER BY random()` is load bearing. Selecting by cluster membership or
+    suspicion would condition collection on the outcome being measured: the
+    promoted accounts would gain posts, traces and edges, and look more
+    coordinated on the next run. Random selection is exogenous, so it closes
+    the population gap without manufacturing the answer.
+
+    The candidate set is self-draining - once an account has any post row it
+    stops qualifying. `state` covers the accounts that never will (no tweets,
+    suspended, protected), which would otherwise be re-picked forever."""
+    state = {} if state is None else state
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retry_days)
+    try:
+        rows = con.sql(
+            f"""
+            WITH censused AS (
+                SELECT DISTINCT platform_user_id AS uid
+                FROM {engagements_view} WHERE kind = 'retweet'
+            ), la AS (
+                SELECT * FROM {authors_view}
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform, platform_user_id ORDER BY collected_at DESC
+                ) = 1
+            )
+            SELECT la.platform_user_id, la.handle
+            FROM censused c
+            JOIN la ON la.platform_user_id = c.uid
+            WHERE la.handle IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM {posts_view} p WHERE p.author_id = c.uid
+              )
+            ORDER BY random()
+            LIMIT {int(limit) * 4}
+            """
+        ).fetchall()
+    except duckdb.Error:
+        log.exception("census timelines: candidate query failed")
+        return []
+    picked = []
+    for uid, handle in rows:
+        seen = state.get(uid)
+        if seen and datetime.fromisoformat(seen) >= cutoff:
+            continue
+        picked.append((uid, handle))
+        if len(picked) >= limit:
+            break
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for uid, _ in picked:
+        state[uid] = now_iso
+    return [h for _, h in picked]
 
 
 def _load_snowball_state(path: Path = SNOWBALL_STATE_PATH) -> dict[str, str]:

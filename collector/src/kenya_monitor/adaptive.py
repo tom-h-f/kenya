@@ -137,7 +137,19 @@ def cluster_accounts(
             """
         ).fetchall()
     except duckdb.Error:
+        log.warning("cluster targeting: clusters unreadable; promoting nobody")
         return []  # no clusters persisted yet, or an older schema without n_channels
+    if not rows:
+        # Distinguish "nothing cleared the bar" from the error path above. These
+        # look identical from the outside and mean opposite things: measured
+        # 2026-08-02, corroboration is structurally 0 because the co_retweet and
+        # co_reply channels observe disjoint account populations, so this floor
+        # promotes nobody and cluster targeting is inert until census-discovered
+        # accounts acquire posts (see `run_census_timelines_once`).
+        log.warning(
+            "cluster targeting: no cluster reached n_channels >= %d; promoting nobody",
+            int(min_channels),
+        )
     return [r[0] for r in rows]
 
 

@@ -52,6 +52,12 @@ TARGETED_TYPES = (
     "hate_replies",
     "hate_hydrated",
     "cib_timeline",
+    # Timelines of accounts discovered by the retweeter census, sampled at
+    # RANDOM rather than by cluster membership. Targeted, so it stays out of
+    # every prevalence rate: census-discovered accounts are retweeters of
+    # banded objects, not a sample of the population. It does feed coordination
+    # traces, which is the point - see `coordination.corroborate`.
+    "census_timeline",
 )
 KNOWN_TYPES = BASELINE_TYPES + TARGETED_TYPES
 SCOPES = ("all", "baseline", "targeted")

@@ -12,6 +12,9 @@ from kenya_monitor.accounts import active_count, metrics_cap, sync_accounts
 from kenya_monitor.collectors.x import MAX_AGE_DAYS, backfill_windows, build_api, recent_windows
 from kenya_monitor.config import (
     ACCOUNT_SYNC_HOURS,
+    CENSUS_TIMELINE_ACCOUNTS,
+    CENSUS_TIMELINE_LIMIT,
+    CENSUS_TIMELINE_STATE_PATH,
     CYCLE_COOLDOWN_MAX_S,
     CYCLE_COOLDOWN_MIN_S,
     FOLLOW_CRAWL_MAX_PER_RUN,
@@ -43,7 +46,10 @@ from kenya_monitor.config import (
     load_targets,
 )
 from kenya_monitor.runner import (
+    _load_snowball_state,
+    _save_snowball_state,
     build_x_collector,
+    census_discovered_handles,
     collect_backfill,
     collect_follows,
     collect_metrics,
@@ -300,6 +306,57 @@ async def run_hate_expand_once(
     return counts
 
 
+async def run_census_timelines_once(
+    accounts: int = CENSUS_TIMELINE_ACCOUNTS,
+    timeline_limit: int = CENSUS_TIMELINE_LIMIT,
+) -> dict[str, int]:
+    """Timelines for a RANDOM sample of census-discovered accounts.
+
+    The retweeter census finds accounts that exist only as retweeter ids. They
+    carry `co_retweet` traces and can never carry `co_reply` ones, so the two
+    coordination channels observe disjoint populations and corroboration cannot
+    be evaluated at all (0 of 49 co_reply accounts appeared in co_retweet on
+    2026-08-02). Collecting their posts is the only thing that closes that gap.
+
+    Written to `type=census_timeline`, a TARGETED type: these accounts are
+    retweeters of banded objects, not a sample of the population, so they must
+    stay out of every prevalence rate. They do enter coordination traces, which
+    is the entire point."""
+    storage = Storage(R2Config.from_env())
+    state = _load_snowball_state(CENSUS_TIMELINE_STATE_PATH)
+    handles = census_discovered_handles(
+        storage.con,
+        storage.engagements_view(platform="x"),
+        storage.authors_view(platform="x"),
+        storage.posts_view(platform="x"),
+        limit=accounts,
+        state=state,
+    )
+    if not handles:
+        log.info("census timelines: no candidates")
+        return {"census_timeline_accounts": 0}
+    # Mark before fetching, not after: an account with no tweets never gains a
+    # post row, so if a crash lost the state it would be re-picked forever.
+    _save_snowball_state(state, CENSUS_TIMELINE_STATE_PATH)
+
+    collector = await build_x_collector(load_accounts())
+    counts = await collect_x(
+        collector,
+        storage,
+        PlatformTargets(keywords=[], accounts=handles),
+        search_windows=[],
+        min_faves=0,
+        window_limit=0,
+        timeline_limit=timeline_limit,
+        keywords=False,
+        accounts=True,
+        timeline_type="census_timeline",
+    )
+    counts["census_timeline_accounts"] = len(handles)
+    log.info("census timelines: %d accounts -> %s", len(handles), counts)
+    return counts
+
+
 async def run_snowball_once(**overrides) -> dict[str, int]:
     """One snowball pass over hot objects (see runner.collect_snowball).
 
@@ -495,6 +552,7 @@ async def run_scheduler(limit: int) -> None:
             steps = [
                 ("posts", _posts),
                 ("snowball", run_snowball_once),
+                ("census_timelines", run_census_timelines_once),
                 ("metrics", run_metrics_once),
                 (
                     "follow_crawl",
