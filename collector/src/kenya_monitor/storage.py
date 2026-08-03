@@ -4,11 +4,19 @@ import os
 from collections.abc import Sequence
 from datetime import datetime, timezone
 
+import logging
+
 import duckdb
 import pyarrow as pa
 
 from kenya_monitor.collectors.base import Author, Engagement, FollowEdge, MetricSnapshot, Post
-from kenya_monitor.config import R2Config
+from kenya_monitor.config import (
+    COLLECTOR_MEMORY_LIMIT,
+    COLLECTOR_THREADS,
+    R2Config,
+)
+
+log = logging.getLogger("kenya_monitor")
 
 POST_SCHEMA = pa.schema(
     [
@@ -195,6 +203,7 @@ class Storage:
 
     def _init_r2(self) -> None:
         self.con.execute("INSTALL httpfs; LOAD httpfs;")
+        self._tune()
         self.con.execute(
             """
             CREATE OR REPLACE SECRET r2 (
@@ -206,6 +215,27 @@ class Storage:
             """,
             [self.cfg.access_key_id, self.cfg.secret_access_key, self.cfg.account_id],
         )
+
+    def _tune(self) -> None:
+        """Bound DuckDB so a big scan spills instead of getting OOM-killed.
+
+        DuckDB sizes its budget from the HOST, not the container cgroup, so on
+        pi0 it plans against ~4GB while `mem_limit: 1g` kills it well before
+        that. The census candidate query already reached 467MB of the 1GB
+        limit; without a bound, a growing corpus takes the collector down
+        rather than running slower.
+
+        Best effort: setting names drift between DuckDB versions, and a tuning
+        failure must not stop collection."""
+        for stmt in (
+            f"SET memory_limit='{COLLECTOR_MEMORY_LIMIT}'",
+            f"SET threads={int(COLLECTOR_THREADS)}",
+            "SET preserve_insertion_order=false",
+        ):
+            try:
+                self.con.execute(stmt)
+            except Exception:
+                log.warning("storage: could not apply %r", stmt)
 
     def _uri(self, key: str) -> str:
         return f"r2://{self.cfg.bucket}/{key}"

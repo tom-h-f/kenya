@@ -504,6 +504,10 @@ def census_discovered_handles(
     pool: list = state.get("pool") or []
 
     if _pool_is_stale(state, pool_hours):
+        # Announce before the query: it scans the parquet globs over the network
+        # and takes minutes, during which a silent container is indistinguishable
+        # from a hung one.
+        log.info("census timelines: refreshing candidate pool (%d)", pool_size)
         pool = _refresh_census_pool(
             con, engagements_view, authors_view, posts_view, size=pool_size
         )
