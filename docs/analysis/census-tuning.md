@@ -594,6 +594,42 @@ one thing it exists to produce. `timeline(include_replies=True)` switches to
 timelines would change what a timeline MEANS for every prevalence measurement
 built on that partition.
 
+Verified on the live passes, split on the deploy (container restarted 11:05:38
+with the fix, so the 11:01 run is the only one before it):
+
+| run | posts | reply rows | share |
+|---|---|---|---|
+| 11:01 (before) | 760 | 5 | 0.7% |
+| 12:24 | 888 | 74 | 8.3% |
+| 14:35 | 943 | 98 | 10.4% |
+| 16:13 | 778 | 70 | 9.0% |
+
+Across the three post-fix runs, 180 of 242 reply rows are authored by censused
+accounts, covering 29 of them. That is the mechanism doing its job.
+
+**A timeline fetch returns more than the requested account's posts.** Broken
+down over the post-fix runs:
+
+| kind | posts | distinct authors | of which censused |
+|---|---|---|---|
+| reposts | 1,861 | 60 | **60** |
+| replies | 242 | 82 | 29 |
+| originals | 506 | **395** | 72 |
+
+The reposts are clean - 60 authors, all censused, exactly the accounts sampled.
+The 395 authors on original posts are conversation context: parent and root
+tweets of threads the sampled accounts replied to, which the timeline response
+carries and the parser turns into rows.
+
+Left as is, deliberately. It costs no extra API calls, the rows land in a
+TARGETED partition so no prevalence rate sees them, and the accounts are
+whoever the sampled accounts happened to reply to - arbitrary, but not
+conditioned on any coordination outcome, so it creates no feedback loop.
+Filtering to the requested handle would discard real data for no measured
+benefit. It does mean the population is "sampled accounts plus their
+conversational neighbours", which is worth knowing before anyone treats
+`census_timeline` as a clean random sample.
+
 Cost and pace: 20 accounts per cycle against ~168,000 census-discovered
 accounts. This is deliberately slow. It is not trying to collect them all, only
 to build a population where the two channels can be compared at all.
