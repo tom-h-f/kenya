@@ -93,6 +93,11 @@ CENSUS_TIMELINE_LIMIT = int(os.getenv("CENSUS_TIMELINE_LIMIT", "30"))  # posts p
 # Accounts with no tweets never gain a post row, so without this they would be
 # re-picked forever.
 CENSUS_TIMELINE_RETRY_DAYS = int(os.getenv("CENSUS_TIMELINE_RETRY_DAYS", "30"))
+# The candidate query scans the engagements and authors globs over the network:
+# 215s at 800MB/2 threads, and slower on pi0. Far too slow per cycle to pick 20
+# handles, so a pool is drawn occasionally and spent across many cycles.
+CENSUS_TIMELINE_POOL_SIZE = int(os.getenv("CENSUS_TIMELINE_POOL_SIZE", "500"))
+CENSUS_TIMELINE_POOL_HOURS = int(os.getenv("CENSUS_TIMELINE_POOL_HOURS", "12"))
 
 DYNAMIC_MAX_KEYWORDS = int(os.getenv("DYNAMIC_MAX_KEYWORDS", "10"))
 DYNAMIC_MAX_ACCOUNTS = int(os.getenv("DYNAMIC_MAX_ACCOUNTS", "60"))
