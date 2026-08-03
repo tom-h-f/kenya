@@ -218,6 +218,23 @@ HUB_CAP_MAX = int(os.getenv("HUB_CAP_MAX", "100"))
 # on it.
 DEFAULT_EDGE_METHOD = os.getenv("COORD_EDGE_METHOD", "bonferroni")
 
+# How layer weights are scaled before they are summed into the multiplex.
+#
+# Stays "max". "mass" (equal total influence per layer) was tried on live data
+# 2026-08-02 to stop co_retweet drowning co_reply, and it is WRONG twice over:
+#
+#   1. It breaks clustering outright. CPM compares internal weight against an
+#      absolute `resolution_parameter`, so dividing 1,548 edges by their total
+#      puts every weight near 0.0006, no community clears 0.05, and the run
+#      produced 0 clusters against 95 under "max".
+#   2. Even rescaled it could not help. Reweighting cannot manufacture
+#      connectivity, and the two layers turned out to share NO accounts at all
+#      - 0 of 49 co_reply accounts appear anywhere in the co_retweet layer.
+#
+# Layer imbalance was never the binding constraint on corroboration; disjoint
+# account populations are. See `corroborate`.
+DEFAULT_LAYER_NORM = os.getenv("COORD_LAYER_NORM", "max")
+
 
 def _latest_posts_cte(platform: str, lookback_days: int | None = None) -> str:
     days = COORD_LOOKBACK_DAYS if lookback_days is None else lookback_days
@@ -1014,15 +1031,38 @@ def resolution_sweep(
     return pd.DataFrame(rows)
 
 
-def aggregate_layers(layers: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Sum max-normalised layer weights into one multiplex graph, tracking the
-    per-edge supporting channels."""
+def aggregate_layers(
+    layers: dict[str, pd.DataFrame], normalise: str | None = None
+) -> pd.DataFrame:
+    """Sum normalised layer weights into one multiplex graph, tracking the
+    per-edge supporting channels.
+
+    `normalise="mass"` (default) scales each layer to unit total weight, so a
+    layer influences the partition by its *evidence*, not by how many edges it
+    happens to contain. `"max"` is the original per-edge scaling, kept for
+    comparison.
+
+    Why this matters: "max" divides by the layer's largest weight, which bounds
+    each edge at 1 but leaves total influence proportional to edge COUNT.
+    Measured 2026-08-02, co_retweet carried 140,518 edges against co_reply's
+    1,210 - and after the switch to Bonferroni, 5,698 against 28. At 203:1 the
+    smaller layer cannot affect a single community boundary, so Leiden was
+    partitioning one channel and the multiplex was decorative.
+
+    Resolved at call time, not bind time, so the env var and tests both work."""
+    normalise = normalise or DEFAULT_LAYER_NORM
     frames = []
     for ch, e in layers.items():
         if e.empty:
             continue
         f = e[["src", "dst", "weight", "min_gap"]].copy()
-        f["weight"] = f["weight"] / f["weight"].max()
+        if normalise == "mass":
+            total = f["weight"].sum()
+            f["weight"] = f["weight"] / total if total else 0.0
+        elif normalise == "max":
+            f["weight"] = f["weight"] / f["weight"].max()
+        else:
+            raise ValueError(f"unknown normalise {normalise!r}")
         f["channel"] = ch
         frames.append(f)
     if not frames:
@@ -1039,7 +1079,20 @@ def aggregate_layers(layers: dict[str, pd.DataFrame]) -> pd.DataFrame:
 
 def corroborate(layers: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Per account pair: which validated layers support it. n_channels >= 2 is
-    the strongest evidence available short of ground truth."""
+    the strongest evidence available short of ground truth.
+
+    Currently returns nothing on live data, and the reason is structural rather
+    than statistical. Measured 2026-08-02: of the 49 accounts in the validated
+    co_reply layer, **0** appear anywhere in the co_retweet layer. The two
+    channels observe disjoint populations - co_retweet is dominated by accounts
+    discovered through the retweeter census, which exist only as engagement
+    rows and have no posts, while a co_reply trace requires a collected post
+    carrying `in_reply_to_id`.
+
+    So no edge filter, weighting or resolution change can produce corroboration
+    here; all three were tried. It needs the populations to overlap, which means
+    collecting posts for census-discovered accounts. Treat a zero here as
+    "cannot be evaluated", not as "nothing is coordinated"."""
     agg = aggregate_layers(layers)
     return agg[["src", "dst", "channels", "n_channels", "min_gap"]]
 

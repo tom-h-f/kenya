@@ -676,3 +676,27 @@ def test_engagement_semi_join_is_null_safe(monkeypatch):
     tr = co.traces(con, "co_retweet").df()
 
     assert set(tr["action_object"]) == {"KNOWN"}
+
+
+def test_layer_normalisation_stays_max(monkeypatch):
+    """"mass" was measured on live data and is wrong twice: CPM's resolution is
+    an absolute threshold, so equalising layer mass drove every weight to ~0.0006
+    and produced 0 clusters against 95; and the two layers share no accounts at
+    all, so reweighting could not have helped regardless."""
+    assert co.DEFAULT_LAYER_NORM == "max"
+
+
+def test_mass_normalisation_shrinks_weights_below_the_cpm_resolution():
+    """The mechanism behind that result, made explicit: equal-mass scaling makes
+    per-edge weight fall with layer size, and CPM compares it to a fixed
+    resolution."""
+    big = pd.DataFrame({"src": [f"a{i}" for i in range(100)],
+                        "dst": [f"b{i}" for i in range(100)]})
+    big["weight"] = 1.0
+    big["min_gap"] = 0
+
+    by_mass = co.aggregate_layers({"co_retweet": big}, normalise="mass")
+    by_max = co.aggregate_layers({"co_retweet": big}, normalise="max")
+
+    assert by_mass["weight"].max() < co.DEFAULT_RESOLUTION
+    assert by_max["weight"].max() == 1.0
