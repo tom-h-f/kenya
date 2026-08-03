@@ -561,6 +561,17 @@ behaviour by two routes rather than two behaviours.
 for a **random sample** of census-discovered accounts - 20 per cycle, 30 posts
 each - writing to a new `posts/type=census_timeline` partition.
 
+The candidate draw is **pooled, not per-cycle**. Measured against live R2 at
+800MB/2 threads, the candidate query costs 464s with a posts anti-join and 215s
+without, and the cost is dominated by scanning the parquet globs over the
+network rather than by how many rows come back. Running that every cycle on a
+Raspberry Pi to pick 20 handles is indefensible, so a pool of 500 is drawn every
+12h and spent across cycles. The posts anti-join was dropped outright: it exists
+to skip accounts that already have posts, and 179,106 of ~180,000 censused
+accounts have none, so it doubled the cost to exclude about 1%. An `attempted`
+map handles repeats, which is what actually matters - accounts with no tweets
+never gain a post row and would otherwise be redrawn forever.
+
 Random is the whole design. The obvious alternative, promoting accounts that
 appear in coordination clusters, is what `adaptive.cluster_accounts` already
 does, and it cannot be used here: it would give exactly the suspected accounts

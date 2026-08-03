@@ -18,6 +18,8 @@ from kenya_monitor.collectors.x import Window, XCollector, build_api, sync_accou
 from kenya_monitor.config import (
     CENSUS_OVER_BAND_WARN,
     CENSUS_TIMELINE_ACCOUNTS,
+    CENSUS_TIMELINE_POOL_HOURS,
+    CENSUS_TIMELINE_POOL_SIZE,
     CENSUS_TIMELINE_RETRY_DAYS,
     COLLECT_CONCURRENCY,
     SEARCH_INCLUDE_RETWEETS,
@@ -475,8 +477,10 @@ def census_discovered_handles(
     authors_view: str,
     posts_view: str,
     limit: int = CENSUS_TIMELINE_ACCOUNTS,
-    state: dict[str, str] | None = None,
+    state: dict | None = None,
     retry_days: int = CENSUS_TIMELINE_RETRY_DAYS,
+    pool_size: int = CENSUS_TIMELINE_POOL_SIZE,
+    pool_hours: int = CENSUS_TIMELINE_POOL_HOURS,
 ) -> list[str]:
     """Handles of accounts the census discovered but whose posts we never
     collected, sampled at random.
@@ -496,44 +500,98 @@ def census_discovered_handles(
     suspended, protected), which would otherwise be re-picked forever."""
     state = {} if state is None else state
     cutoff = datetime.now(timezone.utc) - timedelta(days=retry_days)
-    try:
-        rows = con.sql(
-            f"""
-            WITH censused AS (
-                SELECT DISTINCT platform_user_id AS uid
-                FROM {engagements_view} WHERE kind = 'retweet'
-            ), la AS (
-                SELECT * FROM {authors_view}
-                QUALIFY row_number() OVER (
-                    PARTITION BY platform, platform_user_id ORDER BY collected_at DESC
-                ) = 1
-            )
-            SELECT la.platform_user_id, la.handle
-            FROM censused c
-            JOIN la ON la.platform_user_id = c.uid
-            WHERE la.handle IS NOT NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM {posts_view} p WHERE p.author_id = c.uid
-              )
-            ORDER BY random()
-            LIMIT {int(limit) * 4}
-            """
-        ).fetchall()
-    except duckdb.Error:
-        log.exception("census timelines: candidate query failed")
-        return []
-    picked = []
-    for uid, handle in rows:
-        seen = state.get(uid)
+    attempted: dict = state.setdefault("attempted", {})
+    pool: list = state.get("pool") or []
+
+    if _pool_is_stale(state, pool_hours):
+        pool = _refresh_census_pool(
+            con, engagements_view, authors_view, posts_view, size=pool_size
+        )
+        if pool:
+            state["pool"] = pool
+            state["pool_refreshed_at"] = datetime.now(timezone.utc).isoformat()
+
+    picked: list[tuple[str, str]] = []
+    remaining: list = []
+    for uid, handle in pool:
+        seen = attempted.get(uid)
         if seen and datetime.fromisoformat(seen) >= cutoff:
             continue
-        picked.append((uid, handle))
-        if len(picked) >= limit:
-            break
+        if len(picked) < limit:
+            picked.append((uid, handle))
+        else:
+            remaining.append([uid, handle])
+    state["pool"] = remaining
+
     now_iso = datetime.now(timezone.utc).isoformat()
     for uid, _ in picked:
-        state[uid] = now_iso
+        attempted[uid] = now_iso
+    # Attempted entries older than the retry window are dead weight.
+    state["attempted"] = {
+        u: t for u, t in attempted.items() if datetime.fromisoformat(t) >= cutoff
+    }
     return [h for _, h in picked]
+
+
+def _pool_is_stale(state: dict, pool_hours: int) -> bool:
+    if not state.get("pool"):
+        return True
+    ts = state.get("pool_refreshed_at")
+    if not ts:
+        return True
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(ts)
+    return age >= timedelta(hours=pool_hours)
+
+
+def _refresh_census_pool(
+    con: duckdb.DuckDBPyConnection,
+    engagements_view: str,
+    authors_view: str,
+    posts_view: str,
+    size: int,
+) -> list[list[str]]:
+    """Draw a batch of candidate (user_id, handle) pairs. Expensive; cached.
+
+    Measured against live R2 at 800MB/2 threads: 464s with the posts anti-join,
+    215s without. Both are far too slow to run once per cycle on a Raspberry Pi,
+    and neither cost depends much on how many rows come back - it is dominated
+    by scanning the parquet globs over the network. So it is paid rarely and
+    amortised over many cycles.
+
+    The posts anti-join is dropped deliberately. It exists to skip accounts that
+    already have posts, but 179,106 of ~180,000 censused accounts have none, so
+    it removes almost nothing for half the runtime. The `attempted` map prevents
+    repeats, which is what actually matters."""
+    try:
+        return [
+            [r[0], r[1]]
+            for r in con.sql(
+                f"""
+                WITH censused AS (
+                    SELECT DISTINCT platform_user_id AS uid
+                    FROM {engagements_view} WHERE kind = 'retweet'
+                ), sampled AS (
+                    SELECT uid FROM censused ORDER BY random() LIMIT {int(size) * 2}
+                ), la AS (
+                    SELECT * FROM {authors_view}
+                    WHERE platform_user_id IN (SELECT uid FROM sampled)
+                    QUALIFY row_number() OVER (
+                        PARTITION BY platform, platform_user_id
+                        ORDER BY collected_at DESC
+                    ) = 1
+                )
+                SELECT la.platform_user_id, la.handle
+                FROM sampled s
+                JOIN la ON la.platform_user_id = s.uid
+                WHERE la.handle IS NOT NULL
+                ORDER BY random()
+                LIMIT {int(size)}
+                """
+            ).fetchall()
+        ]
+    except duckdb.Error:
+        log.exception("census timelines: pool refresh failed")
+        return []
 
 
 def _load_snowball_state(path: Path = SNOWBALL_STATE_PATH) -> dict[str, str]:

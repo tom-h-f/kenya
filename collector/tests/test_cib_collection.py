@@ -734,34 +734,31 @@ def _con_for_census_accounts(engagement_uids, author_rows, post_author_ids):
     return con
 
 
-def test_census_timeline_candidates_are_accounts_with_no_posts():
-    """These accounts exist only as retweeter ids, so they carry co_retweet
-    traces and can never carry co_reply ones. That disjointness is why
-    corroboration reads 0."""
+def test_census_timeline_candidates_come_from_the_census():
+    """Candidates are accounts seen retweeting. The posts anti-join was dropped
+    on purpose: it doubled the query cost (464s vs 215s at 800MB/2 threads) to
+    exclude ~1,000 of ~180,000 accounts, since 179,106 censused accounts have no
+    posts at all. The attempted map is what actually prevents repeats."""
     con = _con_for_census_accounts(
-        engagement_uids=["u1", "u2", "u3"],
-        author_rows=[("u1", "alice"), ("u2", "bob"), ("u3", "carol")],
-        post_author_ids=["u2"],          # bob already has posts
+        engagement_uids=["u1", "u2"],
+        author_rows=[("u1", "alice"), ("u2", "bob")],
+        post_author_ids=["u2"],
     )
 
     got = runner.census_discovered_handles(con, "eng", "auth", "po", limit=10)
 
-    assert set(got) == {"alice", "carol"}
-    assert "bob" not in got
+    assert set(got) == {"alice", "bob"}
 
 
 def test_census_timeline_selection_is_random_not_by_coordination():
     """Load bearing. Selecting by cluster membership would give the suspected
-    accounts more posts, traces and edges, manufacturing the corroboration it
-    is meant to measure - and the cib_timeline quarantine does not help,
-    because coordination traces are built from all post types."""
+    accounts more posts, traces and edges, manufacturing the corroboration it is
+    meant to measure - and the cib_timeline quarantine does not help, because
+    coordination traces are built from all post types."""
     import inspect
 
-    src = inspect.getsource(runner.census_discovered_handles)
-    # Everything after the docstring. Split on the docstring delimiters and drop
-    # the first two chunks (signature, docstring); the SQL below uses triple
-    # quotes of its own, so the remainder has to be rejoined.
-    body = '"""'.join(src.split('"""')[2:])
+    src = inspect.getsource(runner._refresh_census_pool)
+    body = '"""'.join(src.split('"""')[2:])  # the SQL uses triple quotes too
 
     assert "ORDER BY random()" in body
     for forbidden in ("suspicion", "n_channels", "clusters_view", "cluster_id"):
@@ -774,27 +771,63 @@ def test_census_timeline_state_stops_refetching_accounts_with_no_tweets():
     con = _con_for_census_accounts(
         engagement_uids=["u1"], author_rows=[("u1", "alice")], post_author_ids=[]
     )
-    state: dict[str, str] = {}
+    state: dict = {}
 
     first = runner.census_discovered_handles(con, "eng", "auth", "po", limit=5, state=state)
     second = runner.census_discovered_handles(con, "eng", "auth", "po", limit=5, state=state)
 
     assert first == ["alice"]
     assert second == [], "already attempted inside the retry window"
-    assert "u1" in state
+    assert "u1" in state["attempted"]
 
 
-def test_census_timeline_retries_once_the_window_lapses():
+def test_census_timeline_pool_is_cached_between_cycles():
+    """The candidate query scans the parquet globs over the network - 215s at
+    800MB/2 threads - so it must not run once per cycle to pick 20 handles."""
+    con = _con_for_census_accounts(
+        engagement_uids=[f"u{i}" for i in range(10)],
+        author_rows=[(f"u{i}", f"h{i}") for i in range(10)],
+        post_author_ids=[],
+    )
+    state: dict = {}
+    calls = {"n": 0}
+    real = runner._refresh_census_pool
+
+    def counting(*a, **kw):
+        calls["n"] += 1
+        return real(*a, **kw)
+
+    runner._refresh_census_pool = counting
+    try:
+        first = runner.census_discovered_handles(
+            con, "eng", "auth", "po", limit=3, state=state, pool_size=10
+        )
+        second = runner.census_discovered_handles(
+            con, "eng", "auth", "po", limit=3, state=state, pool_size=10
+        )
+    finally:
+        runner._refresh_census_pool = real
+
+    assert len(first) == 3 and len(second) == 3
+    assert not set(first) & set(second), "must not hand back the same accounts"
+    assert calls["n"] == 1, "pool refreshed once, spent across cycles"
+
+
+def test_census_timeline_pool_refreshes_once_stale():
     con = _con_for_census_accounts(
         engagement_uids=["u1"], author_rows=[("u1", "alice")], post_author_ids=[]
     )
-    stale = (NOW - timedelta(days=60)).isoformat()
+    state = {
+        "pool": [["u9", "stale_handle"]],
+        "pool_refreshed_at": (NOW - timedelta(hours=48)).isoformat(),
+        "attempted": {},
+    }
 
     got = runner.census_discovered_handles(
-        con, "eng", "auth", "po", limit=5, state={"u1": stale}, retry_days=30
+        con, "eng", "auth", "po", limit=5, state=state, pool_hours=12
     )
 
-    assert got == ["alice"]
+    assert got == ["alice"], "stale pool discarded and redrawn"
 
 
 def test_census_timeline_skips_accounts_without_a_handle():
