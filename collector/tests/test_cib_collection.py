@@ -840,3 +840,27 @@ def test_census_timeline_skips_accounts_without_a_handle():
     got = runner.census_discovered_handles(con, "eng", "auth", "po", limit=10)
 
     assert got == ["bob"]
+
+
+def test_census_timelines_request_replies():
+    """`user_tweets` omits replies entirely. Measured on the first live pass:
+    760 posts from 20 accounts carried 5 rows with in_reply_to_id, so the pass
+    produced almost no co_reply traces - the one thing it exists to produce."""
+    import inspect
+
+    from kenya_monitor import scheduler
+
+    src = inspect.getsource(scheduler.run_census_timelines_once)
+    assert "include_replies=True" in src
+
+
+def test_baseline_timelines_do_not_request_replies():
+    """Changing what a baseline timeline contains would move every prevalence
+    measurement built on the `timeline` partition."""
+    import inspect
+
+    from kenya_monitor import runner as r
+    from kenya_monitor.collectors.x import XCollector
+
+    assert inspect.signature(XCollector.timeline).parameters["include_replies"].default is False
+    assert inspect.signature(r.collect_x).parameters["include_replies"].default is False

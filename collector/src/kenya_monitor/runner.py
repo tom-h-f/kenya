@@ -104,6 +104,7 @@ async def collect_x(
     accounts: bool = True,
     search_type: str = "search",
     timeline_type: str = "timeline",
+    include_replies: bool = False,
 ) -> dict[str, int]:
     """`search_type` / `timeline_type` pick the R2 `posts/type=` partition.
     Targeted passes override them so their oversampled posts stay out of the
@@ -140,7 +141,12 @@ async def collect_x(
     if accounts and targets.accounts:
         timeline_posts: list[Post] = []
         for handle in targets.accounts:
-            got = [p async for p in collector.timeline(handle, limit=timeline_limit)]
+            got = [
+                p
+                async for p in collector.timeline(
+                    handle, limit=timeline_limit, include_replies=include_replies
+                )
+            ]
             log.info("timeline @%s -> %d posts", handle, len(got))
             timeline_posts.extend(got)
         key = storage.write_posts(timeline_posts, target_type=timeline_type)
@@ -504,6 +510,10 @@ def census_discovered_handles(
     pool: list = state.get("pool") or []
 
     if _pool_is_stale(state, pool_hours):
+        # Announce before the query: it scans the parquet globs over the network
+        # and takes minutes, during which a silent container is indistinguishable
+        # from a hung one.
+        log.info("census timelines: refreshing candidate pool (%d)", pool_size)
         pool = _refresh_census_pool(
             con, engagements_view, authors_view, posts_view, size=pool_size
         )

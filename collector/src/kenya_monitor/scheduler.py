@@ -351,6 +351,9 @@ async def run_census_timelines_once(
         keywords=False,
         accounts=True,
         timeline_type="census_timeline",
+        # The point of this pass: without replies these posts carry no
+        # in_reply_to_id and generate no co_reply traces at all.
+        include_replies=True,
     )
     counts["census_timeline_accounts"] = len(handles)
     log.info("census timelines: %d accounts -> %s", len(handles), counts)
@@ -549,9 +552,21 @@ async def run_scheduler(limit: int) -> None:
             hate_due = HATE_SEEK_ENABLED and now_mono >= next_hate
             if hate_due:
                 next_hate = now_mono + HATE_SEEK_EVERY_N_CYCLES * _cycle_estimate_s(cycle, started_mono)
+            # Written out in order rather than assembled with insert(index).
+            # The hate steps used to be spliced in at fixed positions 2 and 3,
+            # so adding `census_timelines` after snowball silently pushed them
+            # past it - the ordering guarantee above depended on an index that
+            # nothing was protecting.
             steps = [
                 ("posts", _posts),
                 ("snowball", run_snowball_once),
+            ]
+            if hate_due:
+                steps += [
+                    ("hate_seek", run_hate_seek_once),
+                    ("hate_expand", run_hate_expand_once),
+                ]
+            steps += [
                 ("census_timelines", run_census_timelines_once),
                 ("metrics", run_metrics_once),
                 (
@@ -562,9 +577,6 @@ async def run_scheduler(limit: int) -> None:
                     ),
                 ),
             ]
-            if hate_due:
-                steps.insert(2, ("hate_seek", run_hate_seek_once))
-                steps.insert(3, ("hate_expand", run_hate_expand_once))
             for name, step in steps:
                 try:
                     await step()

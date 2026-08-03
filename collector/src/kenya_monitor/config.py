@@ -99,6 +99,12 @@ CENSUS_TIMELINE_RETRY_DAYS = int(os.getenv("CENSUS_TIMELINE_RETRY_DAYS", "30"))
 CENSUS_TIMELINE_POOL_SIZE = int(os.getenv("CENSUS_TIMELINE_POOL_SIZE", "500"))
 CENSUS_TIMELINE_POOL_HOURS = int(os.getenv("CENSUS_TIMELINE_POOL_HOURS", "12"))
 
+# DuckDB sizes its budget from the host, not the container cgroup, so on pi0 it
+# plans against ~4GB while `mem_limit: 1g` kills it long before that. Bounded so
+# a large scan spills to disk instead of taking the collector down.
+COLLECTOR_MEMORY_LIMIT = os.getenv("COLLECTOR_MEMORY_LIMIT", "600MB")
+COLLECTOR_THREADS = int(os.getenv("COLLECTOR_THREADS", "2"))
+
 DYNAMIC_MAX_KEYWORDS = int(os.getenv("DYNAMIC_MAX_KEYWORDS", "10"))
 DYNAMIC_MAX_ACCOUNTS = int(os.getenv("DYNAMIC_MAX_ACCOUNTS", "60"))
 DYNAMIC_EXPIRY_DAYS = int(os.getenv("DYNAMIC_EXPIRY_DAYS", "7"))
