@@ -39,7 +39,12 @@ SNOWBALL_TOP_RETWEETED = int(os.getenv("SNOWBALL_TOP_RETWEETED", "250"))
 SNOWBALL_TOP_CONVERSATIONS = int(os.getenv("SNOWBALL_TOP_CONVERSATIONS", "60"))
 SNOWBALL_RETWEETERS_LIMIT = int(os.getenv("SNOWBALL_RETWEETERS_LIMIT", "300"))
 SNOWBALL_REPLIES_LIMIT = int(os.getenv("SNOWBALL_REPLIES_LIMIT", "150"))
-SNOWBALL_HYDRATE_LIMIT = int(os.getenv("SNOWBALL_HYDRATE_LIMIT", "50"))
+# One API call per id (`tweet_details`), so this is the expensive arm per unit.
+# Raised from 50 because censused-but-unhydrated objects are now prioritised
+# ahead of most-engaged refs, and there was a backlog of 2,805 of them on
+# 2026-08-02 whose retweeter traces are unusable until their original is
+# fetched. At 150 that drains in ~19 passes while the census adds ~250/pass.
+SNOWBALL_HYDRATE_LIMIT = int(os.getenv("SNOWBALL_HYDRATE_LIMIT", "150"))
 SNOWBALL_LOOKBACK_DAYS = int(os.getenv("SNOWBALL_LOOKBACK_DAYS", "2"))
 SNOWBALL_REFRESH_HOURS = int(os.getenv("SNOWBALL_REFRESH_HOURS", "12"))  # per-object TTL
 # Objects per write. A single end-of-pass write meant a restart mid-census threw

@@ -487,3 +487,77 @@ attributable:
   probabilities where the null assumes one. Splitting them would make each
   channel internally homogeneous and yield a genuinely independent third
   channel for corroboration.
+
+---
+
+## 10. Corroboration is unavailable, and not for a fixable reason
+
+Recorded 2026-08-02/03, after §9's filter change. Three candidate fixes were
+tried and all three are dead ends. The finding matters more than any of them.
+
+### What the fixes did
+
+**Windowing the engagement arm** (§7) worked as intended: co_retweet's
+Bonferroni layer fell from 5,698 edges to **1,548** once traces outside
+`COORD_LOOKBACK_DAYS` stopped accumulating. Layer imbalance improved from 203:1
+to 43:1.
+
+**Equal-mass layer normalisation did not, and would have broken the pipeline.**
+The idea was to stop co_retweet drowning co_reply by giving each layer equal
+total weight. Measured on live data:
+
+| normalisation | clusters | members | corroborated |
+|---|---|---|---|
+| `max` (original) | 95 | 435 | 0 |
+| `mass` | **0** | **0** | 0 |
+
+CPM compares a community's internal weight against an **absolute**
+`resolution_parameter` (0.05). Dividing 1,548 edges by their total puts every
+weight near 0.0006, so no community clears the threshold and everything becomes
+a singleton. Reverted; kept as a parameter with the result recorded, because
+"balance the layers" is an obvious idea that needs a standing answer.
+
+### The actual reason, which no weighting can fix
+
+| | |
+|---|---|
+| accounts in the validated co_reply layer | 49 |
+| of those, appearing anywhere in co_retweet | **0** |
+| pairs validated in both channels | **0** |
+
+**The two channels observe disjoint populations.** co_retweet is dominated by
+accounts discovered through the retweeter census - they exist only as
+engagement rows and have no posts at all. A co_reply trace requires a collected
+post carrying `in_reply_to_id`. An account cannot be in both unless we have
+both its retweets and its posts, and for census-discovered accounts we have
+only the former.
+
+Reweighting cannot manufacture connectivity that is not there. Neither can a
+different edge filter, a different resolution, or splitting `co_retweet` into
+its census and post arms - that last one would make corroboration *easier* to
+achieve and *less* meaningful, since both arms would be observing the same
+behaviour by two routes rather than two behaviours.
+
+### What this means
+
+- **A zero in `n_corroborated_clusters` currently means "cannot be evaluated",
+  not "nothing is coordinated".** Do not read it as a detection result, and do
+  not tune anything to raise it.
+- The census is very good at discovering accounts it can only ever see through
+  one channel. That is not a bug in the census; it is the cost of the discovery
+  route, and it was invisible until corroboration was computed per run.
+- The only fix is to make the populations overlap: collect timelines for
+  accounts that appear in co_retweet clusters, so they acquire posts and become
+  eligible for the reply channel. `adaptive.cluster_accounts` already promotes
+  cluster members to targeted collection, which does exactly this - but it
+  feeds the sampling loop `coordination_run`'s docstring warns about, and
+  promoted accounts land in quarantined partitions excluded from every rate.
+  Whether that is acceptable for corroboration purposes is an open decision,
+  not a settled one.
+
+### Status of the outcome measure
+
+Until the populations overlap, the honest outcome measures are the ones that do
+not require two channels: cluster count and size distribution on a calibrated
+filter, plus planted-cluster recovery (§9), which is synthetic but reproducible
+on demand. `pairable` (§5) remains the input measure.

@@ -660,3 +660,55 @@ def test_census_run_is_written_even_when_nothing_was_due(tmp_path):
     assert len(storage.census_runs) == 1
     assert storage.census_runs[0]["fetched_retweeted"] == 0
     assert storage.census_runs[0]["skipped_ttl_retweeted"] == 1
+
+
+def test_hydration_prioritises_censused_objects_over_amplified_ones():
+    """A censused object with no post row has no created_at, so the coordination
+    window cannot place it and every retweeter trace it carries is unusable.
+    Measured 2026-08-02: 2,805 of 4,679 censused objects were in that state,
+    holding 30% of the engagement arm. Ordering by engagement spent these slots
+    on the most-amplified refs - the hubs the census no longer collects."""
+    rows = [
+        # a heavily amplified ref we never collected, and never censused
+        {"platform_post_id": "r1", "author_id": "a", "repost_of_id": "LOUD",
+         "repost_count": 9000},
+        # a quiet ref we DID census but never hydrated
+        {"platform_post_id": "r2", "author_id": "b", "repost_of_id": "CENSUSED",
+         "repost_count": 12},
+    ]
+    con, view = _con_with_posts(rows)
+    con.register("eng_tbl", _eng_table([("CENSUSED", NOW - timedelta(days=3))]))
+
+    _, _, missing = hot_objects(
+        con, view, lookback_days=2, hydrate_limit=1, engagements_view="eng_tbl"
+    )
+
+    assert missing == ["CENSUSED"], "censused-but-unhydrated must win the budget"
+
+
+def test_hydration_still_falls_back_to_engagement_order():
+    """With nothing censused, behaviour is unchanged: most-amplified first."""
+    rows = [
+        {"platform_post_id": "r1", "author_id": "a", "repost_of_id": "LOUD",
+         "repost_count": 9000},
+        {"platform_post_id": "r2", "author_id": "b", "repost_of_id": "QUIET",
+         "repost_count": 12},
+    ]
+    con, view = _con_with_posts(rows)
+
+    _, _, missing = hot_objects(con, view, lookback_days=2, hydrate_limit=1)
+
+    assert missing == ["LOUD"]
+
+
+def test_hydration_skips_refs_whose_original_is_already_collected():
+    rows = [
+        {"platform_post_id": "r1", "author_id": "a", "repost_of_id": "HAVE",
+         "repost_count": 50},
+        {"platform_post_id": "HAVE", "author_id": "z", "repost_count": 50},
+    ]
+    con, view = _con_with_posts(rows)
+
+    _, _, missing = hot_objects(con, view, lookback_days=2, hydrate_limit=10)
+
+    assert "HAVE" not in missing

@@ -492,3 +492,28 @@ def test_censused_column_must_be_table_qualified():
     c.execute("CREATE TABLE e (platform_post_id VARCHAR, collected_at TIMESTAMPTZ)")
     with pytest.raises(ValueError, match="table-qualified"):
         census.censused_expr(c, "e", "platform_post_id")
+
+
+def test_merged_selection_passes_the_engagements_view_to_both_selectors(monkeypatch):
+    """The step-2e fix went into `hot_objects` only; `hot_toxic_objects` kept
+    re-picking completed work on every pass. `select_census_objects` is the one
+    place that knows about both, so neither can be forgotten again."""
+    from kenya_monitor import runner
+
+    seen: dict[str, object] = {}
+
+    def fake_toxic(con, hate_view, posts_view, **kw):
+        seen["engagements_view"] = kw.get("engagements_view")
+        return ["tox1"], [], []
+
+    monkeypatch.setattr(hsig, "hot_toxic_objects", fake_toxic)
+    monkeypatch.setattr(
+        runner, "hot_objects", lambda *a, **kw: (["base1"], ["conv1"], ["miss1"])
+    )
+
+    rt, _, _ = runner.select_census_objects(
+        None, "p", engagements_view="ENG", hatespeech_view="h"
+    )
+
+    assert seen["engagements_view"] == "ENG"
+    assert rt == ["base1", "tox1"]      # toxic appended after the baseline

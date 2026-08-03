@@ -63,6 +63,36 @@ def censused_expr(
     )"""
 
 
+def censused_ever_expr(
+    con: duckdb.DuckDBPyConnection,
+    engagements_view: str | None,
+    column: str,
+) -> str:
+    """Boolean SQL expression: has `column` ever been censused, at any time?
+
+    Distinct from `censused_expr`, which asks whether it was censused inside
+    the TTL. This one drives hydration priority: an object we censused but
+    never collected the original of has an UNKNOWN creation time, so the
+    coordination window cannot place it and its traces are unusable. Measured
+    2026-08-02: 2,805 of 4,679 censused objects (60%) were in that state,
+    carrying 97,621 traces.
+
+    Same table-qualification requirement as `censused_expr`."""
+    if column and "." not in column:
+        raise ValueError(
+            f"column must be table-qualified to correlate correctly, got {column!r}"
+        )
+    if not engagements_view:
+        return "FALSE"
+    try:
+        con.sql(f"SELECT 1 FROM {engagements_view} LIMIT 1").fetchall()
+    except duckdb.Error:
+        return "FALSE"
+    return f"""EXISTS (
+        SELECT 1 FROM {engagements_view} e WHERE e.platform_post_id = {column}
+    )"""
+
+
 def censused_filter(
     con: duckdb.DuckDBPyConnection,
     engagements_view: str | None,

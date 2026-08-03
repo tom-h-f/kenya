@@ -379,6 +379,18 @@ def hot_objects(
             """
         ).fetchall()
     ]
+    # Censused-but-unhydrated objects come FIRST, ahead of the most-engaged.
+    #
+    # A censused object with no post row has no `created_at`, so the
+    # coordination window cannot place it and every one of its retweeter traces
+    # is unusable. Measured 2026-08-02: 2,805 of 4,679 censused objects (60%)
+    # were in that state, carrying 97,621 traces - 30% of the whole engagement
+    # arm. Ordering by engagement instead sent these slots to the most-amplified
+    # refs, i.e. exactly the hubs the census no longer collects.
+    #
+    # `hydrate` costs one API call per id, so the budget is small and spending
+    # it on the right ids matters more than raising it.
+    censused_ever = census.censused_ever_expr(con, engagements_view, "refs.ref")
     missing = [
         r[0]
         for r in con.sql(
@@ -393,11 +405,17 @@ def hot_objects(
                 UNION ALL
                 SELECT in_reply_to_id, max(reply_count) FROM recent
                 WHERE in_reply_to_id IS NOT NULL GROUP BY 1
+            ), unresolved AS (
+                SELECT refs.ref AS ref, max(refs.eng) AS eng,
+                       bool_or({censused_ever}) AS censused
+                FROM refs
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM lp WHERE lp.platform_post_id = refs.ref
+                )
+                GROUP BY 1
             )
-            SELECT ref FROM refs
-            WHERE ref NOT IN (SELECT platform_post_id FROM lp)
-            GROUP BY ref
-            ORDER BY max(eng) DESC
+            SELECT ref FROM unresolved
+            ORDER BY censused DESC, eng DESC
             LIMIT {int(hydrate_limit)}
             """
         ).fetchall()
@@ -433,7 +451,9 @@ def select_census_objects(
     if hatespeech_view is None:
         return retweeted, conversations, missing
 
-    tox_rt, _tox_conv, _ = hsig.hot_toxic_objects(con, hatespeech_view, posts_view)
+    tox_rt, _tox_conv, _ = hsig.hot_toxic_objects(
+        con, hatespeech_view, posts_view, engagements_view=engagements_view
+    )
     seen = set(retweeted)
     extra = [o for o in tox_rt if o not in seen]
     if extra:

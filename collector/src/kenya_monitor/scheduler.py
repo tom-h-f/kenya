@@ -279,7 +279,10 @@ async def run_hate_expand_once(
     from kenya_monitor import hate_signal as hsig
 
     objects = hsig.hot_toxic_objects(
-        storage.con, storage.hatespeech_view(platform="x"), storage.posts_view(platform="x")
+        storage.con,
+        storage.hatespeech_view(platform="x"),
+        storage.posts_view(platform="x"),
+        engagements_view=storage.engagements_view(platform="x"),
     )
     if any(objects):
         counts.update(
