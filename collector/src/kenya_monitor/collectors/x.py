@@ -184,12 +184,19 @@ class XCollector(Collector):
                 post.source_query = keyword
                 yield post
 
-    async def timeline(self, account: str, limit: int) -> AsyncIterator[Post]:
+    async def timeline(
+        self, account: str, limit: int, include_replies: bool = False
+    ) -> AsyncIterator[Post]:
         user = await self.api.user_by_login(account)
         if user is None:
             return
         cutoff = _cutoff()
-        async for tw in self.api.user_tweets(user.id, limit=limit):
+        # `user_tweets` omits replies entirely. Measured 2026-08-03 on the first
+        # census-timeline pass: 760 posts from 20 accounts carried 5 rows with
+        # `in_reply_to_id`, so the pass produced almost no co_reply traces - the
+        # one thing it exists to produce.
+        fetch = self.api.user_tweets_and_replies if include_replies else self.api.user_tweets
+        async for tw in fetch(user.id, limit=limit):
             if tw.date.astimezone(timezone.utc) >= cutoff:
                 yield self._to_post(tw)
 

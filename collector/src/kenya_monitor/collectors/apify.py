@@ -114,7 +114,12 @@ class ApifyXCollector(Collector):
                 post.source_query = keyword
                 yield post
 
-    async def timeline(self, account: str, limit: int) -> AsyncIterator[Post]:
+    async def timeline(
+        self, account: str, limit: int, include_replies: bool = False
+    ) -> AsyncIterator[Post]:
+        """`include_replies` is accepted for interface parity but not honoured:
+        the actor returns whatever it returns. The census-timeline pass depends
+        on replies being present, so it is only sound on the twscrape backend."""
         handle = account.lstrip("@")
         if not handle:
             return

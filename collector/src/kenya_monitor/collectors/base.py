@@ -144,8 +144,17 @@ class Collector(ABC):
         yield  # pragma: no cover  (marks this an async generator)
 
     @abstractmethod
-    async def timeline(self, account: str, limit: int) -> AsyncIterator[Post]:
-        """Yield recent posts from a specific account."""
+    async def timeline(
+        self, account: str, limit: int, include_replies: bool = False
+    ) -> AsyncIterator[Post]:
+        """Yield recent posts from a specific account.
+
+        `include_replies` is off by default because it changes what a timeline
+        MEANS for every prevalence measurement built on the baseline `timeline`
+        partition. Only the census-timeline pass turns it on, and it needs it:
+        without replies the posts carry no `in_reply_to_id`, so they generate
+        no `co_reply` traces at all - which is the entire reason that pass
+        exists."""
         raise NotImplementedError
         yield  # pragma: no cover
 

@@ -586,6 +586,14 @@ without conditioning on the answer. `census_timeline` is registered in
 `TARGETED_TYPES` so it still stays out of every prevalence rate - these
 accounts are retweeters of banded objects, not a sample of the population.
 
+**Replies must be requested explicitly.** twscrape's `user_tweets` omits them,
+and the first live pass proved it: 760 posts from 20 accounts carried **5** rows
+with `in_reply_to_id`, so the pass generated almost no `co_reply` traces - the
+one thing it exists to produce. `timeline(include_replies=True)` switches to
+`user_tweets_and_replies`, and it is opt-in: turning it on for baseline
+timelines would change what a timeline MEANS for every prevalence measurement
+built on that partition.
+
 Cost and pace: 20 accounts per cycle against ~168,000 census-discovered
 accounts. This is deliberately slow. It is not trying to collect them all, only
 to build a population where the two channels can be compared at all.

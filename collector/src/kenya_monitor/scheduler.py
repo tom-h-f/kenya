@@ -351,6 +351,9 @@ async def run_census_timelines_once(
         keywords=False,
         accounts=True,
         timeline_type="census_timeline",
+        # The point of this pass: without replies these posts carry no
+        # in_reply_to_id and generate no co_reply traces at all.
+        include_replies=True,
     )
     counts["census_timeline_accounts"] = len(handles)
     log.info("census timelines: %d accounts -> %s", len(handles), counts)
