@@ -555,6 +555,36 @@ behaviour by two routes rather than two behaviours.
   Whether that is acceptable for corroboration purposes is an open decision,
   not a settled one.
 
+### The fix that shipped
+
+`run_census_timelines_once` (collector, one step per cycle) collects timelines
+for a **random sample** of census-discovered accounts - 20 per cycle, 30 posts
+each - writing to a new `posts/type=census_timeline` partition.
+
+Random is the whole design. The obvious alternative, promoting accounts that
+appear in coordination clusters, is what `adaptive.cluster_accounts` already
+does, and it cannot be used here: it would give exactly the suspected accounts
+more posts, more traces and more edges, manufacturing the corroboration it was
+meant to measure. The `cib_timeline` quarantine does not save it either -
+`_latest_posts_cte` builds coordination traces from `posts_source(platform)`
+with `type='*'`, so targeted posts feed the projection like any other. The
+quarantine protects prevalence rates, not coordination.
+
+Random selection is exogenous to the outcome, so it closes the population gap
+without conditioning on the answer. `census_timeline` is registered in
+`TARGETED_TYPES` so it still stays out of every prevalence rate - these
+accounts are retweeters of banded objects, not a sample of the population.
+
+Cost and pace: 20 accounts per cycle against ~168,000 census-discovered
+accounts. This is deliberately slow. It is not trying to collect them all, only
+to build a population where the two channels can be compared at all.
+
+Note the deadlock it breaks. `cluster_accounts` requires `n_channels >= 2`
+(effective value on pi0), corroboration is 0, so it promotes nobody - and the
+one mechanism that could have given these accounts posts was gated behind the
+metric its absence zeroes out. That path now logs when it promotes nobody, so
+the state stops being silent.
+
 ### Status of the outcome measure
 
 Until the populations overlap, the honest outcome measures are the ones that do

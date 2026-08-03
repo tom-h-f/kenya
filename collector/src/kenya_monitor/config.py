@@ -73,6 +73,27 @@ SNOWBALL_BAND_MAX = int(os.getenv("HUB_CAP_MAX", "100"))
 # buy nothing. Pre-banding the rate was 99.5%; post-banding it measures 6.4%.
 CENSUS_OVER_BAND_WARN = float(os.getenv("CENSUS_OVER_BAND_WARN", "0.15"))
 
+# Timelines for accounts the retweeter census discovered.
+#
+# The census finds accounts we know ONLY as retweeter ids - no posts at all.
+# Measured 2026-08-02: 168,356 such accounts against 73,876 with posts. They can
+# never enter the `co_reply` channel (which needs a collected post carrying
+# `in_reply_to_id`), so of the 49 accounts in the validated co_reply layer, 0
+# appeared anywhere in co_retweet and corroboration was structurally impossible.
+#
+# Selection is RANDOM among census-discovered accounts, deliberately not by
+# cluster membership or any coordination score. Promoting on the metric would
+# give exactly the suspected accounts more posts, more traces and more edges,
+# manufacturing the corroboration it was meant to measure - and the
+# `cib_timeline` quarantine does not help, because coordination traces are built
+# from all post types. Random selection is exogenous to the outcome, so it
+# creates the population overlap without conditioning on the answer.
+CENSUS_TIMELINE_ACCOUNTS = int(os.getenv("CENSUS_TIMELINE_ACCOUNTS", "20"))
+CENSUS_TIMELINE_LIMIT = int(os.getenv("CENSUS_TIMELINE_LIMIT", "30"))  # posts per account
+# Accounts with no tweets never gain a post row, so without this they would be
+# re-picked forever.
+CENSUS_TIMELINE_RETRY_DAYS = int(os.getenv("CENSUS_TIMELINE_RETRY_DAYS", "30"))
+
 DYNAMIC_MAX_KEYWORDS = int(os.getenv("DYNAMIC_MAX_KEYWORDS", "10"))
 DYNAMIC_MAX_ACCOUNTS = int(os.getenv("DYNAMIC_MAX_ACCOUNTS", "60"))
 DYNAMIC_EXPIRY_DAYS = int(os.getenv("DYNAMIC_EXPIRY_DAYS", "7"))
@@ -142,6 +163,9 @@ METRICS_MAX_POSTS_PER_ACCOUNT = int(os.getenv("METRICS_MAX_POSTS_PER_ACCOUNT", "
 STATE_DIR = APP_ROOT / "state"
 DYNAMIC_TARGETS_PATH = Path(os.getenv("DYNAMIC_TARGETS_PATH", STATE_DIR / "dynamic_targets.json"))
 SNOWBALL_STATE_PATH = Path(os.getenv("SNOWBALL_STATE_PATH", STATE_DIR / "snowball.json"))
+CENSUS_TIMELINE_STATE_PATH = Path(
+    os.getenv("CENSUS_TIMELINE_STATE_PATH", STATE_DIR / "census_timelines.json")
+)
 FOLLOW_CRAWL_STATE_PATH = Path(os.getenv("FOLLOW_CRAWL_STATE_PATH", STATE_DIR / "follow_crawl.json"))
 HATE_SEEK_STATE_PATH = Path(os.getenv("HATE_SEEK_STATE_PATH", STATE_DIR / "hate_seek.json"))
 MINED_TERMS_PATH = Path(os.getenv("MINED_TERMS_PATH", STATE_DIR / "mined_terms.json"))
