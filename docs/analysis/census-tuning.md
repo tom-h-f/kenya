@@ -646,3 +646,127 @@ Until the populations overlap, the honest outcome measures are the ones that do
 not require two channels: cluster count and size distribution on a calibrated
 filter, plus planted-cluster recovery (§9), which is synthetic but reproducible
 on demand. `pairable` (§5) remains the input measure.
+
+---
+
+## 11. The conversation arm was never banded, and that is what starved co_reply
+
+Recorded 2026-08-05/06. §10 concluded corroboration was structurally
+unavailable because the two channels observe disjoint populations. That is
+still true, but it is a symptom. The cause is that the two arms of the census
+are selected on opposite principles, and only one of them was ever fixed.
+
+### Corroboration was never a detection, in either direction
+
+`n_corroborated_clusters` has been flickering 0/1, and the flicker is one
+account. Bridge accounts = accounts appearing in BOTH validated layers:
+
+| pass (Aug) | corroborated | bridge accounts | co_retweet edges | co_reply edges |
+|---|---|---|---|---|
+| 04 04:50 | 0 | 2 | 9,349 | 39 |
+| 04 11:10 | 1 | 2 | 11,577 | 52 |
+| 04 17:30 | 1 | 2 | 12,550 | 56 |
+| 04 23:50 | 1 | 2 | 15,882 | 56 |
+| 05 06:10 | 0 | 1 | 17,572 | 72 |
+| 05 12:30 | 0 | 1 | 18,756 | 56 |
+
+Two facts settle it:
+
+- **No account pair has ever been validated in both channels.** `shared_pairs`
+  is 0 across all 23 persisted passes. Pair-level corroboration has never fired
+  once.
+- **Of the 72 accounts in the 08-05 12:30 co_reply layer, 1 had any co_retweet
+  trace and 0 were co_retweet-pairable.** The ceiling was zero regardless of
+  clustering, filter or resolution.
+
+So the 1s were coincidence and the 0s were the same coincidence not happening.
+Do not read either as a result. §10's advice stands and is now quantified.
+
+### The asymmetry
+
+**co_retweet is object-first.** The census picks objects banded to 3-100 and
+enumerates every retweeter, so shared objects exist by construction: 27,758
+pairable accounts, 667,620 tested pairs, ~24 tested pairs per pairable account.
+
+**co_reply had no equivalent.** Its two feeds both destroy pairability:
+
+1. `census_timeline` samples accounts at RANDOM and takes whatever threads they
+   were already in. Only **75 of 2,366** reply parents there have 2+ authors.
+   Random account sampling cannot manufacture shared objects, which is why §10's
+   fix bought +1 bridge account in three days and would never have bought more.
+2. The snowball conversation arm IS object-first, which is right, but it was
+   selected by `ORDER BY max(reply_count) DESC LIMIT 60` with **no band** -
+   deliberately the biggest threads, i.e. exactly what `HUB_CAP_MAX` deletes on
+   the analysis side.
+
+Measured on collected `posts/type=replies` over the 14-day window:
+
+| repliers per parent | objects | reply rows | pairs offered |
+|---|---|---|---|
+| 3-100 (usable band) | 557 | 25,759 | 768,519 |
+| >100 (**discarded by hub cap**) | 82 | 11,541 | **899,927** |
+
+31% of collected reply rows and 54% of every pair they offered were fetched and
+then thrown away. Result: 3,949 pairable accounts, 2,251 tested pairs, **0.57
+tested pairs per pairable account** - 42x worse than co_retweet.
+
+This is §2b ("the census was selecting exclusively the useless band") repeating
+itself on the arm nobody re-checked.
+
+### The fix
+
+Band the conversation arm on `max(reply_count) BETWEEN band_min AND band_max`
+and raise `SNOWBALL_TOP_CONVERSATIONS` 60 -> 250 to match the retweeted arm.
+Live selector dry run after the change: 250 conversations, all in band, degree
+58-100, drawn from 2,423 in-band candidates in the collector's 2-day window.
+That is ~10% of the band per pass against the retweeted arm's ~9% - the two
+arms now work their supply at the same rate.
+
+**Selection had to become TTL-aware at the same time, or the change would have
+made things worse.** `_due` filters AFTER the LIMIT, so a deterministic ranking
+re-picks completed work every pass - the §2e failure (495 selected, 10-35
+fetched). The conversation arm was accidentally immune while it ranked the
+whole platform by `reply_count`, because the busiest threads churn fast enough
+to look like fresh candidates every pass; `due_conversations` sat at 58-60 of
+60 and hid the hazard completely. Banding removes that churn, so
+`census.threaded_expr` now does for conversations what `censused_expr` does for
+retweets, keyed on reply rows in R2 rather than the local JSON state.
+
+`max(reply_count)` is the thread root's own reply count, a proxy for the
+distinct-replier degree the hub cap actually measures. It is the quantity the
+previous ranking already used, so banding on it introduces no new notion of
+conversation size.
+
+Cost, measured on live R2 before shipping, because a correlated subquery in a
+per-cycle selector is exactly the kind of thing that turns out to be
+indefensible on a Pi (cf. the 464s census-timeline candidate query):
+
+| query | warm |
+|---|---|
+| old, unbanded | 4.4-4.6s |
+| new, banded + TTL-aware | 5.0-5.1s |
+
+The first execution costs 205s, but that is the shared network scan of the
+posts glob which the pass pays once regardless. The `threaded_expr` EXISTS adds
+~0.6s, roughly 0.2% of the selector's total. Not a constraint.
+
+### What to watch, and what would falsify this
+
+New `census_runs` counters: `conversations_in_band`, `conversations_unthreaded`
+(the backlog), `conv_deg_min`/`conv_deg_max`, `top_conversations`. Read them
+against `co_reply`'s `pairable` and `edges_bonferroni` in
+`coordination_metrics`.
+
+The prediction is that co_reply `pairable` and tested pairs per pairable
+account both rise, bridge accounts follow, and corroboration stops being a coin
+flip. Effect is gated on collection, so expect days, not hours.
+
+**If co_reply `pairable` rises but bridge accounts do not, this diagnosis is
+incomplete** and the remaining gap is that repliers and retweeters are simply
+different people - which would be a finding about the discourse rather than
+about the collector, and would make a third channel (§2 of the options: co_url,
+co_hashtag, co_mention) the better route than any further census tuning.
+
+Until bridge accounts are in the tens, `n_corroborated_clusters` still means
+"cannot be evaluated". It should be read next to the bridge-account count, not
+alone.

@@ -63,6 +63,51 @@ def censused_expr(
     )"""
 
 
+def threaded_expr(
+    con: duckdb.DuckDBPyConnection,
+    replies_view: str | None,
+    column: str,
+    refresh_hours: int = SNOWBALL_REFRESH_HOURS,
+) -> str:
+    """Boolean SQL expression: was `column`'s thread fetched inside the TTL?
+
+    The conversation arm's counterpart to `censused_expr`. Retweeter work is
+    evidenced by rows in engagements/; reply work is evidenced by rows in
+    posts/type=replies carrying that `conversation_id`.
+
+    Selection must apply this, not just `_due` afterwards. `_due` reads the
+    local JSON state AFTER the LIMIT, so a deterministic ranking re-picks the
+    same completed threads every pass and they are then discarded - the exact
+    failure `censused_expr` exists to prevent on the retweeted arm (495
+    selected, 10-35 fetched). It did not bite the conversation arm while
+    ranking was `max(reply_count) DESC` unbanded, because the busiest threads
+    on the platform churn fast enough to look like fresh candidates. Banding
+    the arm removes that accidental churn, so the guard has to be real.
+
+    Same table-qualification requirement as `censused_expr`, and for the same
+    reason with more bite here: `conversation_id` exists on BOTH sides, so a
+    bare column binds to the inner table and the predicate becomes trivially
+    true for every row.
+
+    R2 is the source of truth rather than the local JSON state, so this
+    self-heals if that state is lost."""
+    if column and "." not in column:
+        raise ValueError(
+            f"column must be table-qualified to correlate correctly, got {column!r}"
+        )
+    if not replies_view:
+        return "FALSE"
+    try:
+        con.sql(f"SELECT 1 FROM {replies_view} LIMIT 1").fetchall()
+    except duckdb.Error:
+        return "FALSE"  # no replies collected yet; nothing to exclude
+    return f"""EXISTS (
+        SELECT 1 FROM {replies_view} r
+        WHERE r.conversation_id = {column}
+          AND r.collected_at > now() - INTERVAL {int(refresh_hours)} HOUR
+    )"""
+
+
 def censused_ever_expr(
     con: duckdb.DuckDBPyConnection,
     engagements_view: str | None,
