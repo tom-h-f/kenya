@@ -1611,10 +1611,12 @@ def persist_clusters(
     """Write cluster membership (one row per member, cluster stats repeated) as
     a Parquet run under the coordination/ prefix."""
     now = datetime.now(timezone.utc)
-    buf = members.merge(
-        summary[["cluster_id", "size", "channels", "n_channels", "internal_edge_share"]],
-        on="cluster_id",
-    )
+    # `name`/`label` are optional: `coordination_run` merges `cluster_names`
+    # output in before calling this, but that returns empty when no member
+    # cluster has enough text, and a caller may pass a bare summary.
+    cols = ["cluster_id", "size", "channels", "n_channels", "internal_edge_share"]
+    cols += [c for c in ("name", "label") if c in summary.columns]
+    buf = members.merge(summary[cols], on="cluster_id")
     buf["computed_at"] = now
     key = (
         f"coordination/platform={platform}/kind=clusters"

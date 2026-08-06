@@ -359,7 +359,12 @@ def latest_coordination_edges(
     channel: str = "*",
     method: str = "*",
 ):
-    """Latest validated edge row per (src, dst, channel, method) run."""
+    """Latest validated edge row per (src, dst, channel, method) run.
+
+    Per-entity, so it is STICKY: an edge that stopped validating keeps its last
+    row forever and is never dropped by a later run. That is the right shape for
+    "everything we have ever validated" and the wrong shape for "what the current
+    run detected" - use `coordination_run_latest` for the latter."""
     return con.sql(
         f"""
         SELECT * FROM {coordination_source('edges', platform, channel, method)}
@@ -371,13 +376,50 @@ def latest_coordination_edges(
 
 
 def latest_coordination_clusters(con: duckdb.DuckDBPyConnection, platform: str = "x"):
-    """Latest cluster membership row per (cluster_id, author_id)."""
+    """Latest cluster membership row per (cluster_id, author_id).
+
+    Sticky, and additionally unsafe to read as current state: `cluster_id` is a
+    per-run Leiden integer, so cluster 5 of one run has no relationship to
+    cluster 5 of the next, and an author dropped from a cluster keeps their old
+    row. Use `coordination_run_latest('clusters')` for a coherent single run."""
     return con.sql(
         f"""
         SELECT * FROM {coordination_source('clusters', platform)}
         QUALIFY row_number() OVER (
             PARTITION BY cluster_id, author_id ORDER BY computed_at DESC
         ) = 1
+        """
+    )
+
+
+def coordination_run_latest(
+    con: duckdb.DuckDBPyConnection,
+    kind: str = "clusters",
+    platform: str = "x",
+    channel: str = "*",
+    method: str = "*",
+):
+    """Rows of the most recent persisted coordination run, as a coherent set.
+
+    `dense_rank` over `computed_at` rather than the per-entity `row_number` the
+    `latest_coordination_*` helpers use, which is the same distinction
+    `latest_stories` already draws. Anything published to a reader needs this
+    one: a sticky union of several runs would report a cluster count that no
+    single run ever produced.
+
+    `kind="edges"` partitions by (channel, method) because `persist_edges` takes
+    its own `now` per call and is invoked once per channel x method, so every
+    partition carries a slightly different `computed_at`. Ranking them together
+    would return whichever channel happened to be written last and silently drop
+    the rest. The cost is that if a run dies midway, the newest run per partition
+    can straddle two runs - visible as disagreeing `computed_at` values, which is
+    better than a missing channel."""
+    src = coordination_source(kind, platform, channel, method)
+    partition = "PARTITION BY channel, method " if kind == "edges" else ""
+    return con.sql(
+        f"""
+        SELECT * FROM {src}
+        QUALIFY dense_rank() OVER ({partition}ORDER BY computed_at DESC) = 1
         """
     )
 
@@ -411,6 +453,25 @@ def census_runs(con: duckdb.DuckDBPyConnection, platform: str = "x"):
     `coordination_metrics`."""
     return con.sql(
         f"SELECT * FROM {census_runs_source(platform)} ORDER BY collected_at"
+    )
+
+
+def collection_runs_source(platform: str = "*") -> str:
+    """A read_parquet(...) expression for the collector's per-query audit trail.
+
+    Written by `kenya_monitor.storage.write_collection_run`. Carries the
+    *rendered* query string, which is recorded nowhere else - so this is the only
+    way to answer "what did we actually ask X for" after the fact."""
+    glob = f"r2://{BUCKET}/collection_runs/platform={platform}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def collection_runs(con: duckdb.DuckDBPyConnection, platform: str = "x"):
+    """Every collection pass's record, oldest first. A series, not a state - see
+    `coordination_metrics`. `run_id` is unique per pass, so there is nothing to
+    dedupe."""
+    return con.sql(
+        f"SELECT * FROM {collection_runs_source(platform)} ORDER BY collected_at"
     )
 
 
