@@ -104,6 +104,65 @@ def _metrics():
     })
 
 
+def _toxicity_rows():
+    """Two Kenyan days either side of the MIN_DAY_N floor, plus an off-domain
+    row that must not reach the denominator. Post text is present here precisely
+    because it must NOT survive into the payload."""
+    rows = []
+    day_one = pd.Timestamp('2026-07-20T09:00:00Z')
+    for i in range(40):
+        rows.append({
+            'platform_post_id': f'{7000000000000000000 + i}',
+            'created_at': day_one + pd.Timedelta(minutes=i),
+            'text': 'wantam ruto must go',
+            'label': 'offensive' if i < 8 else ('hate' if i < 10 else 'neither'),
+            'p_hate': 0.3 if i < 10 else 0.01,
+            'hate_flag': i < 10,
+            'domain': 'kenya',
+            'in_kenya_scope': True,
+            'coded_suspect': i < 3,
+            'explicit_toxic': i < 10,
+            'dehumanisation_score': 0.7 if i < 3 else None,
+        })
+    thin_day = pd.Timestamp('2026-07-21T09:00:00Z')
+    for i in range(5):
+        rows.append({
+            'platform_post_id': f'{7100000000000000000 + i}',
+            'created_at': thin_day + pd.Timedelta(minutes=i),
+            'text': 'a thin day', 'label': 'neither', 'p_hate': 0.01,
+            'hate_flag': False, 'domain': 'kenya', 'in_kenya_scope': True,
+            'coded_suspect': False, 'explicit_toxic': False,
+            'dehumanisation_score': None,
+        })
+    rows.append({
+        'platform_post_id': '7200000000000000000',
+        'created_at': day_one, 'text': 'US politics', 'label': 'hate',
+        'p_hate': 0.9, 'hate_flag': True, 'domain': 'offdomain',
+        'in_kenya_scope': False, 'coded_suspect': False, 'explicit_toxic': True,
+        'dehumanisation_score': None,
+    })
+    df = pd.DataFrame(rows)
+    df['created_at'] = pd.to_datetime(df['created_at'], utc=True)
+    df['is_offensive'] = df['label'] == 'offensive'
+    df['is_hate'] = df['label'] == 'hate'
+    return df
+
+
+@pytest.fixture
+def stub_tox(monkeypatch):
+    """Patch out everything statistic B would otherwise reach R2 for."""
+    def apply(rows=None):
+        monkeypatch.setattr(
+            d, "_toxicity_frame", lambda con, platform="x": rows if rows is not None else _toxicity_rows()
+        )
+        monkeypatch.setattr(
+            d, "_collection_start", lambda con, platform="x": "2026-07-04T13:17:40+00:00"
+        )
+        monkeypatch.setattr(d, "_start_cache", None)
+        return d.build_toxicity(object())
+    return apply
+
+
 @pytest.fixture
 def payload(monkeypatch):
     """A full summary built from the fabricated frames, with R2 stubbed out."""
@@ -117,6 +176,11 @@ def payload(monkeypatch):
         d.db, "curated_handles", lambda *a, **kw: {"kenyanpatriot", "wanjiku254"}
     )
     monkeypatch.setattr(d, "_collection_start", lambda con, platform="x": "2026-07-04T13:17:40+00:00")
+    # Statistic B has its own frame-level tests below; here it only needs to not
+    # reach R2, so the public-safety walk covers a payload with both sections.
+    monkeypatch.setattr(
+        d, "_toxicity_frame", lambda con, platform="x": _toxicity_rows()
+    )
     monkeypatch.setattr(d, "NET_MIN_SIZE", 2)
     monkeypatch.setattr(d, "_start_cache", None)
     return d.build_summary(object(), platform="x")
@@ -191,9 +255,12 @@ def test_multiplex_scales_layers_by_mass():
 
 
 def test_unpublished_phases_are_null_not_missing(payload):
-    for key in ("toxicity", "share_of_voice", "targeting"):
+    """Phases 3 and 5 are keys with null values, not absent keys, so the site can
+    reserve their layout instead of shifting when they land."""
+    for key in ("share_of_voice", "targeting"):
         assert key in payload
         assert payload[key] is None
+    assert payload["toxicity"] is not None
 
 
 def test_meta_carries_the_methodology_rules(payload):
@@ -204,6 +271,55 @@ def test_meta_carries_the_methodology_rules(payload):
     assert meta["collection_start"].startswith("2026-07-04")
     assert "hate_search" in meta["excluded_types"]
     assert meta["model_limits"]["hate_classifier"]
+
+
+def test_toxicity_drops_thin_days_but_reports_them(stub_tox):
+    tox = stub_tox()
+    dates = [p["date"] for p in tox["series"]]
+    assert dates == ["2026-07-20"]
+    # The thin day is reported as suppressed, not silently absent - a reader
+    # must be able to tell a suppressed day from a day with no activity.
+    assert [s["date"] for s in tox["suppressed_days"]] == ["2026-07-21"]
+    assert tox["suppressed_days"][0]["n"] == 5
+
+
+def test_toxicity_excludes_offdomain_from_the_denominator(stub_tox):
+    tox = stub_tox()
+    day = tox["series"][0]
+    # 41 rows land on that day; one is off-domain and must not be counted.
+    assert day["n"] == 40
+    assert day["offensive"]["k"] == 8
+    assert day["hate"]["k"] == 2
+    assert day["coded"]["k"] == 3
+
+
+def test_toxicity_series_carries_wilson_bounds(stub_tox):
+    tox = stub_tox()
+    for point in tox["series"]:
+        for key in ("offensive", "hate", "coded"):
+            r = point[key]
+            assert r["lo"] <= r["p"] <= r["hi"], (point["date"], key)
+
+
+def test_toxicity_keeps_the_two_registers_separate(stub_tox):
+    """Explicit toxicity and coded incitement must never be merged into one
+    series: the classifier is good at the first and poor at the second."""
+    tox = stub_tox()
+    keys = set(tox["series"][0])
+    assert {"offensive", "hate", "coded"} <= keys
+    assert not any(k in keys for k in ("toxicity", "combined", "all_hate"))
+
+
+def test_toxicity_days_are_kenyan_days(stub_tox):
+    """22:00 UTC is the next calendar day in Nairobi. Publishing UTC days would
+    misattribute late-evening Kenyan activity."""
+    rows = _toxicity_rows()
+    rows["created_at"] = pd.to_datetime(
+        ["2026-07-20T22:30:00Z"] * len(rows), utc=True
+    )
+    tox = stub_tox(rows)
+    assert tox["timezone"] == "Africa/Nairobi"
+    assert [p["date"] for p in tox["series"]] == ["2026-07-21"]
 
 
 @pytest.mark.parametrize(

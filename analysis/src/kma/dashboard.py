@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 import duckdb
 import pandas as pd
 
-from kma import db
+from kma import db, measure
 from kma.db import BUCKET, connect
 
 log = logging.getLogger("kma.dashboard")
@@ -167,6 +167,202 @@ def build_meta(con: duckdb.DuckDBPyConnection, platform: str = "x") -> dict:
                 "account is a bot."
             ),
         },
+    }
+
+
+MIN_DAY_N = 20  # matches notebooks/hatespeech.py; thin days make the rate jumpy
+
+
+def _toxicity_frame(con: duckdb.DuckDBPyConnection, platform: str = "x") -> pd.DataFrame:
+    """The enriched post frame behind statistic B.
+
+    Lifted from `notebooks/hatespeech.py` so the published series and the
+    notebook are the same measurement. Scoping is on FIRST-seen type: a post
+    found by a baseline search and later re-collected by a hate pass keeps its
+    latest `type`, so scoping on that would drain exactly the toxic tail out of
+    the baseline denominator and read as a falling trend.
+
+    Unlike the notebook this selects the PERSISTED measurement columns and only
+    recomputes the rows that predate their rollout - the notebook recomputes
+    every row, which is affordable interactively and is not affordable hourly.
+    """
+    df = con.sql(
+        f"""
+        WITH {db.first_seen_types_cte(platform, "fs")},
+        p AS (
+            SELECT p0.platform_post_id, p0.created_at, p0.text, fs.first_type
+            FROM {db.posts_source(platform)} p0
+            JOIN fs USING (platform, platform_post_id)
+            WHERE {db.scope_predicate('baseline', 'fs.first_type')}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+            ) = 1
+        ), h AS (
+            SELECT * FROM {db.hatespeech_source(platform)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY scored_at DESC
+            ) = 1
+        ), i AS (
+            SELECT * FROM {db.incitement_source(platform)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY scored_at DESC
+            ) = 1
+        )
+        SELECT p.platform_post_id, p.created_at, p.text,
+               h.label, h.p_hate, h.hate_flag,
+               h.domain, h.in_kenya_scope, h.coded_suspect, h.explicit_toxic,
+               i.dehumanisation_score, i.violence_call_score,
+               i.othering_score, i.political_criticism_score
+        FROM p
+        JOIN h USING (platform_post_id)
+        LEFT JOIN i ON p.platform_post_id = i.platform_post_id
+        """
+    ).df()
+
+    df["created_at"] = pd.to_datetime(df["created_at"], utc=True)
+    df["is_offensive"] = df["label"] == "offensive"
+    df["is_hate"] = df["label"] == "hate"
+
+    needs = df["domain"].isna() if "domain" in df.columns else pd.Series(True, index=df.index)
+    if needs.any():
+        live = measure.attach_measurement_columns(df[needs])
+        for c in ("domain", "in_kenya_scope", "coded_suspect", "explicit_toxic"):
+            df.loc[needs, c] = live[c]
+    df["in_kenya_scope"] = df["in_kenya_scope"].fillna(False).astype(bool)
+    df["coded_suspect"] = df["coded_suspect"].fillna(False).astype(bool)
+    return df
+
+
+def _rate(k, n: int) -> dict:
+    k = int(k)
+    lo, hi = _wilson(k, n)
+    return {"k": k, "p": round(k / n, 6), "lo": round(lo, 6), "hi": round(hi, 6)}
+
+
+def build_toxicity(
+    con: duckdb.DuckDBPyConnection, platform: str = "x", tz: str = "Africa/Nairobi"
+) -> dict:
+    """Statistic B: explicit toxicity and coded incitement, as two series.
+
+    Deliberately never merged into one "hate" line. The classifier is good at
+    explicit toxicity and demonstrably poor at the coded register - on 14 known
+    coded posts its mean p_hate DROPPED - so one blended line would hide the
+    thing a reader most needs to know.
+
+    Days are Kenyan days: the audience is UTC+3 and an hour-of-day figure in UTC
+    is actively misleading. `meta.timezone` states this.
+    """
+    df = _toxicity_frame(con, platform)
+    d = df[df["in_kenya_scope"]].copy()
+
+    # Clip to the observation window. Two separate artifacts to exclude:
+    #
+    # Timeline and hydration passes surface posts authored years before
+    # collection began - 431 of them, spread thinly enough to manufacture 433
+    # "suppressed days" that are not gaps in our observation at all.
+    #
+    # And the 14 days BEFORE collection started are only partially observed: a
+    # post from that window is in the corpus only if one of the first searches
+    # happened to reach it, so its denominator is a thin, biased sample. Measured
+    # 2026-08-06, including them put a 16% spike on the first day against a ~5%
+    # steady state. The floor is therefore the first collection, not the horizon
+    # before it.
+    start = _collection_start(con, platform)
+    if start is not None and len(d):
+        floor = pd.Timestamp(start).tz_convert("UTC")
+        d = d[d["created_at"] >= floor]
+
+    if d.empty:
+        return {"denominator": "Kenya-scoped baseline posts", "series": [],
+                "rolling7": [], "suppressed_days": [], "heatmap": [], "latest": None}
+
+    local = d["created_at"].dt.tz_convert(tz)
+    d["date"] = local.dt.floor("D").dt.strftime("%Y-%m-%d")
+    d["dow"] = local.dt.dayofweek
+    d["hour"] = local.dt.hour
+
+    daily = d.groupby("date").agg(
+        n=("label", "size"),
+        off=("is_offensive", "sum"),
+        hate=("is_hate", "sum"),
+        coded=("coded_suspect", "sum"),
+    ).sort_index()
+
+    thin = daily[daily["n"] < MIN_DAY_N]
+    kept = daily[daily["n"] >= MIN_DAY_N]
+
+    series = [
+        {
+            "date": date,
+            "n": int(r["n"]),
+            "offensive": _rate(r["off"], int(r["n"])),
+            "hate": _rate(r["hate"], int(r["n"])),
+            "coded": _rate(r["coded"], int(r["n"])),
+        }
+        for date, r in kept.iterrows()
+    ]
+
+    # min_periods=3 matches the notebook: a mean over one or two days is not a
+    # trend and should render as a gap rather than a confident line.
+    roll = pd.DataFrame({
+        "offensive": kept["off"] / kept["n"],
+        "hate": kept["hate"] / kept["n"],
+        "coded": kept["coded"] / kept["n"],
+    }).rolling(7, min_periods=3).mean()
+    rolling7 = [
+        {
+            "date": date,
+            **{c: (None if pd.isna(r[c]) else round(float(r[c]), 6)) for c in roll.columns},
+        }
+        for date, r in roll.iterrows()
+    ]
+
+    cell = d.groupby(["dow", "hour"]).agg(
+        n=("label", "size"), toxic=("explicit_toxic", "sum")
+    ).reset_index()
+    heatmap = [
+        {
+            "dow": int(r["dow"]), "hour": int(r["hour"]), "n": int(r["n"]),
+            "p_toxic": round(float(r["toxic"]) / int(r["n"]), 6) if r["n"] else None,
+            "suppressed": bool(r["n"] < MIN_DAY_N),
+        }
+        for _, r in cell.iterrows()
+    ]
+
+    n_total = int(len(d))
+    # LEFT JOINed, so the column can be entirely absent on a corpus the NLI pass
+    # has never touched.
+    incitement_col = d.get("dehumanisation_score")
+    n_incitement = int(incitement_col.notna().sum()) if incitement_col is not None else 0
+    return {
+        "denominator": (
+            "Kenya-scoped baseline posts (measure.domain_bucket is not offdomain)"
+        ),
+        "min_day_n": MIN_DAY_N,
+        "timezone": tz,
+        # The coded series reads as a flat zero, and that number needs its own
+        # caveat rather than a reader concluding coded incitement is absent.
+        # `coded_suspect` requires a documented lexicon hit corroborated by NLI,
+        # and the NLI pass has only reached part of the corpus.
+        "coded_coverage": {
+            "posts": n_total,
+            "with_incitement_scores": n_incitement,
+            "share": round(n_incitement / n_total, 4) if n_total else None,
+            "coded_suspect_total": int(d["coded_suspect"].sum()),
+            "note": (
+                "Coded incitement requires a documented NCIC/PeaceTech lexicon "
+                "hit corroborated by the NLI pass. Where that pass has not run, "
+                "a coded post cannot be counted - a low rate here is partly "
+                "coverage, not only prevalence."
+            ),
+        },
+        "series": series,
+        "rolling7": rolling7,
+        "suppressed_days": [
+            {"date": date, "n": int(r["n"])} for date, r in thin.iterrows()
+        ],
+        "heatmap": heatmap,
+        "latest": series[-1] if series else None,
     }
 
 
@@ -407,13 +603,15 @@ def build_summary(con: duckdb.DuckDBPyConnection, platform: str = "x") -> dict:
         meta = build_meta(con, platform)
     with _timed(timings, "coordination"):
         coordination = build_coordination(con, platform)
+    with _timed(timings, "toxicity"):
+        toxicity = build_toxicity(con, platform)
     return {
         "schema_version": SCHEMA_VERSION,
         "computed_at": datetime.now(timezone.utc).isoformat(),
         "platform": platform,
         "meta": meta,
         "coordination": coordination,
-        "toxicity": None,
+        "toxicity": toxicity,
         "share_of_voice": None,
         "targeting": None,
         "build": {"timings_s": timings},
