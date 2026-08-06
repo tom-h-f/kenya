@@ -122,6 +122,109 @@ def test_hot_objects_excludes_hubs_and_singletons():
     assert "LONE" not in retweeted, "below the floor - unpairable"
 
 
+def _replies_view(con, rows: list[dict]) -> str:
+    """A posts/type=replies stand-in: (conversation_id, collected_at)."""
+    table = pa.Table.from_pylist(
+        [{"conversation_id": r["cid"], "collected_at": r["at"]} for r in rows],
+        schema=pa.schema(
+            [("conversation_id", pa.string()),
+             ("collected_at", pa.timestamp("us", tz="UTC"))]
+        ),
+    )
+    con.register("replies_tbl", table)
+    return "replies_tbl"
+
+
+def test_conversation_arm_excludes_hubs_and_singletons():
+    """The conversation arm is banded for the same reason as the retweeted one.
+
+    Measured 2026-08-06 on the live corpus: unbanded `max(reply_count) DESC`
+    selected the biggest threads, and 82 of them - 31% of collected reply rows,
+    54% of the pairs those rows offered - were then deleted by the analysis hub
+    cap. 14,608 in-band conversations went untouched."""
+    rows = [
+        {"platform_post_id": "h", "conversation_id": "HUB", "reply_count": 5000},
+        {"platform_post_id": "m", "conversation_id": "MID", "reply_count": 42},
+        {"platform_post_id": "s", "conversation_id": "LONE", "reply_count": 1},
+    ]
+    con, view = _con_with_posts(rows)
+    _, conversations, _ = hot_objects(con, view, lookback_days=2, top_conversations=10)
+    assert conversations == ["MID"]
+    assert "HUB" not in conversations, "above the hub cap - replies would be discarded"
+    assert "LONE" not in conversations, "below the floor - unpairable"
+
+
+def test_conversation_selection_is_ttl_aware():
+    """TTL exclusion must happen during selection, not in `_due` afterwards.
+
+    Banding removes the accidental churn that hid this: ranking the whole
+    platform by reply_count re-ranked itself every pass, so `_due` had fresh
+    candidates by luck. Ranking a stable in-band population does not, and
+    without this the same threads are re-picked and discarded every pass - the
+    failure already measured on the retweeted arm (495 selected, 10-35
+    fetched)."""
+    rows = [
+        {"platform_post_id": "a", "conversation_id": "DONE", "reply_count": 90},
+        {"platform_post_id": "b", "conversation_id": "TODO", "reply_count": 10},
+    ]
+    con, view = _con_with_posts(rows)
+    replies = _replies_view(con, [{"cid": "DONE", "at": NOW - timedelta(hours=1)}])
+
+    _, conversations, _ = hot_objects(
+        con, view, lookback_days=2, top_conversations=1,
+        replies_view=replies, refresh_hours=12,
+    )
+    assert conversations == ["TODO"], "DONE is denser but was threaded inside the TTL"
+
+    # Outside the TTL it becomes a candidate again, and outranks TODO on degree.
+    con.unregister("replies_tbl")
+    replies = _replies_view(con, [{"cid": "DONE", "at": NOW - timedelta(hours=99)}])
+    _, conversations, _ = hot_objects(
+        con, view, lookback_days=2, top_conversations=1,
+        replies_view=replies, refresh_hours=12,
+    )
+    assert conversations == ["DONE"]
+
+
+def test_conversation_supply_counters_survive_a_fully_worked_band():
+    """Threaded rows are ordered last and dropped in Python, not filtered in
+    SQL, so a band with no work left still reports its size. Filtering would
+    return zero rows and make saturation indistinguishable from empty supply -
+    the distinction the backlog series exists to draw."""
+    rows = [{"platform_post_id": "a", "conversation_id": "DONE", "reply_count": 50}]
+    con, view = _con_with_posts(rows)
+    replies = _replies_view(con, [{"cid": "DONE", "at": NOW}])
+    stats: dict = {}
+    _, conversations, _ = hot_objects(
+        con, view, lookback_days=2, top_conversations=10,
+        replies_view=replies, refresh_hours=12, stats=stats,
+    )
+    assert conversations == []
+    assert stats["conversations_in_band"] == 1
+    assert stats["conversations_unthreaded"] == 0
+    assert stats["selected_conversations"] == 0
+
+
+def test_threaded_expr_requires_a_qualified_column():
+    """`conversation_id` exists on both sides, so a bare outer column binds to
+    the inner table and the predicate is trivially true for every row - every
+    candidate excluded, the arm stalled completely."""
+    from kenya_monitor import census
+
+    con = duckdb.connect()
+    with pytest.raises(ValueError, match="table-qualified"):
+        census.threaded_expr(con, "replies_tbl", "conversation_id")
+
+
+def test_threaded_expr_is_false_without_replies():
+    """A fresh deployment must select normally, not select nothing."""
+    from kenya_monitor import census
+
+    con = duckdb.connect()
+    assert census.threaded_expr(con, None, "recent.conversation_id") == "FALSE"
+    assert census.threaded_expr(con, "_nope", "recent.conversation_id") == "FALSE"
+
+
 def test_census_band_is_wired_to_the_analysis_hub_cap_env_var():
     """The band max must track `kma.coordination.HUB_CAP_MAX`, or the census
     silently refills with objects the projection will discard.

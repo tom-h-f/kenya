@@ -171,7 +171,14 @@ CENSUS_RUN_SCHEMA = pa.schema(
         ("degree_p90", pa.int64()),
         ("degree_max", pa.int64()),
         ("n_over_band_max", pa.int64()),
-        # the other arms of the same pass
+        # the other arms of the same pass. The conversation arm carries the same
+        # supply/selection/work triple as the retweeted one: without it, banding
+        # it would be another change whose effect nothing recorded.
+        ("top_conversations", pa.int64()),
+        ("conversations_in_band", pa.int64()),
+        ("conversations_unthreaded", pa.int64()),
+        ("conv_deg_min", pa.int64()),
+        ("conv_deg_max", pa.int64()),
         ("selected_conversations", pa.int64()),
         ("selected_missing", pa.int64()),
         ("due_conversations", pa.int64()),

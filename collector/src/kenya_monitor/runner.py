@@ -296,6 +296,7 @@ def hot_objects(
     band_min: int = SNOWBALL_BAND_MIN,
     band_max: int = SNOWBALL_BAND_MAX,
     engagements_view: str | None = None,
+    replies_view: str | None = None,
     refresh_hours: int = SNOWBALL_REFRESH_HOURS,
     *,
     stats: dict | None = None,
@@ -376,19 +377,66 @@ def hot_objects(
         stats["lookback_days"] = int(lookback_days)
         stats["refresh_hours"] = int(refresh_hours)
         stats["top_retweeted"] = int(top_retweeted)
-    conversations = [
-        r[0]
-        for r in con.sql(
-            base
-            + f"""
-            SELECT conversation_id FROM recent
+    # The conversation arm is banded and TTL-aware for the same reasons as the
+    # retweeted arm above, and it was neither until 2026-08-06.
+    #
+    # Unbanded `ORDER BY max(reply_count) DESC` selects the BIGGEST threads,
+    # which is precisely the population `HUB_CAP_MAX` deletes on the analysis
+    # side. Measured on collected posts/type=replies over the 14-day window: 82
+    # parents above the cap carried 31% of all collected reply rows and 54% of
+    # every account pair those rows offered, fetched and then discarded. The
+    # same window held 14,608 conversations INSIDE the band, untouched.
+    #
+    # This is what starved co_reply. Per pairable account the channel tested
+    # 0.57 pairs against co_retweet's 24, and of the 72 accounts in the
+    # validated co_reply layer exactly 1 had any co_retweet trace and 0 were
+    # co_retweet-pairable - so corroboration had a ceiling of zero and the 0/1
+    # it printed was one bridge account flickering. See docs/analysis/
+    # census-tuning.md §11.
+    #
+    # `max(reply_count)` is the thread root's own reply count, a proxy for the
+    # distinct-replier degree the hub cap actually measures. It is the quantity
+    # the previous ranking already used, so banding on it changes selection
+    # without introducing a new notion of conversation size.
+    threaded = census.threaded_expr(
+        con, replies_view, "recent.conversation_id", refresh_hours
+    )
+    conv_rows = con.sql(
+        base
+        + f"""
+        , conv AS (
+            SELECT recent.conversation_id AS cid,
+                   max(reply_count) AS deg,
+                   count(*) AS n_reply_rows,
+                   {threaded} AS threaded
+            FROM recent
             WHERE conversation_id IS NOT NULL
             GROUP BY 1
-            ORDER BY max(reply_count) DESC, count(*) DESC
-            LIMIT {int(top_conversations)}
-            """
-        ).fetchall()
-    ]
+            HAVING max(reply_count) BETWEEN {int(band_min)} AND {int(band_max)}
+        ), ranked AS (
+            SELECT cid, deg, n_reply_rows, threaded,
+                   count(*) OVER () AS n_in_band,
+                   sum(CASE WHEN threaded THEN 0 ELSE 1 END) OVER () AS n_unthreaded
+            FROM conv
+        )
+        SELECT cid, deg, n_in_band, n_unthreaded, threaded FROM ranked
+        -- Unworked first, then densest-first WITHIN the band, mirroring the
+        -- retweeted arm. Threaded rows are ordered last and dropped below
+        -- rather than filtered out here, so a fully-worked band still returns
+        -- a row carrying the window counts instead of reporting empty supply.
+        ORDER BY threaded, deg DESC, n_reply_rows DESC, cid
+        LIMIT {int(top_conversations)}
+        """
+    ).fetchall()
+    conv_picked = [r for r in conv_rows if not r[4]]
+    conversations = [r[0] for r in conv_picked]
+    if stats is not None:
+        stats["conversations_in_band"] = int(conv_rows[0][2]) if conv_rows else 0
+        stats["conversations_unthreaded"] = int(conv_rows[0][3]) if conv_rows else 0
+        stats["selected_conversations"] = len(conversations)
+        stats["conv_deg_min"] = int(conv_picked[-1][1]) if conv_picked else 0
+        stats["conv_deg_max"] = int(conv_picked[0][1]) if conv_picked else 0
+        stats["top_conversations"] = int(top_conversations)
     # Censused-but-unhydrated objects come FIRST, ahead of the most-engaged.
     #
     # A censused object with no post row has no `created_at`, so the
@@ -440,6 +488,7 @@ def select_census_objects(
     con: duckdb.DuckDBPyConnection,
     posts_view: str,
     engagements_view: str | None = None,
+    replies_view: str | None = None,
     hatespeech_view: str | None = None,
     *,
     stats: dict | None = None,
@@ -456,7 +505,11 @@ def select_census_objects(
     from kenya_monitor import hate_signal as hsig
 
     retweeted, conversations, missing = hot_objects(
-        con, posts_view, engagements_view=engagements_view, stats=stats
+        con,
+        posts_view,
+        engagements_view=engagements_view,
+        replies_view=replies_view,
+        stats=stats,
     )
     if hatespeech_view is None:
         return retweeted, conversations, missing

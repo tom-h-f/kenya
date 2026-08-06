@@ -381,6 +381,7 @@ async def run_snowball_once(**overrides) -> dict[str, int]:
             storage.con,
             storage.posts_view(platform="x"),
             engagements_view=storage.engagements_view(platform="x"),
+            replies_view=storage.posts_view(platform="x", target_type="replies"),
             hatespeech_view=storage.hatespeech_view(platform="x"),
             stats=stats,
         )

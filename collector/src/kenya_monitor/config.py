@@ -36,7 +36,13 @@ SEARCH_INCLUDE_RETWEETS = os.getenv("SEARCH_INCLUDE_RETWEETS", "1") not in ("0",
 # had ever been censused (0.4%). Raised hard to work through that backlog; the
 # 12h per-object TTL means the cost falls once coverage catches up.
 SNOWBALL_TOP_RETWEETED = int(os.getenv("SNOWBALL_TOP_RETWEETED", "250"))
-SNOWBALL_TOP_CONVERSATIONS = int(os.getenv("SNOWBALL_TOP_CONVERSATIONS", "60"))
+# Matched to the retweeted arm 2026-08-06, when the conversation arm was banded
+# to the hub cap. At 60 unbanded it drew the busiest threads on the platform,
+# most of which the analysis-side hub cap then deleted; banded, it draws from
+# 14,608 in-band conversations and 60 slots per pass covers 0.4% of them. The
+# retweeted arm covers ~9% of its band per pass, and that difference is what the
+# two channels' pairable counts look like (27,758 vs 3,949).
+SNOWBALL_TOP_CONVERSATIONS = int(os.getenv("SNOWBALL_TOP_CONVERSATIONS", "250"))
 SNOWBALL_RETWEETERS_LIMIT = int(os.getenv("SNOWBALL_RETWEETERS_LIMIT", "300"))
 SNOWBALL_REPLIES_LIMIT = int(os.getenv("SNOWBALL_REPLIES_LIMIT", "150"))
 # One API call per id (`tweet_details`), so this is the expensive arm per unit.
