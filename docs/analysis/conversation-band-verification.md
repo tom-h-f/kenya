@@ -50,6 +50,41 @@ Corroboration history, for the flicker: 0,1,1,1,0,0 over the six passes ending
 Collector side at deploy: `conversations_in_band` 2,423, of which 2,412
 unthreaded (the backlog), 250 selected per pass at degree 58-100.
 
+## First pass after deploy, 2026-08-06 13:53 (`fce6d5c`)
+
+Recorded immediately, so the collector-side half of the claim is settled before
+the analysis-side half has had time to move.
+
+| | old (`17f4338`) | new (`fce6d5c`) |
+|---|---|---|
+| `top_conversations` | 60 | 250 |
+| `selected_conversations` | 60 | 250 |
+| `conv_deg_min` / `conv_deg_max` | not recorded | 60 / 100 |
+| `conversations_in_band` | not recorded | 2,407 |
+| `conversations_unthreaded` | not recorded | 2,397 |
+| `reply_rows` | 2,026 | **5,843** |
+
+Reply supply up 2.9x, every selected conversation inside the band. Steps 1-3 of
+the claim are now the open question; the arm itself is doing what it was
+changed to do.
+
+Two things the first pass taught that the design did not anticipate:
+
+**The API caps delivered replies at ~36 per thread** regardless of the root's
+stated `reply_count` (observed over 38 fetches: min 20, p50 36, max 36, none
+above 100). `SNOWBALL_REPLIES_LIMIT=150` never binds. So per-conversation yield
+is fixed and the ONLY lever on reply volume is the number of conversations -
+widening `top_conversations` was the right choice and going deeper would have
+bought nothing. It also means the 82 parents above the hub cap in §11 accumulate
+across repeated fetches and other collection paths, not within one fetch.
+
+**`due_conversations` was 177, not 250.** `threaded_expr` (R2 evidence) and
+`_due` (local JSON state) disagree on 73 threads, and the disagreement is
+correct in both directions: a thread that returned zero replies is marked in
+local state but leaves no rows in R2, so the R2 check reads it as unworked
+while the local check rightly skips it. The two guards are complementary, not
+redundant. Do not "simplify" by deleting either.
+
 ## The check
 
 Run this after 3+ days of collection (2026-08-09 or later).
