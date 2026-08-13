@@ -861,12 +861,17 @@ def validated_edges(
         stats["accounts_all"] = int(n_accounts)
         stats["traces_all"] = int(con.sql(f"SELECT count(*) FROM {t}").fetchone()[0])
     if delta is not None:
-        mc = lambda m: validate_montecarlo(  # noqa: E731
+        # ONE shuffle, both corrections. This used to call the whole thing twice
+        # - `n_iter` (500) rounds of a Python-level pair-count loop per call -
+        # for a result that differs only in the final three lines, and then
+        # assigned the second frame's column into the first by positional index
+        # rather than by key. That was correct only because the same seed made
+        # both runs emit identical row order.
+        out = validate_montecarlo(
             con, channel, delta, n_iter=n_iter, alpha=alpha,
-            min_repetition=min_repetition, method=m, trace_table=t,
-        )
-        out = mc("fdr_bh").rename(columns={"validated": "sig_fdr"})
-        out["sig_bonferroni"] = mc("bonferroni")["validated"]
+            min_repetition=min_repetition, method="fdr_bh", trace_table=t,
+        ).rename(columns={"validated": "sig_fdr"})
+        out["sig_bonferroni"] = out["p_value"] < alpha / max(len(out), 1)
     else:
         obj_deg = object_degrees(con, channel, platform, trace_table=t)
         # The 5%-of-accounts term was meant to lift the cap on tiny corpora, but

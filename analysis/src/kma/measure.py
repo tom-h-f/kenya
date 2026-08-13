@@ -147,7 +147,7 @@ def attach_measurement_columns(df: pd.DataFrame) -> pd.DataFrame:
     ``othering_score``, ``political_criticism_score``).
     """
     out = df.copy()
-    texts = out["text"] if "text" in out.columns else pd.Series([None] * len(out))
+    texts = out["text"] if "text" in out.columns else pd.Series([None] * len(out), index=out.index)
 
     out["domain"] = texts.map(domain_bucket)
     out["in_kenya_scope"] = out["domain"] != "offdomain"
@@ -156,10 +156,10 @@ def attach_measurement_columns(df: pd.DataFrame) -> pd.DataFrame:
     out["lexicon_hits_live"] = [h for h, _ in scans]
     out["lexicon_categories_live"] = [c for _, c in scans]
 
-    dehum = out.get("dehumanisation_score", pd.Series([None] * len(out)))
-    viol = out.get("violence_call_score", pd.Series([None] * len(out)))
-    oth = out.get("othering_score", pd.Series([None] * len(out)))
-    pol = out.get("political_criticism_score", pd.Series([None] * len(out)))
+    dehum = out.get("dehumanisation_score", pd.Series([None] * len(out), index=out.index))
+    viol = out.get("violence_call_score", pd.Series([None] * len(out), index=out.index))
+    oth = out.get("othering_score", pd.Series([None] * len(out), index=out.index))
+    pol = out.get("political_criticism_score", pd.Series([None] * len(out), index=out.index))
 
     out["coded_suspect"] = [
         coded_suspect(hits, d, v, o, p)
@@ -168,11 +168,15 @@ def attach_measurement_columns(df: pd.DataFrame) -> pd.DataFrame:
         )
     ]
 
-    label = out["label"] if "label" in out.columns else pd.Series(["neither"] * len(out))
+    label = (
+        out["label"]
+        if "label" in out.columns
+        else pd.Series(["neither"] * len(out), index=out.index)
+    )
     hate_flag = (
         out["hate_flag"].fillna(False).astype(bool)
         if "hate_flag" in out.columns
-        else pd.Series([False] * len(out))
+        else pd.Series([False] * len(out), index=out.index)
     )
     out["explicit_toxic"] = ((label != "neither") | hate_flag) & out["in_kenya_scope"]
     # coded rate is also Kenya-scoped for prevalence denominators

@@ -163,3 +163,27 @@ def test_attach_measurement_columns():
     assert bool(out.loc[2, "coded_suspect_kenya"])
     assert not bool(out.loc[0, "coded_suspect"])
     assert "madoadoa" in out.loc[2, "lexicon_hits_live"]
+
+
+def test_missing_columns_align_on_a_non_default_index():
+    """The fallback Series were built with a fresh RangeIndex, so on a sliced
+    frame - `df[needs]` in the dashboard, `pending.iloc[a:b]` in
+    refresh_measure - pandas aligned on index and produced all-NaN. Dormant only
+    because every live caller happened to supply every column."""
+    # `text` absent is the path that actually breaks: its fallback feeds a
+    # `.map`, and assigning a RangeIndex result onto a [7, 42] frame yields NaN.
+    df = pd.DataFrame(
+        {"label": ["hate", "neither"], "hate_flag": [True, False]}, index=[7, 42]
+    )
+    out = m.attach_measurement_columns(df)
+
+    assert list(out.index) == [7, 42]
+    assert out["domain"].notna().all(), "domain came back NaN via index misalignment"
+    assert list(out["domain"]) == ["ambiguous", "ambiguous"]
+    assert out["explicit_toxic"].notna().all()
+
+    # And the ordinary case still resolves per row on a non-default index.
+    texts = pd.DataFrame(
+        {"text": ["ruto must go", "trump rally in ohio"]}, index=[3, 9]
+    )
+    assert list(m.attach_measurement_columns(texts)["domain"]) == ["kenya", "offdomain"]
