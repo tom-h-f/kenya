@@ -204,6 +204,13 @@ COORD_LOOKBACK_DAYS = int(os.getenv("COORD_LOOKBACK_DAYS", "14"))
 # Upper bound on the hub cap. At cap 50 the projection keeps 98.1% of objects and
 # 0.7% of the pairs; the discarded 1.9% are mega-viral posts whose co-amplifiers
 # are organic, not coordinated.
+#
+# SHARED WITH THE COLLECTOR. `kenya_monitor.config.SNOWBALL_BAND_MAX` reads this
+# same env var, because the census must not spend requests on objects the
+# projection then discards. One consequence worth knowing: changing it changes
+# both what is COLLECTED and what is DISCARDED, and nothing reconciles rows
+# gathered under a previous band - split any series on `code_version` before
+# comparing across such a change.
 HUB_CAP_MAX = int(os.getenv("HUB_CAP_MAX", "100"))
 
 # Which edge filter feeds community detection. Bonferroni, not FDR, and this is
@@ -834,7 +841,7 @@ def validated_edges(
     Untimed channels use the degree-corrected SVN (configuration-model null;
     `p_uniform` keeps the classic hypergeometric for comparison) over the
     incidence with hub objects excluded: objects acted on by more than
-    `hub_cap` accounts (default max(50, 5% of accounts)) carry no coordination
+    `hub_cap` accounts (default max(50, min(5% of accounts, HUB_CAP_MAX))) carry no coordination
     signal - pairs sharing only a mega-viral tweet are organic - and one such
     hub otherwise dilutes the aggregate null rate until real clusters vanish
     (doc 02 scaling note). Excluded hubs are logged. Pass `delta` for the
@@ -973,6 +980,21 @@ def build_layers(
     `method` picks the edge filter ("bonferroni", "fdr", "percentile");
     `deltas` maps a channel to a co-action window for the timed variant.
 
+    NOTE the default `channels=WAVE_A` is NOT what production runs.
+    `coordination_run.DEFAULT_CHANNELS` is `["co_retweet", "co_reply"]`;
+    `text_sim` and `fast_co_share` validated zero edges on the full corpus and
+    are excluded there. Cluster identity, `n_channels` and
+    `internal_edge_share` are all functions of the layer set, so a call using
+    this default produces a DIFFERENT multiplex from the persisted run and the
+    two are not comparable. Pass `DEFAULT_CHANNELS` explicitly to reproduce
+    production. (`min_size` diverges the same way: 3 in production, 2 in the
+    coordination notebook.)
+
+    Requesting `text_sim` also silently selects a different statistic:
+    `DEFAULT_DELTAS` gives it a 3600s window, which routes it to the
+    Monte-Carlo timed null with a `count(*)` weight rather than the
+    hypergeometric path.
+
     `stats`, when given, is filled with channel -> counters. It is an explicit
     parameter rather than part of `**params` on purpose: forwarded through
     `params` one dict would be shared by every channel and each would overwrite
@@ -1055,17 +1077,22 @@ def aggregate_layers(
     """Sum normalised layer weights into one multiplex graph, tracking the
     per-edge supporting channels.
 
-    `normalise="mass"` (default) scales each layer to unit total weight, so a
-    layer influences the partition by its *evidence*, not by how many edges it
-    happens to contain. `"max"` is the original per-edge scaling, kept for
-    comparison.
+    `normalise="max"` is the DEFAULT (`DEFAULT_LAYER_NORM`): divide each layer
+    by its own largest weight, bounding every edge at 1.
 
-    Why this matters: "max" divides by the layer's largest weight, which bounds
-    each edge at 1 but leaves total influence proportional to edge COUNT.
-    Measured 2026-08-02, co_retweet carried 140,518 edges against co_reply's
-    1,210 - and after the switch to Bonferroni, 5,698 against 28. At 203:1 the
-    smaller layer cannot affect a single community boundary, so Leiden was
-    partitioning one channel and the multiplex was decorative.
+    `"mass"` scales each layer to unit total weight instead, so a layer would
+    influence the partition by its evidence rather than its edge count - the
+    imbalance is real (measured 2026-08-02: co_retweet 140,518 edges against
+    co_reply's 1,210, and 5,698 against 28 under Bonferroni). It is retained
+    only as an option and must not be made the default: CPM compares internal
+    weight against an ABSOLUTE `resolution_parameter`, so dividing by the total
+    puts every weight near 0.0006, nothing clears 0.05, and the run produced 0
+    clusters against 95 under "max".
+
+    "max" has a milder version of the same disease: the effective resolution
+    becomes a function of the layer's single largest weight, so one extreme pair
+    can push everything else below the threshold. `layer_weight_max` is
+    persisted per channel so a run that loses clusters that way leaves a trace.
 
     Resolved at call time, not bind time, so the env var and tests both work."""
     normalise = normalise or DEFAULT_LAYER_NORM

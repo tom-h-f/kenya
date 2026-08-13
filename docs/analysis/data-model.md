@@ -242,6 +242,17 @@ one row per member post with the scored story columns. These are the
 collector-handoff prefixes: `monitor adapt` reads the latest cluster/story run
 to promote targets.
 
+**`cluster_id` is a per-run Leiden label with no stability across passes.**
+`communities` returns `part.membership`, reissued positionally each run, so
+cluster 3 today and cluster 3 tomorrow are unrelated. Two consequences:
+
+- Read a run with **`coordination_run_latest`**, which `dense_rank`s on
+  `computed_at`. The `latest_coordination_*` helpers partition per entity and
+  therefore union every pass ever written - measured 2026-08-12 at 44,585
+  member rows across 1,078 ids from 47 passes, against a true 1,043 / 128.
+- Join across runs on **`stable_cluster_id`** (sha1 of the sorted member
+  author_ids), never on `cluster_id`. Same idea as `stories.stable_story_id`.
+
 `coordination/kind=run_metrics` is different in kind: one row per (run,
 channel) holding the pass's own counters - `hub_cap`, `hub_objects`,
 `accounts_all`, `nohub_amp`, `pairable`, edges per method, and the run-level

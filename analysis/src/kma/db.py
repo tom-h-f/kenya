@@ -76,8 +76,10 @@ def curated_handles(path: Path | None = None, platform: str = "x") -> set[str]:
     pass wrote BOTH curated targets and coordination-promoted accounts into
     `type=timeline`, a baseline partition. Promoted accounts are selected for
     looking coordinated, so their timelines are targeted collection and do not
-    belong in a prevalence denominator. Measured leak: 41,595 posts from 407
-    accounts, 6.7% of the baseline corpus.
+    belong in a prevalence denominator. The leak is a FIXED historical set - the
+    collector stopped writing it on 2026-08-01 - so its share shrinks as the
+    corpus grows: 41,595 posts / 6.7% when first measured, 4,312 posts / 1.10%
+    of the baseline denominator on 2026-08-13.
 
     Returns an empty set when the file is unavailable, which disables the
     correction rather than silently dropping data - see `leak_corrected()`.
@@ -93,7 +95,8 @@ def curated_handles(path: Path | None = None, platform: str = "x") -> set[str]:
 
 def leak_corrected(path: Path | None = None) -> bool:
     """Whether the timeline-leak correction can be applied. Publish this: a rate
-    computed without it carries a known 6.7% contamination."""
+    computed without it carries a known contamination (1.10% of the baseline
+    denominator as of 2026-08-13; see `curated_handles`)."""
     return bool(curated_handles(path))
 
 
