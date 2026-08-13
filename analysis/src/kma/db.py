@@ -249,6 +249,63 @@ def latest_posts(
     return con.sql(f"WITH {scoped.cte} SELECT * FROM {scoped.name}")
 
 
+def pending_posts(
+    con: duckdb.DuckDBPyConnection,
+    scored_source: str | None,
+    platform: str = "*",
+    limit: int | None = None,
+    columns: str = "platform_post_id, text",
+    priority_sql: str | None = None,
+):
+    """Posts with text that `scored_source` has not covered yet, NEWEST FIRST.
+
+    Every enrichment pass needs this and each had its own copy, all of the same
+    shape: pull the entire deduped corpus into pandas, pull the entire scored-id
+    set into pandas, anti-join in Python, then `.head(limit)`. That materialises
+    two full-corpus frames per pass and applies the cap in arbitrary Parquet
+    order, so freshly collected posts were not prioritised - they were scored
+    whenever the scan happened to reach them.
+
+    Pushing the anti-join into DuckDB lets it stream instead, and the explicit
+    ordering means a bounded pass always takes the newest work.
+
+    `priority_sql` is a boolean expression ordered ahead of recency, for a pass
+    whose budget should go somewhere other than "newest". It is applied in SQL
+    so it survives the LIMIT - sorting after a cap would only reorder work
+    already chosen.
+
+    Deliberately NOT windowed by `dt`. A window would bound the scan, but it
+    would also permanently strand everything older - and the backlog is real
+    (438,103 posts unscored by the incitement pass as of 2026-08-13). Draining
+    history is what `backfill` is for; this path must be able to reach it.
+    """
+    anti = ""
+    if scored_source is not None:
+        try:
+            con.sql(f"SELECT 1 FROM {scored_source} LIMIT 1").fetchall()
+            anti = f"""
+              AND NOT EXISTS (
+                  SELECT 1 FROM {scored_source} s
+                  WHERE s.platform_post_id = p.platform_post_id
+              )"""
+        except duckdb.Error:
+            pass  # prefix not written yet: everything is pending
+    return con.sql(
+        f"""
+        SELECT {columns} FROM (
+            SELECT * FROM {posts_source(platform)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+            ) = 1
+        ) p
+        WHERE text IS NOT NULL AND length(trim(text)) > 0
+        {anti}
+        ORDER BY {f"({priority_sql}) DESC, " if priority_sql else ""}collected_at DESC
+        {f"LIMIT {int(limit)}" if limit else ""}
+        """
+    ).df()
+
+
 def metrics_source(platform: str = "*") -> str:
     glob = f"r2://{BUCKET}/metrics/platform={platform}/dt=*/run=*.parquet"
     return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"

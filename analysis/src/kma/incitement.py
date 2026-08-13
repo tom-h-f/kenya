@@ -36,7 +36,7 @@ import pandas as pd
 import pyarrow as pa
 
 from kma.classify import STANCE_MODEL, _pipe, _run
-from kma.db import BUCKET, incitement_source, posts_source
+from kma.db import BUCKET, incitement_source, pending_posts, posts_source
 
 # category -> lexicon entries. `pattern` is a case-insensitive regex fragment;
 # `fp_risk` marks terms with common innocent senses (mende = cockroach the
@@ -135,41 +135,40 @@ def lexicon_scan(
     return df[df["lexicon_hits"].str.len() > 0].reset_index(drop=True)
 
 
-def _scored_ids(con: duckdb.DuckDBPyConnection, platform: str) -> set[str]:
-    try:
-        rel = con.sql(
-            f"SELECT DISTINCT platform_post_id FROM {incitement_source(platform)}"
-        )
-    except duckdb.Error:
-        return set()
-    return set(rel.df()["platform_post_id"].tolist())
+def _lexicon_hit_sql() -> str:
+    """A DuckDB boolean: does this post's text match any lexicon pattern?
+
+    Mirrors `scan_text`'s regexes so SQL ordering and the Python scan agree.
+    Patterns are authored in this module and carry no quote characters, which
+    `test_lexicon_patterns_are_sql_safe` pins."""
+    pats = [meta["pattern"] for terms in LEXICON.values() for meta in terms.values()]
+    return " OR ".join(f"regexp_matches(text, '{p}', 'i')" for p in pats) or "FALSE"
 
 
 def _pending(
     con: duckdb.DuckDBPyConnection, platform: str, limit: int | None
 ) -> pd.DataFrame:
     """Unscored posts, lexicon hits first (the NLI pass is hours for the full
-    corpus; priority order lets a bounded run cover the triage-relevant tail)."""
-    df = con.sql(
-        f"""
-        SELECT platform_post_id, text FROM (
-            SELECT * FROM {posts_source(platform)}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        )
-        WHERE text IS NOT NULL AND length(trim(text)) > 0
-        """
-    ).df()
-    df = df[~df["platform_post_id"].isin(_scored_ids(con, platform))]
+    corpus; priority order lets a bounded run cover the triage-relevant tail).
+
+    The priority is evaluated in SQL, not in pandas after the fact: it has to be
+    applied BEFORE the limit or it only reorders rows already chosen, and the
+    whole point is which rows get chosen. `scan_text` still runs on the returned
+    page to populate the hit lists - the SQL predicate only decides ordering.
+    """
+    df = pending_posts(
+        con,
+        incitement_source(platform),
+        platform,
+        limit,
+        priority_sql=_lexicon_hit_sql(),
+    )
     if df.empty:
         return df.assign(lexicon_hits=None, lexicon_categories=None)
     scans = df["text"].map(scan_text)
     df["lexicon_hits"] = [h for h, _ in scans]
     df["lexicon_categories"] = [c for _, c in scans]
-    df["_prio"] = df["lexicon_hits"].map(len) > 0
-    df = df.sort_values("_prio", ascending=False).drop(columns="_prio")
-    return df.head(limit) if limit else df
+    return df
 
 
 def score_new(

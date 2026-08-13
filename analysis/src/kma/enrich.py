@@ -119,18 +119,30 @@ def _subprocess_pass(flags: list[str], limit: int | None, batch_size: int) -> in
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.stdout:
         sys.stdout.write(proc.stdout)
+    # The child logs to stderr (logging.basicConfig), so discarding it on success
+    # threw away every per-pass progress line and left `docker compose logs`
+    # showing nothing but a summed total.
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
     if proc.returncode != 0:
         log.error("pass %s failed (rc=%d): %s", flags, proc.returncode, proc.stderr[-500:])
         return 0
     # last line is "enriched: {'embedded': N}" / "{'labelled': N}"
     line = [ln for ln in proc.stdout.splitlines() if ln.startswith("enriched:")]
     if not line:
+        # A pass that ran but printed nothing recognisable is a broken contract,
+        # not an empty backlog. Returning 0 silently sent the loop into its
+        # 10-20 minute idle branch with work still outstanding.
+        log.error(
+            "pass %s produced no 'enriched:' line; treating as a failure", flags
+        )
         return 0
     import ast
 
     try:
         return sum(ast.literal_eval(line[-1].split("enriched:", 1)[1].strip()).values())
-    except Exception:
+    except (ValueError, SyntaxError, AttributeError, TypeError):
+        log.exception("pass %s emitted an unparseable count: %r", flags, line[-1])
         return 0
 
 

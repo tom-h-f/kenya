@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 import duckdb
 import pyarrow as pa
 
-from kma.db import BUCKET, embeddings_source, posts_source
+from kma.db import BUCKET, embeddings_source, pending_posts, posts_source
 
 _CLEAN = re.compile(r"https?://\S+|@\w+|#\w+|[^\w\s]", re.UNICODE)
 
@@ -72,20 +72,9 @@ def _embedded_ids(con: duckdb.DuckDBPyConnection, platform: str, model: str) -> 
 
 
 def _pending(con: duckdb.DuckDBPyConnection, platform: str, model: str, limit: int | None):
-    done = _embedded_ids(con, platform, model)
-    df = con.sql(
-        f"""
-        SELECT platform_post_id, text FROM (
-            SELECT * FROM {posts_source(platform)}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        )
-        WHERE text IS NOT NULL AND length(trim(text)) > 0
-        """
-    ).df()
-    df = df[~df["platform_post_id"].isin(done)]
-    return df.head(limit) if limit else df
+    return pending_posts(
+        con, embeddings_source(platform, _slug(model)), platform, limit
+    )
 
 
 def embed_new(

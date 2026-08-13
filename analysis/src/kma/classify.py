@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 import duckdb
 import pyarrow as pa
 
-from kma.db import BUCKET, labels_source, posts_source
+from kma.db import BUCKET, labels_source, pending_posts, posts_source
 
 SENTIMENT_MODEL = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
 EMOTION_MODEL = "MilaNLProc/xlm-emo-t"
@@ -78,28 +78,8 @@ def _run(pipe, texts: list[str], batch_size: int, **call_kwargs) -> list:
     return out
 
 
-def _labeled_ids(con: duckdb.DuckDBPyConnection, platform: str) -> set[str]:
-    try:
-        rel = con.sql(f"SELECT DISTINCT platform_post_id FROM {labels_source(platform)}")
-    except duckdb.Error:
-        return set()
-    return set(rel.df()["platform_post_id"].tolist())
-
-
 def _pending(con: duckdb.DuckDBPyConnection, platform: str, limit: int | None):
-    df = con.sql(
-        f"""
-        SELECT platform_post_id, text FROM (
-            SELECT * FROM {posts_source(platform)}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        )
-        WHERE text IS NOT NULL AND length(trim(text)) > 0
-        """
-    ).df()
-    df = df[~df["platform_post_id"].isin(_labeled_ids(con, platform))]
-    return df.head(limit) if limit else df
+    return pending_posts(con, labels_source(platform), platform, limit)
 
 
 def classify_new(

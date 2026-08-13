@@ -33,7 +33,14 @@ import duckdb
 import pandas as pd
 import pyarrow as pa
 
-from kma.db import BUCKET, connect, hatespeech_source, incitement_source, posts_source
+from kma.db import (
+    BUCKET,
+    connect,
+    hatespeech_source,
+    incitement_source,
+    pending_posts,
+    posts_source,
+)
 
 MODEL = os.getenv("HATESPEECH_MODEL", "tom-h-f/kenya-hatespeech-afroxlmr")
 HATE_THRESHOLD = float(os.getenv("HATESPEECH_THRESHOLD", "0.28"))
@@ -111,32 +118,10 @@ def _predict(texts: list[str], batch_size: int = 64) -> pd.DataFrame:
     )
 
 
-def _scored_ids(con: duckdb.DuckDBPyConnection, platform: str) -> set[str]:
-    try:
-        rel = con.sql(
-            f"SELECT DISTINCT platform_post_id FROM {hatespeech_source(platform)}"
-        )
-    except duckdb.Error:
-        return set()
-    return set(rel.df()["platform_post_id"].tolist())
-
-
 def _pending(
     con: duckdb.DuckDBPyConnection, platform: str, limit: int | None
 ) -> pd.DataFrame:
-    df = con.sql(
-        f"""
-        SELECT platform_post_id, text FROM (
-            SELECT * FROM {posts_source(platform)}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        )
-        WHERE text IS NOT NULL AND length(trim(text)) > 0
-        """
-    ).df()
-    df = df[~df["platform_post_id"].isin(_scored_ids(con, platform))]
-    return df.head(limit) if limit else df
+    return pending_posts(con, hatespeech_source(platform), platform, limit)
 
 
 MEASURE_COLUMNS = (
