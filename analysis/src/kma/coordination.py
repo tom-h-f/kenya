@@ -84,6 +84,14 @@ METRIC_GLOSSARY = {
     "view. Expect a few false positives among many edges; read as a candidate set.",
     "sig_bonferroni": "Survived Bonferroni control - the high-precision core. "
     "Near-empty on random data by design; treat these edges as load-bearing.",
+    "edges_bonferroni": "COUNT UNDER A MOVING THRESHOLD - never plot it as a "
+    "trend on its own. The bar is alpha/edges_tested, and edges_tested is "
+    "data-dependent: it grows with the corpus every pass, and differs ~300x "
+    "between co_retweet and co_reply WITHIN one run. Read it next to "
+    "edges_tested, or use `edges_per_tested`.",
+    "edges_per_tested": "edges_bonferroni / edges_tested - the share of the "
+    "tested family that survived correction. The comparable form, because it "
+    "divides out the family-size growth that moves the raw count.",
     "sig_percentile": "In the top weight percentile (CooRnet-style baseline, no "
     "null model). Divergence from the SVN sets flags popular-object noise.",
     "min_gap": "Tightest inter-arrival gap (seconds) between the pair's co-actions. "

@@ -547,10 +547,20 @@ def coordination_metrics(con: duckdb.DuckDBPyConnection, platform: str = "x"):
     state - you want the newest. This one is a series: the questions it exists
     to answer ("did corroborated clusters move when the census changed") are
     only answerable across runs, and reading just the newest row reproduces the
-    exact mistake that made the census-tuning Q2 figure wrong."""
+    exact mistake that made the census-tuning Q2 figure wrong.
+
+    Adds `edges_per_tested`, which is the comparable form of
+    `edges_bonferroni`. The raw count is taken under a moving threshold -
+    `alpha / edges_tested`, where the family grows with the corpus every pass
+    and differs ~300x between channels within a single run - so plotting it as
+    a trend conflates "more coordination" with "larger tested family"."""
     return con.sql(
-        f"SELECT * FROM {coordination_source('run_metrics', platform)} "
-        "ORDER BY computed_at, channel"
+        f"""
+        SELECT *,
+               edges_bonferroni::DOUBLE / nullif(edges_tested, 0) AS edges_per_tested
+        FROM {coordination_source('run_metrics', platform)}
+        ORDER BY computed_at, channel
+        """
     )
 
 
