@@ -37,6 +37,7 @@ dependencies = [
 [project.scripts]
 kma-enrich = "kma.enrich:main"
 kma-dashboard = "kma.dashboard:main"
+kma-incitement = "kma.incitement:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]

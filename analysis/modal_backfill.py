@@ -54,20 +54,42 @@ image = (
     ],
     timeout=6 * 3600,
 )
-def run(limit: int | None = None, batch_size: int = 256) -> int:
+def run(
+    limit: int | None = None, batch_size: int = 256, pass_name: str = "hate"
+) -> int:
+    """Drain one enrichment prefix on GPU.
+
+    `pass_name="incitement"` runs the coded-incitement NLI instead of the hate
+    classifier. That pass is four hypotheses per post through mDeBERTa rather
+    than one 3-class forward pass, so its default batch is smaller; pass
+    `--batch-size` explicitly when tuning.
+
+    Run incitement BEFORE any hate backfill. `hatespeech._measure_frame`
+    resolves `coded_suspect` from the `incitement/` prefix at scoring time and
+    writes a non-null False when it finds nothing, so hate rows written first
+    need `kma.hatespeech.refresh_measure` afterwards to pick the NLI up.
+    """
     from kma.db import connect
-    from kma.hatespeech import backfill, score_new
+
+    if pass_name == "incitement":
+        from kma.incitement import backfill, score_new
+    elif pass_name == "hate":
+        from kma.hatespeech import backfill, score_new
+    else:
+        raise ValueError(f"unknown pass {pass_name!r} (expected hate|incitement)")
 
     if limit is not None:  # smoke: one bounded pass, no full drain
         con = connect()
         n = score_new(con, limit=limit, batch_size=batch_size)
-        print(f"smoke: scored {n}")
+        print(f"smoke [{pass_name}]: scored {n}")
         return n
     total = backfill(batch_size=batch_size)
-    print(f"backfilled {total}")
+    print(f"backfilled [{pass_name}] {total}")
     return total
 
 
 @app.local_entrypoint()
-def main(limit: int | None = None, batch_size: int = 256):
-    print(run.remote(limit=limit, batch_size=batch_size))
+def main(
+    limit: int | None = None, batch_size: int = 256, pass_name: str = "hate"
+):
+    print(run.remote(limit=limit, batch_size=batch_size, pass_name=pass_name))

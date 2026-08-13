@@ -27,6 +27,7 @@ hate-speech corpora is a documented future option, not part of this pass.
 
 from __future__ import annotations
 
+import argparse
 import re
 from datetime import datetime, timezone
 
@@ -225,3 +226,47 @@ def score_new(
     finally:
         con.unregister("_inc_buf")
     return len(df)
+
+
+def backfill(chunk: int = 5_000, batch_size: int = 32, platform: str = "x") -> int:
+    """Drain the whole corpus: `score_new` in bounded runs until nothing pends.
+    Resumable - each pass re-derives the scored ids and skips them.
+
+    `chunk` is the pending cap per run (one Parquet file, one full-corpus
+    anti-join scan); `batch_size` is the inference batch. Decoupled for the same
+    reason as `hatespeech.backfill`: a small chunk re-scans the whole corpus per
+    batch. Smaller defaults than the hate pass because this is four NLI
+    hypotheses per post through mDeBERTa, not one 3-class forward pass.
+    Returns total scored."""
+    con = connect()
+    total = 0
+    while True:
+        n = score_new(con, platform=platform, limit=chunk, batch_size=batch_size)
+        if n == 0:
+            break
+        total += n
+        print(f"backfill: scored {n} (running total {total})")
+    return total
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description="Score posts for coded incitement (lexicon + zero-shot NLI)."
+    )
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--once", action="store_true", help="single bounded pass")
+    mode.add_argument("--backfill", action="store_true", help="drain the corpus")
+    ap.add_argument("--limit", type=int, default=None, help="max posts (once mode)")
+    ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--platform", default="x")
+    args = ap.parse_args()
+    if args.backfill:
+        total = backfill(batch_size=args.batch_size, platform=args.platform)
+        print(f"incitement: backfilled {total}")
+    else:
+        n = score_new(connect(), args.platform, args.limit, args.batch_size)
+        print(f"incitement: scored {n}")
+
+
+if __name__ == "__main__":
+    main()

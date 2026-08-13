@@ -29,9 +29,21 @@ import time
 from kma.classify import classify_new
 from kma.db import connect
 from kma.hatespeech import score_new as score_hate_new
+from kma.incitement import score_new as score_incitement_new
 from kma.semantic import embed_new
 
 log = logging.getLogger("kma.enrich")
+
+#: The enrichment passes, in the order they must run.
+#:
+#: `incitement` sits BEFORE `hate` deliberately. `hatespeech._measure_frame`
+#: resolves `coded_suspect` at scoring time by reading the `incitement/` prefix,
+#: and `measure.coded_suspect` returns a non-null False when no NLI score is
+#: present. A post scored before its NLI exists is therefore written
+#: `coded_suspect=False, flagged=hate_flag` permanently - and the collector's
+#: hate-seeking reads exactly those persisted flags. Running the NLI first is
+#: what makes the coded lens work on newly collected posts at all.
+PASSES: tuple[str, ...] = ("embed", "classify", "incitement", "hate")
 
 # Per-pass cap keeps memory bounded on CPU-only / low-RAM hosts: a big first
 # backlog is processed over several fast passes rather than one giant batch.
@@ -61,9 +73,11 @@ def run_once(
     embed: bool = True,
     classify: bool = True,
     hate: bool = True,
+    incitement: bool = True,
 ) -> dict[str, int]:
-    """One bounded enrichment pass. Returns {embedded, labelled, hate_scored}
-    counts (only the passes that ran)."""
+    """One bounded enrichment pass. Returns
+    {embedded, labelled, incitement_scored, hate_scored} for the passes that
+    ran, in `PASSES` order."""
     con = connect()
     counts: dict[str, int] = {}
     if embed:
@@ -72,18 +86,33 @@ def run_once(
     if classify:
         counts["labelled"] = classify_new(con, limit=limit, batch_size=batch_size)
         log.info("labelled %d new post(s)", counts["labelled"])
+    if incitement:
+        counts["incitement_scored"] = score_incitement_new(
+            con, limit=limit, batch_size=batch_size
+        )
+        log.info("incitement-scored %d new post(s)", counts["incitement_scored"])
     if hate:
         counts["hate_scored"] = score_hate_new(con, limit=limit, batch_size=batch_size)
         log.info("hate-scored %d new post(s)", counts["hate_scored"])
     return counts
 
 
+def _only(pass_name: str) -> list[str]:
+    """Flags that disable every pass but this one.
+
+    Derived rather than written out: with four passes the hand-maintained
+    `--no-a --no-b --no-c` lists are combinatorial, and a missed flag silently
+    runs two models in one process - which is the exact thing isolation exists
+    to prevent."""
+    return [f"--no-{p}" for p in PASSES if p != pass_name]
+
+
 def _subprocess_pass(flags: list[str], limit: int | None, batch_size: int) -> int:
     """Run one `--once` pass in a fresh subprocess and return its processed
     count. Isolating each model set per process means only one is resident at a
     time - the peak-memory guard for RAM-tight hosts (the embedding mpnet, the
-    two classifier transformers, and the ~2GB afro-xlmr hate model never
-    coexist). `flags` disables the other passes so this one runs alone."""
+    two classifier transformers, the NLI model and the ~2GB afro-xlmr hate model
+    never coexist). `flags` disables the other passes so this one runs alone."""
     cmd = [sys.executable, "-m", "kma.enrich", "--once", *flags, "--batch-size", str(batch_size)]
     if limit is not None:
         cmd += ["--limit", str(limit)]
@@ -146,6 +175,7 @@ def run_loop(
     embed: bool = True,
     classify: bool = True,
     hate: bool = True,
+    incitement: bool = True,
     isolate: bool = True,
     coord_hours: float = COORD_REFRESH_HOURS,
 ) -> None:
@@ -171,16 +201,21 @@ def run_loop(
             next_coord = time.monotonic() + (
                 coord_hours * 3600 if ok else COORD_RETRY_MINUTES * 60
             )
+        enabled = {
+            "embed": embed, "classify": classify,
+            "incitement": incitement, "hate": hate,
+        }
         try:
             if isolate:
-                if embed:
-                    done += _subprocess_pass(["--no-classify", "--no-hate"], limit, batch_size)
-                if classify:
-                    done += _subprocess_pass(["--no-embed", "--no-hate"], limit, batch_size)
-                if hate:
-                    done += _subprocess_pass(["--no-embed", "--no-classify"], limit, batch_size)
+                for name in PASSES:
+                    if enabled[name]:
+                        done += _subprocess_pass(_only(name), limit, batch_size)
             else:
-                done = sum(run_once(limit, batch_size, embed, classify, hate).values())
+                done = sum(
+                    run_once(
+                        limit, batch_size, embed, classify, hate, incitement
+                    ).values()
+                )
         except Exception:
             log.exception("enrich cycle %d failed", cycle)
         wait = BUSY_COOLDOWN_S if done > 0 else random.uniform(IDLE_MIN_S, IDLE_MAX_S)
@@ -200,6 +235,10 @@ def main() -> None:
     ap.add_argument("--no-classify", action="store_true", help="skip sentiment/emotion")
     ap.add_argument("--no-hate", action="store_true", help="skip hate-speech scoring")
     ap.add_argument(
+        "--no-incitement", action="store_true",
+        help="skip coded-incitement NLI (leaves coded_suspect unresolvable)",
+    )
+    ap.add_argument(
         "--no-isolate", action="store_true",
         help="load all models in one process (faster, needs ~6GB RAM)",
     )
@@ -209,12 +248,14 @@ def main() -> None:
     )
     args = ap.parse_args()
     embed, classify, hate = not args.no_embed, not args.no_classify, not args.no_hate
+    incitement = not args.no_incitement
     if args.once:
-        counts = run_once(args.limit, args.batch_size, embed, classify, hate)
+        counts = run_once(args.limit, args.batch_size, embed, classify, hate, incitement)
         print(f"enriched: {counts}")
     else:
         run_loop(
             args.limit, args.batch_size, embed, classify, hate,
+            incitement=incitement,
             isolate=not args.no_isolate, coord_hours=args.coord_hours,
         )
 

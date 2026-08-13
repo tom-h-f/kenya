@@ -144,6 +144,7 @@ MEASURE_COLUMNS = (
     "in_kenya_scope",
     "lexicon_hits",
     "coded_suspect",
+    "coded_suspect_kenya",
     "explicit_toxic",
     "flagged",
 )
@@ -217,6 +218,13 @@ def _hate_table(measured: pd.DataFrame, now: datetime) -> pa.Table:
             "in_kenya_scope": measured["in_kenya_scope"].astype(bool).tolist(),
             "lexicon_hits": [list(h) for h in measured["lexicon_hits"]],
             "coded_suspect": measured["coded_suspect"].astype(bool).tolist(),
+            # Persisted alongside the unscoped flag because they answer different
+            # questions and the collector reads these columns directly. Without
+            # it, an off-domain coded post - US remigration discourse using
+            # `fukuza`, say - drives Kenyan targeted collection.
+            "coded_suspect_kenya": (
+                measured["coded_suspect_kenya"].astype(bool).tolist()
+            ),
             "explicit_toxic": measured["explicit_toxic"].astype(bool).tolist(),
             "flagged": measured["flagged"].astype(bool).tolist(),
             "model": [MODEL] * len(measured),
@@ -292,9 +300,19 @@ def refresh_measure(
         present = set(con.sql(f"SELECT * FROM {hatespeech_source(platform)} LIMIT 0").columns)
     except duckdb.Error:
         return 0
-    # Before the first refresh no run carries the columns at all, so an
-    # `IS NULL` predicate cannot even bind - every row needs the rewrite.
-    stale = (
+    # Two independent reasons a row is stale.
+    #
+    # 1. It predates the measure columns entirely. Before the first refresh no
+    #    run carries them, so an `IS NULL` predicate cannot even bind.
+    #
+    # 2. Its NLI arrived AFTER it was scored. `_measure_frame` resolves
+    #    `coded_suspect` at hate-scoring time, and `measure.coded_suspect`
+    #    returns a non-null False when no incitement row exists - so a post
+    #    scored before the NLI pass reached it is written `coded_suspect=False`
+    #    permanently. An `IS NULL` check can never revisit that, which made this
+    #    a one-shot schema migration rather than a recompute. Comparing
+    #    timestamps is what lets a backfill fix history.
+    stale_cols = (
         " OR ".join(f"lh.{c} IS NULL" for c in MEASURE_COLUMNS)
         if set(MEASURE_COLUMNS) <= present
         else "TRUE"
@@ -313,11 +331,19 @@ def refresh_measure(
                     PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
                 ) = 1
             )
+        ), li AS (
+            SELECT platform_post_id, scored_at AS nli_scored_at
+            FROM {incitement_source(platform)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY scored_at DESC
+            ) = 1
         )
         SELECT lh.platform_post_id, lp.text, lh.label,
                lh.p_neither, lh.p_offensive, lh.p_hate, lh.hate_flag
         FROM lh JOIN lp USING (platform_post_id)
-        WHERE {stale}
+        LEFT JOIN li USING (platform_post_id)
+        WHERE ({stale_cols})
+           OR (li.nli_scored_at IS NOT NULL AND li.nli_scored_at > lh.scored_at)
         {f"LIMIT {int(limit)}" if limit else ""}
         """
     ).df()
