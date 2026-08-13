@@ -510,6 +510,8 @@ def select_census_objects(
     replies_view: str | None = None,
     hatespeech_view: str | None = None,
     *,
+    top_retweeted: int = SNOWBALL_TOP_RETWEETED,
+    top_conversations: int = SNOWBALL_TOP_CONVERSATIONS,
     stats: dict | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Engagement-ranked census targets with toxic-ranked ones appended.
@@ -526,6 +528,8 @@ def select_census_objects(
     retweeted, conversations, missing = hot_objects(
         con,
         posts_view,
+        top_retweeted=top_retweeted,
+        top_conversations=top_conversations,
         engagements_view=engagements_view,
         replies_view=replies_view,
         stats=stats,
@@ -827,7 +831,13 @@ async def collect_snowball(
 
     stats.update(
         {
-            "pass_kind": pass_kind,
+            # Deferring to an already-set value, like the `selected_*` fields
+            # below. `select_census_objects` marks a merged baseline+toxic
+            # selection as "merged" BEFORE this runs, and overwriting it with the
+            # parameter default recorded every merged pass as plain "baseline" -
+            # so the label was unreachable in production and any split on
+            # pass_kind silently averaged the two selections together.
+            "pass_kind": stats.get("pass_kind", pass_kind),
             "retweeters_limit": int(retweeters_limit),
             "refresh_hours": int(refresh_hours),
             "band_max": int(band_max),

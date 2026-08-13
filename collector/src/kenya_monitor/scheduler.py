@@ -385,6 +385,17 @@ async def run_snowball_once(**overrides) -> dict[str, int]:
 
     stats: dict = {}
     if "objects" not in overrides:
+        # Selection happens HERE, so the budget overrides have to be applied
+        # here too. Passing them on to `collect_snowball` did nothing: it takes
+        # `objects or hot_objects(...)`, and `objects` is always supplied by this
+        # branch, so `monitor snowball --top-retweeted N` changed no selection
+        # while `stats["top_retweeted"]` still recorded the env value - the run
+        # looked correctly parameterised in census_runs/ and was not.
+        selection = {
+            k: overrides.pop(k)
+            for k in ("top_retweeted", "top_conversations")
+            if k in overrides
+        }
         overrides["objects"] = select_census_objects(
             storage.con,
             storage.posts_view(platform="x"),
@@ -392,6 +403,7 @@ async def run_snowball_once(**overrides) -> dict[str, int]:
             replies_view=storage.posts_view(platform="x", target_type="replies"),
             hatespeech_view=storage.hatespeech_view(platform="x"),
             stats=stats,
+            **selection,
         )
     overrides.setdefault("stats", stats)
 

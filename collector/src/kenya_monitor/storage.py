@@ -355,6 +355,18 @@ class Storage:
         now = now or datetime.now(timezone.utc)
         rid = run_id(now)
         row = {f.name: None for f in CENSUS_RUN_SCHEMA}
+        # Merging by name silently drops anything the schema does not declare,
+        # and an undeclared column reads back as NULL - indistinguishable from a
+        # genuine zero. Both `hot_objects` and `collect_snowball` write into this
+        # one dict, so a rename on either side degrades a counter to NULL rather
+        # than failing. Say so rather than losing it quietly.
+        unknown = sorted(set(stats) - set(row))
+        if unknown:
+            log.warning(
+                "census_runs: %d counter(s) not in CENSUS_RUN_SCHEMA, dropped: %s",
+                len(unknown),
+                ", ".join(unknown),
+            )
         row.update({k: v for k, v in stats.items() if k in row})
         row.update(
             {

@@ -689,6 +689,44 @@ def test_censused_filter_survives_a_null_object_id():
     assert got == ["X"]
 
 
+def test_selection_set_pass_kind_survives_the_write(tmp_path):
+    """`select_census_objects` marks a merged baseline+toxic selection as
+    "merged" before `collect_snowball` runs. `collect_snowball` then overwrote it
+    with its own parameter default, so "merged" was unreachable in production -
+    confirmed against R2, where only baseline and toxic ever appear - and every
+    merged pass was filed as plain baseline. Anything splitting the census series
+    on pass_kind was silently averaging the two selections together.
+    """
+    storage = _FakeStorage()
+    stats = {"pass_kind": "merged"}
+
+    asyncio.run(
+        collect_snowball(
+            _FakeCollector(per_object=1), storage,
+            objects=(["o1"], [], []),
+            state_path=tmp_path / "snowball.json",
+            stats=stats,
+        )
+    )
+
+    assert storage.census_runs[-1]["pass_kind"] == "merged"
+
+
+def test_pass_kind_falls_back_to_the_parameter_when_unset(tmp_path):
+    storage = _FakeStorage()
+
+    asyncio.run(
+        collect_snowball(
+            _FakeCollector(per_object=1), storage,
+            objects=(["o1"], [], []),
+            state_path=tmp_path / "snowball.json",
+            pass_kind="toxic",
+        )
+    )
+
+    assert storage.census_runs[-1]["pass_kind"] == "toxic"
+
+
 def test_census_run_records_ttl_skips_and_degree_shape(tmp_path):
     storage = _FakeStorage()
     collector = _FakeCollector(per_object=4)
