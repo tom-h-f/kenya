@@ -146,7 +146,10 @@ def _lexicon_hit_sql() -> str:
 
 
 def _pending(
-    con: duckdb.DuckDBPyConnection, platform: str, limit: int | None
+    con: duckdb.DuckDBPyConnection,
+    platform: str,
+    limit: int | None,
+    prioritise: bool = True,
 ) -> pd.DataFrame:
     """Unscored posts, lexicon hits first (the NLI pass is hours for the full
     corpus; priority order lets a bounded run cover the triage-relevant tail).
@@ -155,13 +158,17 @@ def _pending(
     applied BEFORE the limit or it only reorders rows already chosen, and the
     whole point is which rows get chosen. `scan_text` still runs on the returned
     page to populate the hit lists - the SQL predicate only decides ordering.
+
+    `prioritise=False` for a full drain: the ordering is meaningless there,
+    since every pending row gets scored either way. It is a small saving, not a
+    large one - measured, the regexes are nearly free next to the scan below.
     """
     df = pending_posts(
         con,
         incitement_source(platform),
         platform,
         limit,
-        priority_sql=_lexicon_hit_sql(),
+        priority_sql=_lexicon_hit_sql() if prioritise else None,
     )
     if df.empty:
         return df.assign(lexicon_hits=None, lexicon_categories=None)
@@ -176,10 +183,14 @@ def score_new(
     platform: str = "x",
     limit: int | None = None,
     batch_size: int = 16,
+    prioritise: bool = True,
 ) -> int:
     """Zero-shot incitement scores for unscored posts (lexicon hits first);
-    persist one Parquet run to R2 `incitement/`. Returns the number scored."""
-    df = _pending(con, platform, limit)
+    persist one Parquet run to R2 `incitement/`. Returns the number scored.
+
+    `prioritise=False` skips the lexicon-first ordering - see `_pending`. Only
+    correct when the caller intends to score everything anyway."""
+    df = _pending(con, platform, limit, prioritise=prioritise)
     if df.empty:
         return 0
     res = _run(
@@ -227,20 +238,30 @@ def score_new(
     return len(df)
 
 
-def backfill(chunk: int = 5_000, batch_size: int = 32, platform: str = "x") -> int:
+def backfill(chunk: int = 50_000, batch_size: int = 32, platform: str = "x") -> int:
     """Drain the whole corpus: `score_new` in bounded runs until nothing pends.
     Resumable - each pass re-derives the scored ids and skips them.
 
     `chunk` is the pending cap per run (one Parquet file, one full-corpus
-    anti-join scan); `batch_size` is the inference batch. Decoupled for the same
-    reason as `hatespeech.backfill`: a small chunk re-scans the whole corpus per
-    batch. Smaller defaults than the hate pass because this is four NLI
-    hypotheses per post through mDeBERTa, not one 3-class forward pass.
-    Returns total scored."""
+    anti-join scan); `batch_size` is the inference batch.
+
+    KEEP CHUNK LARGE. The scan is a FIXED cost, not a per-row one: measured
+    2026-08-13 against 555k posts, the pending query took 81.0s for 50,000 rows
+    and 81.3s for 5,000 - identical, because it reads the whole posts corpus off
+    R2 either way. At chunk=5,000 the 74 scans needed to drain 369k pending rows
+    cost ~100 minutes of pure scanning, more than the GPU work they fed; at
+    50,000 that becomes 8 scans and ~11 minutes.
+
+    `batch_size` stays modest because this is four NLI hypotheses per post
+    through mDeBERTa, not one 3-class forward pass. Returns total scored."""
     con = connect()
     total = 0
     while True:
-        n = score_new(con, platform=platform, limit=chunk, batch_size=batch_size)
+        n = score_new(
+            con, platform=platform, limit=chunk, batch_size=batch_size,
+            # A drain scores every pending row, so the ordering decides nothing.
+            prioritise=False,
+        )
         if n == 0:
             break
         total += n
