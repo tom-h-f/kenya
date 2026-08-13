@@ -317,7 +317,12 @@ def authors_source(platform: str = "*") -> str:
 
 
 def latest_authors(con: duckdb.DuckDBPyConnection, platform: str = "*"):
-    """One row per author: their most recently collected profile snapshot."""
+    """One row per author: their most recently collected profile snapshot.
+
+    Sticky, like `latest_posts`, and intentionally so: a suspended or deleted
+    account keeps its last known profile rather than vanishing from the corpus.
+    That is the right semantics here - unlike `latest_engagements` /
+    `latest_follows`, where the same stickiness is a trap."""
     return con.sql(
         f"""
         SELECT * FROM {authors_source(platform)}
@@ -339,7 +344,7 @@ def latest_embeddings(con: duckdb.DuckDBPyConnection, platform: str = "*", model
         f"""
         SELECT * FROM {embeddings_source(platform, model)}
         QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id, model ORDER BY embedded_at DESC
+            PARTITION BY platform, platform_post_id, model ORDER BY embedded_at DESC
         ) = 1
         """
     )
@@ -356,7 +361,7 @@ def latest_labels(con: duckdb.DuckDBPyConnection, platform: str = "*"):
         f"""
         SELECT * FROM {labels_source(platform)}
         QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id ORDER BY labeled_at DESC
+            PARTITION BY platform, platform_post_id ORDER BY labeled_at DESC
         ) = 1
         """
     )
@@ -375,7 +380,7 @@ def latest_incitement(con: duckdb.DuckDBPyConnection, platform: str = "*"):
         f"""
         SELECT * FROM {incitement_source(platform)}
         QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id ORDER BY scored_at DESC
+            PARTITION BY platform, platform_post_id ORDER BY scored_at DESC
         ) = 1
         """
     )
@@ -394,7 +399,7 @@ def latest_hatespeech(con: duckdb.DuckDBPyConnection, platform: str = "*"):
         f"""
         SELECT * FROM {hatespeech_source(platform)}
         QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id ORDER BY scored_at DESC
+            PARTITION BY platform, platform_post_id ORDER BY scored_at DESC
         ) = 1
         """
     )
@@ -406,8 +411,13 @@ def engagements_source(platform: str = "*") -> str:
 
 
 def latest_engagements(con: duckdb.DuckDBPyConnection, platform: str = "*"):
-    """One row per (post, user, kind) engagement edge (latest snapshot). Incidence
-    only - the platform does not expose when a retweet happened."""
+    """Every (post, user, kind) engagement edge EVER OBSERVED - not the current
+    set. Incidence only; the platform does not expose when a retweet happened.
+
+    There are no tombstones, so an edge seen once in a census pass is retained
+    forever and an undone retweet is invisible. Absence of a row means never
+    observed, not not-present. "Ever retweeted X" is answerable here;
+    "is currently retweeting X" is not derivable from this data at all."""
     return con.sql(
         f"""
         SELECT * FROM {engagements_source(platform)}
@@ -425,7 +435,11 @@ def follows_source(platform: str = "*") -> str:
 
 
 def latest_follows(con: duckdb.DuckDBPyConnection, platform: str = "*"):
-    """One row per (follower, followed) edge (latest snapshot)."""
+    """Every (follower, followed) edge EVER OBSERVED - not the current graph.
+
+    Tombstone-free like `latest_engagements`: unfollows are invisible and the
+    graph only ever grows. Anything reasoning about the follow graph as it
+    stands today is reading this wrong."""
     return con.sql(
         f"""
         SELECT * FROM {follows_source(platform)}
