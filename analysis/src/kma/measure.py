@@ -178,3 +178,109 @@ def attach_measurement_columns(df: pd.DataFrame) -> pd.DataFrame:
     # coded rate is also Kenya-scoped for prevalence denominators
     out["coded_suspect_kenya"] = out["coded_suspect"] & out["in_kenya_scope"]
     return out
+
+
+# --- composition standardisation -------------------------------------------
+#
+# The baseline scope is NOT composition-stable. `replies` is a baseline type
+# whose volume the collector actively tunes for coordination reasons, and it
+# carries ~3.2x the hate-flag rate of `search` (1.081% vs 0.337% over the whole
+# corpus). When the 2026-08-06 conversation-arm widening moved the baseline mix
+# from 70.7% search / 12.1% replies to 14.3% / 72.6%, the raw weekly rate rose
+# 0.447% -> 0.796% (+78%) with no change in any within-stratum rate.
+#
+# The baseline/targeted split guards contamination BETWEEN scopes. It does
+# nothing about composition drift WITHIN baseline, which is what this fixes.
+
+#: First COMPLETE week of collection, by first-seen type, leak-corrected.
+#: Counts rather than shares so the weights are exact and auditable, and frozen
+#: rather than recomputed: a reference that moved with the corpus would
+#: reintroduce the confound it exists to remove.
+REFERENCE_WEEK = "2026-07-06"
+REFERENCE_COMPOSITION: dict[str, int] = {
+    "search": 40808,
+    "replies": 7003,
+    "hydrated": 5326,
+    "timeline": 4565,
+}
+
+
+def standardised_rate(
+    rates: pd.Series | dict[str, float],
+    weights: dict[str, float] | None = None,
+    strict: bool = True,
+) -> float:
+    """Direct standardisation: the rate this period would show if its
+    composition matched the reference.
+
+    `rates` maps stratum -> within-stratum rate. `weights` maps stratum ->
+    reference size (counts or shares; normalised internally).
+
+    A stratum with reference weight but no observations this period is a real
+    problem - dropping it silently reweights the remainder and quietly changes
+    what the number means. `strict` raises; otherwise the weights are
+    renormalised over the strata actually present.
+    """
+    weights = REFERENCE_COMPOSITION if weights is None else weights
+    rates = pd.Series(rates, dtype="float64")
+    missing = [s for s, w in weights.items() if w and s not in rates.index]
+    if missing:
+        if strict:
+            raise ValueError(
+                f"strata in the reference composition with no observations: "
+                f"{sorted(missing)}. Pass strict=False to renormalise over "
+                f"the strata present, which changes what the rate means."
+            )
+        weights = {s: w for s, w in weights.items() if s in rates.index}
+
+    total = float(sum(weights.values()))
+    if not total:
+        return float("nan")
+    return float(
+        sum(rates.get(s, 0.0) * (w / total) for s, w in weights.items())
+    )
+
+
+def standardise_by_period(
+    df: pd.DataFrame,
+    period_col: str,
+    stratum_col: str,
+    value_col: str,
+    weights: dict[str, float] | None = None,
+    strict: bool = False,
+) -> pd.DataFrame:
+    """Per-period raw and composition-standardised rates of a boolean column.
+
+    Returns one row per period with `n`, `raw`, `standardised` and the strata
+    that were absent from that period, so a reader can see when the two series
+    are not comparing like with like.
+    """
+    weights = REFERENCE_COMPOSITION if weights is None else weights
+    rows = []
+    for period, grp in df.groupby(period_col, sort=True):
+        by_stratum = grp.groupby(stratum_col)[value_col].mean()
+        present = set(by_stratum.index)
+        rows.append(
+            {
+                period_col: period,
+                "n": int(len(grp)),
+                "raw": float(grp[value_col].mean()),
+                "standardised": standardised_rate(by_stratum, weights, strict=strict),
+                "missing_strata": sorted(
+                    s for s, w in weights.items() if w and s not in present
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def composition_by_period(
+    df: pd.DataFrame, period_col: str, stratum_col: str
+) -> pd.DataFrame:
+    """Per-period share of each stratum. Publish next to any standardised rate:
+    it is what makes the divergence between raw and standardised self-evident.
+    """
+    counts = (
+        df.groupby([period_col, stratum_col]).size().unstack(fill_value=0).sort_index()
+    )
+    return counts.div(counts.sum(axis=1), axis=0)
