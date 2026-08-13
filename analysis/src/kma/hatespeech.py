@@ -40,6 +40,7 @@ from kma.db import (
     incitement_source,
     pending_posts,
     posts_source,
+    prefix_readable,
 )
 
 MODEL = os.getenv("HATESPEECH_MODEL", "tom-h-f/kenya-hatespeech-afroxlmr")
@@ -302,6 +303,29 @@ def refresh_measure(
         if set(MEASURE_COLUMNS) <= present
         else "TRUE"
     )
+    # The NLI-newer-than-score predicate needs the incitement prefix to exist. A
+    # zero-file glob raises at CTE resolution rather than returning no rows, so
+    # without this probe an operator running --refresh-measure before the
+    # incitement pass has ever written gets a duckdb.Error instead of the
+    # schema-migration behaviour the command exists for.
+    has_nli = prefix_readable(con, incitement_source(platform))
+    nli_cte = (
+        f""", li AS (
+            SELECT platform_post_id, scored_at AS nli_scored_at
+            FROM {incitement_source(platform)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY scored_at DESC
+            ) = 1
+        )"""
+        if has_nli
+        else ""
+    )
+    nli_join = "LEFT JOIN li USING (platform_post_id)" if has_nli else ""
+    nli_stale = (
+        "OR (li.nli_scored_at IS NOT NULL AND li.nli_scored_at > lh.scored_at)"
+        if has_nli
+        else ""
+    )
     pending = con.sql(
         f"""
         WITH lh AS (
@@ -316,19 +340,13 @@ def refresh_measure(
                     PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
                 ) = 1
             )
-        ), li AS (
-            SELECT platform_post_id, scored_at AS nli_scored_at
-            FROM {incitement_source(platform)}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform_post_id ORDER BY scored_at DESC
-            ) = 1
-        )
+        ){nli_cte}
         SELECT lh.platform_post_id, lp.text, lh.label,
                lh.p_neither, lh.p_offensive, lh.p_hate, lh.hate_flag
         FROM lh JOIN lp USING (platform_post_id)
-        LEFT JOIN li USING (platform_post_id)
+        {nli_join}
         WHERE ({stale_cols})
-           OR (li.nli_scored_at IS NOT NULL AND li.nli_scored_at > lh.scored_at)
+           {nli_stale}
         {f"LIMIT {int(limit)}" if limit else ""}
         """
     ).df()

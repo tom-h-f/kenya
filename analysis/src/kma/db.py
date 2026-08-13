@@ -252,6 +252,25 @@ def latest_posts(
     return con.sql(f"WITH {scoped.cte} SELECT * FROM {scoped.name}")
 
 
+def prefix_readable(con: duckdb.DuckDBPyConnection, source: str) -> bool:
+    """Can this `read_parquet(...)` expression be resolved at all?
+
+    A hive-partitioned glob matching ZERO files raises `IOException` rather than
+    returning an empty relation, and inside a CTE that failure happens at
+    resolution - before any LEFT JOIN can absorb it. So a prefix no pass has
+    written yet takes down the whole query rather than contributing no rows.
+
+    That is a live transitional state, not a hypothetical: `incitement/` is
+    written by a pass that only just entered the enrich loop, so any host
+    running the previous image has `hatespeech/` populated and `incitement/`
+    absent."""
+    try:
+        con.sql(f"SELECT 1 FROM {source} LIMIT 1").fetchall()
+        return True
+    except duckdb.Error:
+        return False
+
+
 def pending_posts(
     con: duckdb.DuckDBPyConnection,
     scored_source: str | None,

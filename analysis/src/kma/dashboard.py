@@ -198,6 +198,35 @@ def _toxicity_frame(con: duckdb.DuckDBPyConnection, platform: str = "x") -> pd.D
     honour, worth 4,312 posts (1.10%) of the baseline denominator.
     """
     scoped = db.scoped_posts_cte(platform, "baseline", name="p")
+    # A hive glob matching zero files raises at CTE resolution rather than
+    # contributing no rows, so an absent `incitement/` prefix would take the
+    # whole statement down - and the producer's blanket except would then just
+    # retry hourly, leaving summary.json unpublished. The NLI columns are
+    # LEFT JOINed and already optional, so substituting NULLs is exactly the
+    # same result the join gives on a prefix with no matching rows.
+    has_nli = db.prefix_readable(con, db.incitement_source(platform))
+    nli_cte = (
+        f""", i AS (
+            SELECT * FROM {db.incitement_source(platform)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY scored_at DESC
+            ) = 1
+        )"""
+        if has_nli
+        else ""
+    )
+    nli_cols = (
+        """i.dehumanisation_score, i.violence_call_score,
+               i.othering_score, i.political_criticism_score"""
+        if has_nli
+        else """CAST(NULL AS DOUBLE) AS dehumanisation_score,
+               CAST(NULL AS DOUBLE) AS violence_call_score,
+               CAST(NULL AS DOUBLE) AS othering_score,
+               CAST(NULL AS DOUBLE) AS political_criticism_score"""
+    )
+    nli_join = "LEFT JOIN i ON p.platform_post_id = i.platform_post_id" if has_nli else ""
+    if not has_nli:
+        log.warning("toxicity: incitement prefix unreadable; coded series will be empty")
     df = con.sql(
         f"""
         WITH {scoped.cte},
@@ -206,20 +235,14 @@ def _toxicity_frame(con: duckdb.DuckDBPyConnection, platform: str = "x") -> pd.D
             QUALIFY row_number() OVER (
                 PARTITION BY platform_post_id ORDER BY scored_at DESC
             ) = 1
-        ), i AS (
-            SELECT * FROM {db.incitement_source(platform)}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform_post_id ORDER BY scored_at DESC
-            ) = 1
-        )
+        ){nli_cte}
         SELECT p.platform_post_id, p.created_at, p.text, p.first_type,
                h.label, h.p_hate, h.hate_flag,
                h.domain, h.in_kenya_scope, h.coded_suspect, h.explicit_toxic,
-               i.dehumanisation_score, i.violence_call_score,
-               i.othering_score, i.political_criticism_score
+               {nli_cols}
         FROM p
         JOIN h USING (platform_post_id)
-        LEFT JOIN i ON p.platform_post_id = i.platform_post_id
+        {nli_join}
         """
     ).df()
 

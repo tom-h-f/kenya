@@ -103,3 +103,51 @@ def test_lexicon_patterns_are_sql_safe():
     for terms in LEXICON.values():
         for term, meta in terms.items():
             assert "'" not in meta["pattern"], term
+
+
+# --- absent prefixes ----------------------------------------------------------
+
+
+EMPTY_GLOB = "read_parquet('/tmp/kma-no-such-prefix/dt=*/run=*.parquet', union_by_name=true, hive_partitioning=true)"
+
+
+def test_duckdb_raises_on_a_zero_file_glob():
+    """The premise behind every prefix probe in this package. If DuckDB ever
+    starts returning an empty relation instead, the guards become dead weight
+    and this test says so."""
+    c = duckdb.connect()
+    with pytest.raises(duckdb.Error):
+        c.sql(f"SELECT 1 FROM {EMPTY_GLOB} LIMIT 1").fetchall()
+
+
+def test_prefix_readable_reports_an_absent_prefix():
+    c = duckdb.connect()
+    assert db.prefix_readable(c, EMPTY_GLOB) is False
+
+
+def test_prefix_readable_reports_a_present_one(con):
+    assert db.prefix_readable(con, "_scored") is True
+
+
+def test_refresh_measure_survives_an_absent_incitement_prefix(monkeypatch):
+    """`--refresh-measure` exists to migrate rows written before the NLI pass
+    ran, so it must work on exactly the corpus where that prefix is empty. The
+    read sat inside a CTE, where a zero-file glob fails at resolution rather
+    than contributing no rows."""
+    from kma import hatespeech
+
+    monkeypatch.setattr(hatespeech, "incitement_source", lambda platform="*": EMPTY_GLOB)
+
+    c = duckdb.connect()
+    c.execute(
+        "CREATE TABLE _hate (platform_post_id VARCHAR, label VARCHAR, "
+        "p_neither DOUBLE, p_offensive DOUBLE, p_hate DOUBLE, hate_flag BOOLEAN, "
+        "scored_at TIMESTAMP)"
+    )
+    c.execute("CREATE TABLE _posts (platform VARCHAR, platform_post_id VARCHAR, "
+              "text VARCHAR, collected_at TIMESTAMP)")
+    monkeypatch.setattr(hatespeech, "hatespeech_source", lambda platform="*": "_hate")
+    monkeypatch.setattr(hatespeech, "posts_source", lambda platform="*": "_posts")
+
+    # No rows to migrate, but it must return cleanly rather than raise.
+    assert hatespeech.refresh_measure(c) == 0
