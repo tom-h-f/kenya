@@ -181,6 +181,11 @@ METRICS_MAX_POSTS_FLOOR = int(os.getenv("METRICS_MAX_POSTS_FLOOR", "200"))
 METRICS_MAX_POSTS_PER_ACCOUNT = int(os.getenv("METRICS_MAX_POSTS_PER_ACCOUNT", "8"))
 
 STATE_DIR = APP_ROOT / "state"
+# Where DuckDB spills when a scan exceeds COLLECTOR_MEMORY_LIMIT. It otherwise
+# defaults to `.tmp` relative to the process cwd, which in the container is
+# inside the image layer - so spill files are invisible to the state volume's
+# sizing and are lost on redeploy. STATE_DIR is the mounted volume.
+COLLECTOR_TEMP_DIR = Path(os.getenv("COLLECTOR_TEMP_DIR", STATE_DIR / "duckdb-tmp"))
 DYNAMIC_TARGETS_PATH = Path(os.getenv("DYNAMIC_TARGETS_PATH", STATE_DIR / "dynamic_targets.json"))
 SNOWBALL_STATE_PATH = Path(os.getenv("SNOWBALL_STATE_PATH", STATE_DIR / "snowball.json"))
 CENSUS_TIMELINE_STATE_PATH = Path(

@@ -79,6 +79,11 @@ def bursting_hashtags(
         f"""
         WITH lp AS (
             SELECT * FROM {posts_view}
+            -- Partition pruning: the widest window below reaches back 8 days by
+            -- created_at, and nothing can be collected before it was posted, so
+            -- no in-window row lives in an older dt partition. Without this the
+            -- whole corpus is scanned once per posts step to look at 8 days.
+            WHERE dt >= current_date - INTERVAL 9 DAY
             QUALIFY row_number() OVER (
                 PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
             ) = 1
@@ -259,6 +264,10 @@ def detect_burst(
         f"""
         WITH lp AS (
             SELECT * FROM {posts_view}
+            -- Partition pruning; see `bursting_hashtags`. This one runs once per
+            -- cycle purely to decide whether to skip a <=300s cooldown, so an
+            -- unpruned full-corpus scan here cost more than the sleep it saved.
+            WHERE dt >= current_date - INTERVAL 3 DAY
             QUALIFY row_number() OVER (
                 PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
             ) = 1

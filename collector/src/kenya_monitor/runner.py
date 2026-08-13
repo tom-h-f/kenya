@@ -310,14 +310,33 @@ def hot_objects(
     backlog. Those are what make coverage saturation observable: once the
     backlog trends to zero, `SNOWBALL_REFRESH_HOURS` and not
     `SNOWBALL_TOP_RETWEETED` is the parameter that governs discovery."""
+    # `dt` is the COLLECTION date; `created_at` is the post date. A post cannot be
+    # collected before it exists, so every row inside the created_at window also
+    # lands in a dt partition at or after the same cutoff. That makes the dt
+    # predicate a pure partition-pruning hint - it cannot drop a row the
+    # created_at filter would keep - and it is the difference between reading two
+    # days of parquet and reading the entire corpus. Without it the scan cost
+    # grows with total collection forever while the useful window stays fixed,
+    # which is what pushed cycles from ~150min to 1,159min. One extra day of
+    # slack absorbs date truncation and clock skew.
+    #
+    # `known` is deliberately NOT pruned. The hydration arm below asks which
+    # referenced ids were never collected, and a dt-limited answer would report
+    # every older post as missing. It projects a single column and runs no window
+    # function, so it is far cheaper than the windowed `SELECT *` it used to
+    # share with `recent`.
     base = f"""
-        WITH lp AS (
-            SELECT * FROM {posts_view}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        ), recent AS (
-            SELECT * FROM lp WHERE created_at > now() - INTERVAL {int(lookback_days)} DAY
+        WITH recent AS (
+            SELECT * FROM (
+                SELECT * FROM {posts_view}
+                WHERE dt >= current_date - INTERVAL {int(lookback_days) + 1} DAY
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+                ) = 1
+            )
+            WHERE created_at > now() - INTERVAL {int(lookback_days)} DAY
+        ), known AS (
+            SELECT DISTINCT platform_post_id FROM {posts_view}
         )
     """
     # Exclude objects censused inside the TTL *during selection*, not after.
@@ -468,7 +487,7 @@ def hot_objects(
                        bool_or({censused_ever}) AS censused
                 FROM refs
                 WHERE NOT EXISTS (
-                    SELECT 1 FROM lp WHERE lp.platform_post_id = refs.ref
+                    SELECT 1 FROM known WHERE known.platform_post_id = refs.ref
                 )
                 GROUP BY 1
             )

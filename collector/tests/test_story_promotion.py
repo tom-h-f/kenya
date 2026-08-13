@@ -59,6 +59,7 @@ def test_flagged_story_keywords_missing_view_is_empty():
     assert flagged_story_keywords(con, "no_such_view") == []
 
 
+# `dt` mirrors the R2 hive partition key the burst query prunes on.
 _POST_SCHEMA = pa.schema(
     [
         ("platform", pa.string()),
@@ -66,6 +67,7 @@ _POST_SCHEMA = pa.schema(
         ("collected_at", pa.timestamp("us", tz="UTC")),
         ("created_at", pa.timestamp("us", tz="UTC")),
         ("hashtags", pa.list_(pa.string())),
+        ("dt", pa.date32()),
     ]
 )
 _CLUSTER_SCHEMA = pa.schema(
@@ -87,7 +89,7 @@ def test_promote_tags_story_keywords(tmp_path):
         "posts_tbl",
         pa.Table.from_pylist(
             [{"platform": "x", "platform_post_id": "p0", "collected_at": NOW,
-              "created_at": NOW, "hashtags": []}],
+              "created_at": NOW, "hashtags": [], "dt": NOW.date()}],
             schema=_POST_SCHEMA,
         ),
     )

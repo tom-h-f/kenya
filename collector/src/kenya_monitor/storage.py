@@ -12,6 +12,7 @@ import pyarrow as pa
 from kenya_monitor.collectors.base import Author, Engagement, FollowEdge, MetricSnapshot, Post
 from kenya_monitor.config import (
     COLLECTOR_MEMORY_LIMIT,
+    COLLECTOR_TEMP_DIR,
     COLLECTOR_THREADS,
     R2Config,
 )
@@ -234,9 +235,14 @@ class Storage:
 
         Best effort: setting names drift between DuckDB versions, and a tuning
         failure must not stop collection."""
+        try:
+            COLLECTOR_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            log.warning("storage: could not create temp dir %s", COLLECTOR_TEMP_DIR)
         for stmt in (
             f"SET memory_limit='{COLLECTOR_MEMORY_LIMIT}'",
             f"SET threads={int(COLLECTOR_THREADS)}",
+            f"SET temp_directory='{COLLECTOR_TEMP_DIR}'",
             "SET preserve_insertion_order=false",
         ):
             try:

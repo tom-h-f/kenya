@@ -19,8 +19,11 @@ NOW = datetime.now(timezone.utc)
 def con():
     c = duckdb.connect()
     c.execute(
+        # `dt` mirrors the R2 hive partition key the selection queries prune on,
+        # generated from collected_at so positional INSERTs are unaffected.
         "CREATE TABLE _posts (platform VARCHAR, platform_post_id VARCHAR, author_id VARCHAR, "
-        "text VARCHAR, created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ)"
+        "text VARCHAR, created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ, "
+        "dt DATE GENERATED ALWAYS AS (CAST(collected_at AS DATE)))"
     )
     c.execute(
         "CREATE TABLE _authors (platform VARCHAR, platform_user_id VARCHAR, handle VARCHAR, "

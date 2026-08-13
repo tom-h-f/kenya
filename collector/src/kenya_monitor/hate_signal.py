@@ -222,6 +222,10 @@ def _hate_account_sql(
     return f"""
     WITH lp AS (
         SELECT * FROM {posts_view}
+        -- Partition pruning; see the note in `runner.hot_objects`. Nothing is
+        -- collected before it is posted, so no row inside the created_at window
+        -- below can sit in an older dt partition.
+        WHERE dt >= current_date - INTERVAL {int(lookback_days) + 1} DAY
         QUALIFY row_number() OVER (
             PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
         ) = 1
@@ -472,6 +476,8 @@ def mine_terms(
             f"""
             WITH lp AS (
                 SELECT * FROM {posts_view}
+                -- Partition pruning; see `runner.hot_objects`.
+                WHERE dt >= current_date - INTERVAL {int(lookback_days) + 1} DAY
                 QUALIFY row_number() OVER (
                     PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
                 ) = 1
@@ -603,6 +609,8 @@ def hot_toxic_objects(
     base = f"""
         WITH lp AS (
             SELECT * FROM {posts_view}
+            -- Partition pruning; see `runner.hot_objects`.
+            WHERE dt >= current_date - INTERVAL {int(lookback_days) + 1} DAY
             QUALIFY row_number() OVER (
                 PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
             ) = 1

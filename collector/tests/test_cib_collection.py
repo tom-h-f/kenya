@@ -42,6 +42,8 @@ def test_build_query_plain():
     assert build_query("Wantam") == "Wantam"
 
 
+# `dt` mirrors the hive partition key every R2 read exposes. Fixtures without it
+# cannot exercise the partition pruning the selection queries depend on.
 _TEST_SCHEMA = pa.schema(
     [
         ("platform", pa.string()),
@@ -57,6 +59,7 @@ _TEST_SCHEMA = pa.schema(
         ("reply_count", pa.int64()),
         ("quote_count", pa.int64()),
         ("hashtags", pa.list_(pa.string())),
+        ("dt", pa.date32()),
     ]
 )
 
@@ -77,7 +80,12 @@ def _con_with_posts(rows: list[dict]) -> tuple[duckdb.DuckDBPyConnection, str]:
         "quote_count": 0,
         "hashtags": [],
     }
-    table = pa.Table.from_pylist([{**defaults, **r} for r in rows], schema=_TEST_SCHEMA)
+    rows = [{**defaults, **r} for r in rows]
+    # Derived, not defaulted: dt is the collection date in production, and a
+    # fixture that lets the two drift would not catch a wrong pruning predicate.
+    for row in rows:
+        row.setdefault("dt", row["collected_at"].date())
+    table = pa.Table.from_pylist(rows, schema=_TEST_SCHEMA)
     con = duckdb.connect()
     con.register("posts_tbl", table)
     return con, "posts_tbl"
@@ -103,6 +111,33 @@ def test_hot_objects_selection_and_missing_refs():
     assert retweeted == ["4"]
     assert conversations == ["5"]
     assert "X" in missing and "4" not in missing
+
+
+def test_hydration_still_sees_posts_outside_the_pruned_window():
+    """The selection CTEs prune to the lookback window by `dt` so the parquet
+    scan stops growing with the corpus. The hydration arm must NOT be pruned:
+    it asks which referenced ids were never collected, and a windowed answer
+    calls every older post missing - spending the whole hydrate budget
+    re-fetching things already in R2, every pass, forever.
+    """
+    old = NOW - timedelta(days=30)
+    rows = [
+        # Collected a month ago, so it sits in a dt partition the window drops.
+        {"platform_post_id": "OLD", "author_id": "a", "created_at": old, "collected_at": old},
+        # A fresh retweet of it, inside the window.
+        {"platform_post_id": "r1", "author_id": "b", "repost_of_id": "OLD", "repost_count": 10},
+        # A fresh retweet of something genuinely never collected.
+        {"platform_post_id": "r2", "author_id": "c", "repost_of_id": "GONE", "repost_count": 10},
+    ]
+    con, view = _con_with_posts(rows)
+    retweeted, _, missing = hot_objects(
+        con, view, lookback_days=2, top_retweeted=10, hydrate_limit=10
+    )
+
+    assert "GONE" in missing
+    assert "OLD" not in missing
+    # Both are still valid census targets: the retweets pointing at them are recent.
+    assert set(retweeted) == {"OLD", "GONE"}
 
 
 def test_hot_objects_excludes_hubs_and_singletons():
@@ -487,11 +522,17 @@ def test_hate_cadence_survives_restarts():
     executions across a whole container lifetime. The schedule is now wall-clock."""
     from kenya_monitor.scheduler import _cycle_estimate_s
 
-    # Before any cycle completes we cannot know the period; fall back, do not divide by zero.
+    # `cycle` counts the one IN FLIGHT - it is incremented at the top of the loop
+    # and the estimate is taken inside that same cycle. So cycle=1 means nothing
+    # has completed yet and there is no period to measure. Dividing by `cycle`
+    # there gave ~0, clamped to the 60s floor, and fired the hate steps again on
+    # the very next cycle: over-serving after every redeploy, which is the same
+    # restart sensitivity this function exists to remove.
     assert _cycle_estimate_s(0, time.monotonic()) == 1800.0
-    # After cycles complete, estimate from elapsed time, floored so a fast cycle
-    # cannot collapse the cadence to nothing.
-    assert _cycle_estimate_s(4, time.monotonic() - 7200) == pytest.approx(1800, rel=0.1)
+    assert _cycle_estimate_s(1, time.monotonic()) == 1800.0
+    # cycle=4 means three have completed, so 7200s elapsed is 2400s per cycle.
+    assert _cycle_estimate_s(4, time.monotonic() - 7200) == pytest.approx(2400, rel=0.1)
+    # Floored, so a burst of fast cycles cannot collapse the cadence to nothing.
     assert _cycle_estimate_s(1000, time.monotonic() - 10) >= 60.0
 
 

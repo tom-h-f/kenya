@@ -67,11 +67,19 @@ METRICS_TOP_PCT = 0.05
 
 
 def _cycle_estimate_s(cycle: int, started_mono: float, default_s: float = 1800.0) -> float:
-    """Mean cycle duration so far, so the hate cadence stays "every Nth cycle"
-    in spirit while surviving restarts. Falls back before the first cycle ends."""
-    if cycle < 1:
+    """Mean duration of the cycles that have actually FINISHED, so the hate
+    cadence stays "every Nth cycle" in spirit while surviving restarts.
+
+    `cycle` counts the one currently in flight, so dividing by it averages the
+    elapsed time over one more cycle than has completed. On cycle 1 that made the
+    estimate ~0, clamped to the 60s floor, and the hate steps fired again on the
+    very next cycle - over-serving hate work after every redeploy, which is the
+    restart sensitivity this function was written to remove, with the sign
+    flipped. Fall back to the default until at least one cycle has completed."""
+    completed = cycle - 1
+    if completed < 1:
         return default_s
-    return max(60.0, (time.monotonic() - started_mono) / cycle)
+    return max(60.0, (time.monotonic() - started_mono) / completed)
 
 
 def _adaptive_targets(
