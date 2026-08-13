@@ -90,6 +90,25 @@ def run(
 
 @app.local_entrypoint()
 def main(
-    limit: int | None = None, batch_size: int = 256, pass_name: str = "hate"
+    limit: int | None = None,
+    batch_size: int = 256,
+    pass_name: str = "hate",
+    spawn: bool = False,
 ):
+    """`--spawn` for anything long. `run.remote()` BLOCKS on the input, and
+    `--detach` only keeps the app alive - it does not stop a client disconnect
+    from cancelling the in-flight call. A full drain killed that way dies with
+    `InputCancellation: Input was cancelled by user` partway through.
+
+    `run.spawn()` is fire-and-forget: it returns a FunctionCall id immediately
+    and the work continues server-side regardless of the client. Same pattern as
+    investigations/2026-07-18-hatespeech-finetune/modal_train.py.
+
+        modal run --detach modal_backfill.py --pass-name incitement --spawn
+        # then poll: modal.FunctionCall.from_id(<id>).get(timeout=0)
+    """
+    if spawn:
+        call = run.spawn(limit=limit, batch_size=batch_size, pass_name=pass_name)
+        print(f"spawned: {call.object_id}")
+        return
     print(run.remote(limit=limit, batch_size=batch_size, pass_name=pass_name))
