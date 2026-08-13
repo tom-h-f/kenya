@@ -691,6 +691,87 @@ def test_censused_filter_survives_a_null_object_id():
     assert got == ["X"]
 
 
+def test_zero_yield_objects_are_marked_worked(tmp_path):
+    """An object whose retweeter fetch returns nothing writes no engagement row,
+    so `censused_expr` can never exclude it. Without marking it in local state
+    it stays at the head of the deterministic ranking and is re-selected every
+    refresh window, forever."""
+    state_path = tmp_path / "snowball.json"
+    storage = _FakeStorage()
+
+    asyncio.run(
+        collect_snowball(
+            _FakeCollector(per_object=0), storage,
+            objects=(["empty1", "empty2"], [], []),
+            state_path=state_path,
+            refresh_hours=12,
+        )
+    )
+
+    state = json.loads(state_path.read_text())
+    assert {"empty1", "empty2"} <= set(state), "zero-yield objects must be marked"
+
+    # Second pass inside the TTL: nothing is due.
+    storage2 = _FakeStorage()
+    asyncio.run(
+        collect_snowball(
+            _FakeCollector(per_object=0), storage2,
+            objects=(["empty1", "empty2"], [], []),
+            state_path=state_path,
+            refresh_hours=12,
+        )
+    )
+    assert storage2.census_runs[-1]["due_retweeted"] == 0
+
+
+def test_unhydratable_ids_are_deferred_rather_than_retried_every_pass(tmp_path):
+    """The hydration arm's only self-draining mechanism is the anti-join against
+    collected posts, and a deleted or suspended id never becomes one. Selection
+    is deterministic, so those ids occupied the same slots on every pass."""
+    state_path = tmp_path / "snowball.json"
+
+    first = asyncio.run(
+        collect_snowball(
+            _FakeCollector(per_object=1), _FakeStorage(),
+            objects=([], [], ["gone1", "gone2"]),
+            state_path=state_path,
+            refresh_hours=12,
+        )
+    )
+    assert first["hydrate_unresolved"] == 2
+    assert first["hydrate_skipped_ttl"] == 0
+
+    second = asyncio.run(
+        collect_snowball(
+            _FakeCollector(per_object=1), _FakeStorage(),
+            objects=([], [], ["gone1", "gone2"]),
+            state_path=state_path,
+            refresh_hours=12,
+        )
+    )
+    assert second["hydrate_skipped_ttl"] == 2
+    assert second["hydrate_unresolved"] == 0
+
+
+def test_pool_staleness_is_governed_by_the_timestamp_not_emptiness():
+    """A refresh that legitimately returns nothing must not re-run a 215-464s
+    network scan on the very next cycle."""
+    from kenya_monitor.runner import _pool_is_stale
+
+    fresh_empty = {
+        "pool": [],
+        "pool_refreshed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    assert not _pool_is_stale(fresh_empty, pool_hours=12)
+
+    aged_empty = {
+        "pool": [],
+        "pool_refreshed_at": (NOW - timedelta(hours=24)).isoformat(),
+    }
+    assert _pool_is_stale(aged_empty, pool_hours=12)
+    assert _pool_is_stale({}, pool_hours=12)
+
+
 def test_selection_set_pass_kind_survives_the_write(tmp_path):
     """`select_census_objects` marks a merged baseline+toxic selection as
     "merged" before `collect_snowball` runs. `collect_snowball` then overwrote it
