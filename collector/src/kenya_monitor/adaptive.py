@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -57,10 +58,13 @@ def load_state(path: Path = DYNAMIC_TARGETS_PATH) -> list[DynamicEntry]:
 
 
 def save_state(entries: list[DynamicEntry], path: Path = DYNAMIC_TARGETS_PATH) -> None:
+    """Temp file + rename, so a crash mid-write cannot truncate the target set."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
         json.dumps({"updated_at": _now_iso(), "entries": [e.__dict__ for e in entries]}, indent=2)
     )
+    os.replace(tmp, path)
 
 
 def bursting_hashtags(

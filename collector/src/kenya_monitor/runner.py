@@ -664,8 +664,12 @@ def _load_snowball_state(path: Path = SNOWBALL_STATE_PATH) -> dict[str, str]:
 
 
 def _save_snowball_state(state: dict[str, str], path: Path = SNOWBALL_STATE_PATH) -> None:
+    """Temp file + rename. This is checkpointed every 25 objects mid-snowball, so
+    an interrupted write is a realistic way to lose the whole TTL ledger."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    os.replace(tmp, path)
 
 
 def _due(object_ids: list[str], state: dict[str, str], refresh_hours: int) -> list[str]:

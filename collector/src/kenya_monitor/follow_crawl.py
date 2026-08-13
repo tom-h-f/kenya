@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -17,7 +18,11 @@ from pathlib import Path
 import duckdb
 
 from kenya_monitor.collectors.base import Collector, FollowEdge
-from kenya_monitor.config import FOLLOW_CRAWL_REFRESH_DAYS, FOLLOW_CRAWL_STATE_PATH
+from kenya_monitor.config import (
+    FOLLOW_CRAWL_MAX_ATTEMPTS,
+    FOLLOW_CRAWL_REFRESH_DAYS,
+    FOLLOW_CRAWL_STATE_PATH,
+)
 from kenya_monitor.storage import Storage
 
 log = logging.getLogger("kenya_monitor")
@@ -29,6 +34,7 @@ class CrawlEntry:
     crawled_at: str
     edge_count: int = 0
     status: str = "ok"  # ok | failed | not_found
+    attempts: int = 0
 
 
 def _now_iso() -> str:
@@ -49,20 +55,37 @@ def save_crawl_state(
     entries: dict[str, CrawlEntry],
     path: Path = FOLLOW_CRAWL_STATE_PATH,
 ) -> None:
+    """Write via a temp file + rename, so an interrupted run leaves the previous
+    ledger intact rather than a truncated one."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
         json.dumps(
             {"updated_at": _now_iso(), "entries": {k: asdict(v) for k, v in entries.items()}},
             indent=2,
         )
     )
+    os.replace(tmp, path)
 
 
-def is_due(entry: CrawlEntry | None, refresh_days: int, now: datetime | None = None) -> bool:
+def is_due(
+    entry: CrawlEntry | None,
+    refresh_days: int,
+    now: datetime | None = None,
+    max_attempts: int = FOLLOW_CRAWL_MAX_ATTEMPTS,
+) -> bool:
+    """Never crawled -> due. Repeatedly failing or unresolvable -> give up rather
+    than re-attempt every run forever.
+
+    A failure retries once the refresh window has passed, like any other entry,
+    rather than immediately: an account that errored is not more urgent than one
+    that succeeded, and treating it as due-now is what let unresolvable handles
+    occupy the head of the queue on every pass.
+    """
     if entry is None:
         return True
-    if entry.status in ("failed", "not_found"):
-        return True
+    if entry.status in ("failed", "not_found") and entry.attempts >= max_attempts:
+        return False
     now = now or datetime.now(timezone.utc)
     crawled = datetime.fromisoformat(entry.crawled_at)
     return crawled < now - timedelta(days=refresh_days)
@@ -150,6 +173,13 @@ async def _resolve_uid(
     authors_view: str,
     handle: str,
 ) -> str | None:
+    # `params` is keyword-only on DuckDB's `sql()`; passing it positionally raises
+    # TypeError, which escapes the caller's try block and kills the whole crawl.
+    #
+    # The window dedupes snapshots per user id, not per handle, so a handle that
+    # has belonged to several ids still yields one row each. Order the outer
+    # select so `LIMIT 1` takes the most recently seen id rather than an
+    # arbitrary one.
     row = con.sql(
         f"""
         SELECT platform_user_id FROM {authors_view}
@@ -157,9 +187,10 @@ async def _resolve_uid(
         QUALIFY row_number() OVER (
             PARTITION BY platform_user_id ORDER BY collected_at DESC
         ) = 1
+        ORDER BY collected_at DESC
         LIMIT 1
         """,
-        [handle],
+        params=[handle],
     ).fetchone()
     if row:
         return str(row[0])
@@ -184,9 +215,15 @@ def _queue_candidates(
     for handle in seed_handles:
         h = handle.lstrip("@").strip()
         key = h.lower()
-        if h and key not in queued_handles:
-            queue.append(("", h))
-            queued_handles.add(key)
+        if not h or key in queued_handles:
+            continue
+        # Seeds arrive as handles with no id, so their only ledger record is the
+        # `handle:` key written when resolution failed. Honour it, or a handle
+        # that can never resolve is re-queued first on every run.
+        if not is_due(entries.get(f"handle:{key}"), refresh_days):
+            continue
+        queue.append(("", h))
+        queued_handles.add(key)
 
     for uid, handle in discovered:
         key = handle.lower()
@@ -243,6 +280,12 @@ async def crawl_follows(
     }
     seen_this_run: set[str] = set()
 
+    # Built once. This is a full scan of the whole `authors/` prefix, and it used
+    # to sit inside the loop below, so a 50-account run re-read every author ever
+    # collected 50 times for information the freshly-written snapshots already
+    # carry. That scan was the dominant cost of the step.
+    directory = _author_directory(storage.con, authors_view)
+
     while queue and counts["crawled"] < max_accounts:
         uid_hint, handle = queue.popleft()
         handle = handle.lstrip("@").strip()
@@ -254,6 +297,16 @@ async def crawl_follows(
         if not uid:
             counts["not_found"] += 1
             log.warning("follow crawl: could not resolve @%s", handle)
+            # Keyed by handle, because the whole problem is that no id exists for
+            # it. Without this the ledger never learns, and `is_due` hands the
+            # same unresolvable handle back on every run.
+            prior = entries.get(f"handle:{handle.lower()}")
+            entries[f"handle:{handle.lower()}"] = CrawlEntry(
+                handle=handle,
+                crawled_at=_now_iso(),
+                status="not_found",
+                attempts=(prior.attempts if prior else 0) + 1,
+            )
             continue
 
         if uid in seen_this_run:
@@ -287,8 +340,7 @@ async def crawl_follows(
             )
             counts["crawled"] += 1
 
-            directory = {a.platform_user_id: a.handle for a in authors}
-            directory.update(_author_directory(storage.con, authors_view))
+            directory.update({a.platform_user_id: a.handle for a in authors})
             touched = {uid}
             for edge in edges:
                 touched.add(edge.follower_id)
@@ -306,12 +358,21 @@ async def crawl_follows(
 
         except Exception:
             log.exception("follow crawl failed for @%s", handle)
+            prior = entries.get(uid)
             entries[uid] = CrawlEntry(
-                handle=handle, crawled_at=_now_iso(), status="failed"
+                handle=handle,
+                crawled_at=_now_iso(),
+                status="failed",
+                attempts=(prior.attempts if prior else 0) + 1,
             )
             counts["failed"] += 1
 
         save_crawl_state(entries, state_path)
+
+    # The `continue` paths above (unresolvable handle, already seen, still fresh)
+    # skip the in-loop save, so a run that only ever hit those would otherwise
+    # discard the not_found records it just learned.
+    save_crawl_state(entries, state_path)
 
     counts["queue_remaining"] = len(queue)
     counts["tracked_total"] = len(entries)

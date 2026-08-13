@@ -162,6 +162,9 @@ FOLLOW_FETCH_LIMIT = int(os.getenv("FOLLOW_FETCH_LIMIT", "500"))  # edges per di
 FOLLOW_MAX_ACCOUNTS = int(os.getenv("FOLLOW_MAX_ACCOUNTS", "30"))  # accounts per pass
 FOLLOW_CRAWL_REFRESH_DAYS = int(os.getenv("FOLLOW_CRAWL_REFRESH_DAYS", "30"))
 FOLLOW_CRAWL_MAX_PER_RUN = int(os.getenv("FOLLOW_CRAWL_MAX_PER_RUN", "50"))
+# Give up on an account after this many consecutive failed/unresolvable attempts.
+# Without it a handle that can never resolve is re-tried every single run.
+FOLLOW_CRAWL_MAX_ATTEMPTS = int(os.getenv("FOLLOW_CRAWL_MAX_ATTEMPTS", "3"))
 
 # Account pool / throughput (scale with pool size; see kenya_monitor.accounts).
 TWS_ACCOUNT_ORDER = os.getenv("TWS_ACCOUNT_ORDER", "COALESCE(last_used, '1970-01-01') ASC")
