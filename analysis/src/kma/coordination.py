@@ -21,6 +21,7 @@ scorecards are a triage tool for human review, never an auto-label.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -1602,6 +1603,33 @@ def persist_edges(
     return key
 
 
+def stable_cluster_id(member_author_ids: list | tuple) -> str:
+    """Deterministic cluster id from the set of member author_ids.
+
+    `cluster_id` is Leiden's internal label for the current partition
+    (`communities` returns `part.membership`), reissued positionally on every
+    run, so cluster 3 today and cluster 3 tomorrow are unrelated and any
+    cross-run join on it is silently wrong. This is the content hash that makes
+    tracking a cluster over time possible, mirroring `stories.stable_story_id`.
+    """
+    blob = "\n".join(sorted(str(a) for a in member_author_ids))
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def attach_stable_cluster_ids(members: pd.DataFrame) -> pd.DataFrame:
+    """Add `stable_cluster_id` per cluster_id group (hash of member author ids)."""
+    out = members.copy()
+    if out.empty:
+        out["stable_cluster_id"] = pd.Series(dtype=str)
+        return out
+    ids = (
+        out.groupby("cluster_id")["author_id"]
+        .apply(lambda s: stable_cluster_id(s.tolist()))
+        .rename("stable_cluster_id")
+    )
+    return out.merge(ids, left_on="cluster_id", right_index=True, how="left")
+
+
 def persist_clusters(
     con: duckdb.DuckDBPyConnection,
     members: pd.DataFrame,
@@ -1617,6 +1645,7 @@ def persist_clusters(
     cols = ["cluster_id", "size", "channels", "n_channels", "internal_edge_share"]
     cols += [c for c in ("name", "label") if c in summary.columns]
     buf = members.merge(summary[cols], on="cluster_id")
+    buf = attach_stable_cluster_ids(buf)
     buf["computed_at"] = now
     key = (
         f"coordination/platform={platform}/kind=clusters"

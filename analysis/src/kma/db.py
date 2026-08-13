@@ -353,18 +353,54 @@ def coordination_source(
     return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
 
 
+def coordination_run_latest(
+    con: duckdb.DuckDBPyConnection,
+    kind: str = "clusters",
+    platform: str = "x",
+    channel: str = "*",
+    method: str = "*",
+):
+    """Rows of the most recent persisted coordination run, as a coherent set.
+
+    `dense_rank` over `computed_at` rather than the per-entity `row_number` the
+    `latest_coordination_*` helpers use, which is the same distinction
+    `latest_stories` already draws. Anything published to a reader needs this
+    one: a sticky union of several runs reports a cluster count that no single
+    run ever produced.
+
+    `kind="edges"` partitions by (channel, method) because `persist_edges` takes
+    its own `now` per call and is invoked once per channel x method, so every
+    partition carries a slightly different `computed_at`. Ranking them together
+    would return whichever channel happened to be written last and silently drop
+    the rest. The cost is that if a run dies midway, the newest run per partition
+    can straddle two runs - visible as disagreeing `computed_at` values, which is
+    better than a missing channel."""
+    src = coordination_source(kind, platform, channel, method)
+    partition = "PARTITION BY channel, method " if kind == "edges" else ""
+    return con.sql(
+        f"""
+        SELECT * FROM {src}
+        QUALIFY dense_rank() OVER ({partition}ORDER BY computed_at DESC) = 1
+        """
+    )
+
+
 def latest_coordination_edges(
     con: duckdb.DuckDBPyConnection,
     platform: str = "x",
     channel: str = "*",
     method: str = "*",
 ):
-    """Latest validated edge row per (src, dst, channel, method) run.
+    """STICKY UNION across runs - not the current edge set. Use
+    `coordination_run_latest("edges", ...)` for anything a reader sees.
 
-    Per-entity, so it is STICKY: an edge that stopped validating keeps its last
-    row forever and is never dropped by a later run. That is the right shape for
-    "everything we have ever validated" and the wrong shape for "what the current
-    run detected" - use `coordination_run_latest` for the latter."""
+    `row_number()` per (src, dst, channel, method) keeps the newest row FOR EACH
+    PAIR, so a pair that validated once and never again survives forever. The
+    result is a monotonic high-water mark that only ever grows: measured
+    2026-08-12 at 134,800 co_retweet edges against a true latest-run 97,240.
+
+    Kept for deliberate cross-run archaeology ("was this pair ever validated"),
+    which is the only question it answers correctly."""
     return con.sql(
         f"""
         SELECT * FROM {coordination_source('edges', platform, channel, method)}
@@ -376,12 +412,17 @@ def latest_coordination_edges(
 
 
 def latest_coordination_clusters(con: duckdb.DuckDBPyConnection, platform: str = "x"):
-    """Latest cluster membership row per (cluster_id, author_id).
+    """STICKY UNION across runs, and badly so - use `coordination_run_latest`.
 
-    Sticky, and additionally unsafe to read as current state: `cluster_id` is a
-    per-run Leiden integer, so cluster 5 of one run has no relationship to
-    cluster 5 of the next, and an author dropped from a cluster keeps their old
-    row. Use `coordination_run_latest('clusters')` for a coherent single run."""
+    `cluster_id` is a per-run Leiden label (`coordination.communities` returns
+    `part.membership`) with no stability across passes, so partitioning on it
+    never collapses to one clustering: the same author appears once per cluster
+    id they have ever been assigned. Measured 2026-08-12: 44,585 member rows
+    across 1,078 cluster ids drawn from 47 distinct passes, against a true latest
+    run of 1,043 rows and 128 clusters - 42.7x inflation.
+
+    There is no correct way to read a single run out of this helper. It is
+    retained only because it is re-exported from `kma/__init__.py`."""
     return con.sql(
         f"""
         SELECT * FROM {coordination_source('clusters', platform)}
