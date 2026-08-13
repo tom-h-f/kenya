@@ -277,3 +277,57 @@ def test_channel_stats_are_collected_per_channel(stub):
 
     assert set(out["channel_stats"]) == {"co_retweet", "co_reply"}
     assert out["channel_stats"]["co_retweet"]["pairable"] == 7
+
+
+def test_overlap_counters_are_reported_and_persisted(stub):
+    """n_corroborated_clusters is unreadable alone: one bridge account can
+    manufacture a corroborated cluster, which is what the 0/1 flicker was."""
+    out = cr.run(None, channels=["co_retweet", "co_reply"], persist=True)
+
+    # The stub gives both channels the same two edges, so every account and
+    # both pairs appear in two layers.
+    assert out["bridge_accounts"] == 3
+    assert out["shared_pairs"] == 2
+
+    _, run_stats = stub["persist_run_metrics"][0]
+    assert run_stats["bridge_accounts"] == 3
+    assert run_stats["shared_pairs"] == 2
+
+
+def test_layer_weight_max_is_recorded_per_channel(stub):
+    """CPM's resolution is an absolute threshold and max-normalisation divides
+    by this, so a run can lose clusters to one extreme-weight pair with no other
+    counter showing why."""
+    out = cr.run(None, channels=["co_retweet"], persist=False)
+
+    assert out["channel_stats"]["co_retweet"]["layer_weight_max"] == 2.0
+
+
+def test_layer_overlap_counts_only_multi_channel_membership():
+    single = pd.DataFrame({"src": ["a"], "dst": ["b"]})
+    other = pd.DataFrame({"src": ["c"], "dst": ["d"]})
+
+    disjoint = co.layer_overlap({"co_retweet": single, "co_reply": other})
+    assert disjoint == {"bridge_accounts": 0, "shared_pairs": 0}
+
+    # Same pair, opposite orientation: still one shared pair, because the
+    # projection canonicalises src < dst but a channel could disagree.
+    flipped = pd.DataFrame({"src": ["b"], "dst": ["a"]})
+    assert co.layer_overlap({"co_retweet": single, "co_reply": flipped}) == {
+        "bridge_accounts": 2,
+        "shared_pairs": 1,
+    }
+
+
+def test_layer_overlap_tolerates_an_empty_layer():
+    assert co.layer_overlap({"co_retweet": pd.DataFrame(), "co_reply": None}) == {
+        "bridge_accounts": 0,
+        "shared_pairs": 0,
+    }
+
+
+def test_new_metric_columns_are_declared():
+    """Unbindable, not NULL, until a pass writes them - so readers must guard on
+    column presence, and the schema must actually carry them."""
+    for col in ("bridge_accounts", "shared_pairs", "layer_weight_max"):
+        assert col in co.COORD_METRIC_COLUMNS

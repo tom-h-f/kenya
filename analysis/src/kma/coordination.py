@@ -25,6 +25,7 @@ import hashlib
 import logging
 import os
 import re
+from collections import Counter
 from datetime import datetime, timezone
 
 import duckdb
@@ -1663,17 +1664,67 @@ def persist_clusters(
 
 # One row per (run, channel): run-level columns repeat on every row, the shape
 # `persist_clusters` already uses for cluster stats.
+def layer_overlap(layers: dict[str, pd.DataFrame]) -> dict[str, int]:
+    """Cross-channel overlap of the validated layers: bridge accounts and pairs.
+
+    `n_corroborated_clusters` is not readable without these. It counts a CLUSTER
+    whose internal edges span two channels, which a SINGLE bridge account can
+    manufacture - so a 1 there is a coin flip, not a finding. Both numbers were
+    only ever computed ad hoc from the persisted edge layers, which is why 23
+    consecutive passes of a structural zero went unnoticed: the 0/1 flicker in
+    `n_corroborated_clusters` was one account appearing and disappearing.
+
+    `shared_pairs` is the strong form - the same unordered pair validated
+    independently in two channels. It was 0 across every pass before the census
+    conversation arm was banded, and 408 after.
+    """
+    accounts: list[set] = []
+    pairs: list[set] = []
+    for edges in layers.values():
+        if edges is None or not len(edges):
+            continue
+        accounts.append(set(edges["src"]) | set(edges["dst"]))
+        pairs.append(set(map(frozenset, zip(edges["src"], edges["dst"]))))
+
+    def _in_two_or_more(sets: list[set]) -> int:
+        counts: Counter = Counter()
+        for s in sets:
+            counts.update(s)
+        return sum(1 for n in counts.values() if n >= 2)
+
+    return {
+        "bridge_accounts": _in_two_or_more(accounts),
+        "shared_pairs": _in_two_or_more(pairs),
+    }
+
+
+def layer_weight_max(edges: pd.DataFrame) -> float | None:
+    """The divisor `aggregate_layers` uses under the default "max" normalisation.
+
+    Worth persisting because it makes CPM's `resolution_parameter` - an ABSOLUTE
+    weight threshold - effectively corpus-dependent. One extreme-weight pair
+    scales every other edge toward zero, and a run can lose clusters entirely
+    for that reason while leaving no trace in any other counter. That is the
+    same failure the rejected "mass" normalisation caused outright.
+    """
+    if edges is None or not len(edges) or "weight" not in edges.columns:
+        return None
+    return float(edges["weight"].max())
+
+
 COORD_METRIC_COLUMNS: list[str] = [
     "run_id", "computed_at", "platform", "code_version",
     "channels", "method", "resolution", "min_size",
     "lookback_days", "hub_cap_max",
     "n_clusters", "n_accounts", "n_corroborated_clusters", "n_corroborated_accounts",
+    "bridge_accounts", "shared_pairs",
     "channel", "timed", "min_repetition",
     "hub_cap", "hub_objects", "hub_max_degree",
     "objects_all", "objects_nohub", "traces_all", "traces_nohub",
     "accounts_all", "nohub_amp", "pairable",
     "edges_tested", "edges_fdr", "edges_bonferroni", "edges_percentile",
     "edges_kept", "accounts_tested", "accounts_fdr",
+    "layer_weight_max",
 ]
 
 # Timed channels leave the hub fields NULL. Without an explicit nullable dtype
@@ -1683,6 +1734,7 @@ COORD_METRIC_COLUMNS: list[str] = [
 _COORD_METRIC_INTS: tuple[str, ...] = (
     "min_size", "lookback_days", "hub_cap_max",
     "n_clusters", "n_accounts", "n_corroborated_clusters", "n_corroborated_accounts",
+    "bridge_accounts", "shared_pairs",
     "min_repetition", "hub_cap", "hub_objects", "hub_max_degree",
     "objects_all", "objects_nohub", "traces_all", "traces_nohub",
     "accounts_all", "nohub_amp", "pairable",
