@@ -23,6 +23,7 @@ def _():
         labels_source,
         posts_source,
         scope_predicate,
+        scoped_posts_cte,
     )
 
     # House theme once; seaborn then draws onto viz.new_fig() axes with viz
@@ -61,6 +62,7 @@ def _():
         pd,
         posts_source,
         scope_predicate,
+        scoped_posts_cte,
         semantic,
         sns,
         viz,
@@ -99,38 +101,35 @@ def _(
     authors_source,
     con,
     deltas,
-    first_seen_types_cte,
     hatespeech_source,
     incitement_source,
     labels_source,
     measure,
     pd,
-    posts_source,
-    scope_predicate,
+    scoped_posts_cte,
 ):
     # One enriched frame, loaded once. Post (latest) INNER hatespeech (100%
     # coverage), LEFT the author-origin proxy, incitement rhetoric (81%) and
     # sentiment/emotion (100%). Measurement columns (domain, coded_suspect,
     # explicit_toxic) are derived in pandas via kma.measure - not persisted.
     #
-    # Scoping is on FIRST-seen type, not the latest row's: a post found by a
+    # Scoping goes through `scoped_posts_cte`, which is the only spelling that
+    # carries all three guards together: FIRST-seen type (a post found by a
     # baseline search and later re-collected by a hate pass keeps its latest
-    # `type`, so scoping on that would drain exactly the toxic tail out of the
-    # baseline denominator and read as a falling trend.
+    # `type`, so scoping on that drains the toxic tail out of the denominator),
+    # the promoted-account leak reclassification, and the fail-closed predicate.
+    # Hand-rolling the first and third while omitting the second is how this
+    # notebook carried the known 6.7% contamination.
+    _scoped = scoped_posts_cte("x", SCOPE, name="p0_scoped")
     df = con.sql(
         f"""
-        WITH {first_seen_types_cte("x", "fs")},
+        WITH {_scoped.cte},
         p AS (
             SELECT p0.platform_post_id, p0.author_id, p0.author_handle,
                    p0.created_at, p0.text,
                    p0.like_count, p0.reply_count, p0.repost_count, p0.quote_count,
-                   p0.hashtags, p0.lang, fs.first_type
-            FROM {posts_source("x")} p0
-            JOIN fs USING (platform, platform_post_id)
-            WHERE {scope_predicate(SCOPE, "fs.first_type")}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
+                   p0.hashtags, p0.lang, p0.first_type
+            FROM {_scoped.name} p0
         ), a AS (
             SELECT * FROM {authors_source("x")}
             QUALIFY row_number() OVER (

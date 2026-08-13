@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
@@ -160,6 +161,62 @@ def scope_predicate(scope: str = "baseline", col: str = "first_type") -> str:
     END"""
 
 
+@dataclass(frozen=True)
+class ScopedPosts:
+    """A scope-filtered posts CTE, and whether the leak correction is inside it.
+
+    `applied` is derived from the SQL that was actually generated, not from
+    whether `targets.yaml` happens to be readable. Publishing
+    `leak_corrected: true` next to a query that never applied
+    `effective_type_expr` is a false provenance claim, and that is exactly what
+    the dashboard did: `build_meta` called `leak_corrected()` while
+    `_toxicity_frame` hand-rolled its scoping without the reclassification.
+    """
+
+    cte: str
+    name: str
+    applied: bool
+
+
+def scoped_posts_cte(
+    platform: str = "*",
+    scope: str = "baseline",
+    name: str = "_scoped",
+    type: str = "*",
+    curated: set[str] | None = None,
+) -> ScopedPosts:
+    """The one way to spell "posts in this collection scope".
+
+    Combines the three pieces that must always travel together -
+    `first_seen_types_cte` (scope on FIRST-seen type, never the latest row's),
+    `effective_type_expr` (reclassify leaked promoted-account timelines) and
+    `scope_predicate` (fail closed on an unknown partition) - and dedups to the
+    latest snapshot per post.
+
+    Before this existed, `effective_type_expr` had exactly one caller
+    (`latest_posts`), so every hand-rolled scoping query silently skipped the
+    leak correction while still reporting itself as corrected.
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"unknown scope {scope!r} (expected one of {SCOPES})")
+    curated = curated_handles() if curated is None else curated
+    eff = effective_type_expr(curated, col="fs.first_type", handle_col="p.author_handle")
+    # `_first_seen` scans every partition on purpose - first-seen type is only
+    # correct if nothing is filtered out before the min_by. Only the outer select
+    # narrows to `type`.
+    cte = f"""{first_seen_types_cte(platform, "_first_seen")},
+    {name} AS (
+        SELECT p.*, fs.first_collected_at, {eff} AS first_type
+        FROM {posts_source(platform, type)} p
+        JOIN _first_seen fs USING (platform, platform_post_id)
+        WHERE {scope_predicate(scope, eff)}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+        ) = 1
+    )"""
+    return ScopedPosts(cte=cte, name=name, applied=bool(curated))
+
+
 def posts(con: duckdb.DuckDBPyConnection, platform: str = "*", type: str = "*"):
     """All collected post rows (every engagement snapshot, not deduped)."""
     return con.sql(f"SELECT * FROM {posts_source(platform, type)}")
@@ -179,24 +236,17 @@ def latest_posts(
     """
     if scope not in SCOPES:
         raise ValueError(f"unknown scope {scope!r} (expected one of {SCOPES})")
-    dedup = """
-        QUALIFY row_number() OVER (
-            PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-        ) = 1
-    """
     if scope == "all":
-        return con.sql(f"SELECT * FROM {posts_source(platform, type)} {dedup}")
-    eff = effective_type_expr(col="fs.first_type", handle_col="p.author_handle")
-    return con.sql(
-        f"""
-        WITH {first_seen_types_cte(platform)}
-        SELECT p.*, fs.first_collected_at, {eff} AS first_type
-        FROM {posts_source(platform, type)} p
-        JOIN _first_seen fs USING (platform, platform_post_id)
-        WHERE {scope_predicate(scope, eff)}
-        {dedup}
-        """
-    )
+        return con.sql(
+            f"""
+            SELECT * FROM {posts_source(platform, type)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+            ) = 1
+            """
+        )
+    scoped = scoped_posts_cte(platform, scope, name="_scoped", type=type)
+    return con.sql(f"WITH {scoped.cte} SELECT * FROM {scoped.name}")
 
 
 def metrics_source(platform: str = "*") -> str:

@@ -223,3 +223,59 @@ def test_leak_corrected_reports_whether_the_rule_applied(monkeypatch):
     assert db.leak_corrected() is True
     monkeypatch.setattr(db, "curated_handles", lambda *a, **k: set())
     assert db.leak_corrected() is False
+
+
+def test_scoped_cte_carries_the_leak_correction(con, monkeypatch):
+    """The whole point of the helper: you cannot get the scope filter without
+    also getting the reclassification. Hand-rolling `first_seen_types_cte` +
+    `scope_predicate` and omitting `effective_type_expr` is what left a known
+    6.7% contamination in both the notebook and the published dashboard series.
+    """
+    monkeypatch.setattr(db, "curated_handles", lambda *a, **k: CURATED)
+    con.execute("INSERT INTO _posts VALUES ('x', 'leaked', 'timeline', now(), 'promoted_acct')")
+
+    scoped = db.scoped_posts_cte("x", "baseline", name="s")
+    got = {
+        r[0]
+        for r in con.sql(f"WITH {scoped.cte} SELECT platform_post_id FROM s").fetchall()
+    }
+
+    assert scoped.applied is True
+    assert "leaked" not in got, "a non-curated timeline post is targeted, not baseline"
+    assert "timeline_only" in got, "a curated timeline post stays baseline"
+
+
+def test_scoped_cte_reports_when_the_correction_is_absent(con, monkeypatch):
+    """`applied` tracks the SQL that was generated, not whether targets.yaml
+    happens to be readable - so `meta.leak_corrected` cannot claim a correction
+    the query omitted."""
+    monkeypatch.setattr(db, "curated_handles", lambda *a, **k: set())
+    con.execute("INSERT INTO _posts VALUES ('x', 'leaked', 'timeline', now(), 'promoted_acct')")
+
+    scoped = db.scoped_posts_cte("x", "baseline", name="s")
+    got = {
+        r[0]
+        for r in con.sql(f"WITH {scoped.cte} SELECT platform_post_id FROM s").fetchall()
+    }
+
+    assert scoped.applied is False
+    assert "leaked" in got, "without a curated list the correction disables, not inverts"
+
+
+def test_scoped_cte_and_latest_posts_agree(con, monkeypatch):
+    """One implementation, so the notebook and `latest_posts` cannot drift."""
+    monkeypatch.setattr(db, "curated_handles", lambda *a, **k: CURATED)
+    con.execute("INSERT INTO _posts VALUES ('x', 'leaked', 'timeline', now(), 'promoted_acct')")
+
+    scoped = db.scoped_posts_cte("x", "baseline", name="s")
+    via_cte = {
+        r[0]
+        for r in con.sql(f"WITH {scoped.cte} SELECT platform_post_id FROM s").fetchall()
+    }
+
+    assert via_cte == _ids(db.latest_posts(con, scope="baseline"))
+
+
+def test_scoped_cte_rejects_an_unknown_scope():
+    with pytest.raises(ValueError, match="unknown scope"):
+        db.scoped_posts_cte("x", "nonsense")
