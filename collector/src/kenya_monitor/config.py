@@ -190,8 +190,11 @@ ACCOUNT_SYNC_HOURS = float(os.getenv("ACCOUNT_SYNC_HOURS", "6"))
 CYCLE_COOLDOWN_MIN_S = int(os.getenv("CYCLE_COOLDOWN_MIN_S", "60"))
 CYCLE_COOLDOWN_MAX_S = int(os.getenv("CYCLE_COOLDOWN_MAX_S", "300"))
 FOLLOW_CRAWL_TOP_SUSPICIOUS = int(os.getenv("FOLLOW_CRAWL_TOP_SUSPICIOUS", "10"))
-POSTS_MIN_GAP_HOURS = float(os.getenv("POSTS_MIN_GAP_HOURS", "3"))
-POSTS_MAX_GAP_HOURS = float(os.getenv("POSTS_MAX_GAP_HOURS", "5"))
+# POSTS_MIN_GAP_HOURS / POSTS_MAX_GAP_HOURS removed 2026-08-13 along with
+# `accounts.posts_gap_hours`. They described a wall-clock inter-pass gap that
+# nothing ever called: `monitor run` cycles back to back, throttled only by
+# per-account pacing and twscrape's rate-limit rotation. Both were documented as
+# live in docs/collection/README.md, so an operator tuning them changed nothing.
 METRICS_MAX_POSTS_FLOOR = int(os.getenv("METRICS_MAX_POSTS_FLOOR", "200"))
 METRICS_MAX_POSTS_PER_ACCOUNT = int(os.getenv("METRICS_MAX_POSTS_PER_ACCOUNT", "8"))
 

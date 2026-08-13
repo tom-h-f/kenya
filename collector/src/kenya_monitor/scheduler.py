@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import random
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from kenya_monitor import adaptive
 from kenya_monitor.accounts import active_count, metrics_cap, sync_accounts
@@ -534,13 +533,26 @@ async def run_backfill_once(
 
 
 async def _maintain_accounts_loop() -> None:
+    """Pool upkeep on its own timer, concurrent with whatever cycle step is
+    running.
+
+    `reset_locks()` runs ONCE, at startup. A stale queue lock is an artifact of
+    a process that died holding one, so clearing them is a recovery step, not
+    routine maintenance - and on the recurring timer it cleared locks for
+    accounts that were checked out and in use, letting two coroutines hold the
+    same account. The per-account pacer bounds the damage, but the invariant
+    twscrape relies on was still broken every six hours for no benefit."""
+    first = True
     while True:
         try:
             api = build_api()
             await sync_accounts(api, load_accounts(), relogin_failed=True)
-            await api.pool.reset_locks()
+            if first:
+                await api.pool.reset_locks()
+                log.info("account maintenance: cleared stale queue locks at startup")
         except Exception:
             log.exception("account maintenance failed")
+        first = False
         await asyncio.sleep(ACCOUNT_SYNC_HOURS * 3600)
 
 
