@@ -115,11 +115,19 @@ METRIC_GLOSSARY = {
     "engagement_per_follower": "Aggregate engagement over combined followers - "
     "amplification efficiency. Unusually high can mean manufactured engagement.",
     # --- the composite ---
-    "inauthenticity_index": "Transparent 0-1 triage score = weighted sum of five "
+    "inauthenticity_index": "Transparent 0-1 triage score = weighted mean of five "
     "percentile-ranked components (see INAUTHENTICITY_WEIGHTS): bot_likeness, "
     "synchrony, homogeneity, concealment, corroboration. NOT a verdict - "
     "legitimate coordination scores non-zero; the component breakdown is what an "
-    "analyst acts on, not the scalar.",
+    "analyst acts on, not the scalar. WITHIN-RUN: every component is a percentile "
+    "against the other clusters of the same run, so a cluster's score moves when "
+    "OTHER clusters change and values are not comparable across runs (`hate_index` "
+    "is, being raw shares). Weights are renormalised over the components actually "
+    "measured - see `components_measured`.",
+    "components_measured": "Which index components were measurable for this "
+    "cluster. Synchrony needs `min_gap`, which is NULL for pairs seen only "
+    "through the census engagement arm, so a census-derived cluster is scored on "
+    "the remaining four rather than penalised for an unmeasurable one.",
     # --- evaluation ---
     "precision/recall/f1": "Synthetic-injection recovery: plant a known cluster, "
     "measure how cleanly the pipeline recovers exactly those accounts.",
@@ -1428,30 +1436,68 @@ def scorecards(
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
+    df = _inauthenticity_index(df)
+    df = attach_hate_columns(con, members, df, platform=platform)
+    return df.sort_values("inauthenticity_index", ascending=False, ignore_index=True)
+
+
+def _inauthenticity_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Add `ix_*`, `inauthenticity_index` and `components_measured` in place.
+
+    Split out from `scorecards` so the scoring rules can be tested without an
+    R2-backed cluster build."""
 
     def rank(s: pd.Series, invert: bool = False) -> pd.Series:
         r = s.rank(pct=True)
         return (1 - r) if invert else r
 
+    # `creation_burst_days` is averaged in rather than added: it is a separate
+    # signal about the accounts, not a bigger version of the profile signals.
+    # It used to be `+ rank(...) * 0`, i.e. multiplied out entirely, while
+    # METRIC_GLOSSARY advertised it as "a strong CIB signal".
+    profile = df[
+        ["share_default_image", "share_empty_bio", "handle_digit_ratio_mean",
+         "shared_profile_image"]
+    ].mean(axis=1)
+    concealment = pd.concat(
+        [rank(profile), rank(df["creation_burst_days"], invert=True)], axis=1
+    ).mean(axis=1)
+
+    # An ABSENT column is unmeasurable, not zero. Substituting a constant makes
+    # `rank(pct=True)` return 1.0 for every row, which silently added a flat
+    # +0.15 to every cluster's index whenever `layers` was not passed.
+    missing = pd.Series(np.nan, index=df.index)
     components = {
         "bot_likeness": rank(df["suspicion_mean"]),
-        "synchrony": rank(df.get("median_min_gap_s", pd.Series(np.nan, index=df.index)),
-                          invert=True),
+        "synchrony": rank(df.get("median_min_gap_s", missing), invert=True),
         "homogeneity": rank(df["near_dup_rate"]),
-        "concealment": rank(
-            df[["share_default_image", "share_empty_bio", "handle_digit_ratio_mean",
-                "shared_profile_image"]].mean(axis=1)
-            + rank(df["creation_burst_days"], invert=True).fillna(0) * 0
-        ),
-        "corroboration": rank(df.get("n_channels", pd.Series(0, index=df.index))),
+        "concealment": concealment,
+        "corroboration": rank(df.get("n_channels", missing)),
     }
     for name, comp in components.items():
-        df[f"ix_{name}"] = comp.fillna(0.0)
-    df["inauthenticity_index"] = sum(
-        w * df[f"ix_{k}"] for k, w in INAUTHENTICITY_WEIGHTS.items()
+        df[f"ix_{name}"] = comp
+
+    # Renormalise over the components actually measured for each cluster rather
+    # than scoring the rest 0. `median_min_gap_s` derives from `min_gap`, which
+    # is NULL for any pair whose traces come only from the census engagement arm
+    # - that arm writes `created_at` as NULL by design. Those clusters cannot be
+    # measured for synchrony, and treating that as "measured, and unsynchronised"
+    # applied a 20%-weighted penalty to exactly the population the pipeline runs
+    # on.
+    weights = pd.DataFrame(
+        {k: components[k].notna() * w for k, w in INAUTHENTICITY_WEIGHTS.items()}
     )
-    df = attach_hate_columns(con, members, df, platform=platform)
-    return df.sort_values("inauthenticity_index", ascending=False, ignore_index=True)
+    contributions = pd.DataFrame(
+        {k: components[k].fillna(0.0) * weights[k] for k in INAUTHENTICITY_WEIGHTS}
+    )
+    total = weights.sum(axis=1)
+    df["inauthenticity_index"] = (contributions.sum(axis=1) / total).where(total > 0, 0.0)
+    # So a reader can tell a low score from a thinly-measured one.
+    df["components_measured"] = [
+        sorted(k for k in INAUTHENTICITY_WEIGHTS if components[k].notna().iloc[i])
+        for i in range(len(df))
+    ]
+    return df
 
 
 def attach_hate_columns(
