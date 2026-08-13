@@ -305,9 +305,11 @@ def test_bursting_hashtags_new_and_ratio():
         for i in range(80)
     ]
     con, view = _con_with_posts(burst_rows + steady_rows)
-    tags = bursting_hashtags(con, view, min_count=20, ratio=5.0)
+    tags = dict(bursting_hashtags(con, view, min_count=20, ratio=5.0))
     assert "#newtag" in tags
     assert "#steady" not in tags
+    # The 24h count travels with the tag so the cap can rank by burst size.
+    assert tags["#newtag"] == 25
 
 
 def test_refresh_entries_caps_expiry_and_confirmation():

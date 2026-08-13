@@ -84,8 +84,9 @@ def _cycle_estimate_s(cycle: int, started_mono: float, default_s: float = 1800.0
 
 def _adaptive_targets(
     storage: Storage, dry_run: bool = False
-) -> tuple[PlatformTargets, list[str]]:
-    """(targets to collect as baseline, promoted account handles).
+) -> tuple[PlatformTargets, list[str], set[str]]:
+    """(targets to collect as baseline, promoted account handles, keywords to
+    search Kenya-anchored).
 
     Promoted ACCOUNTS are returned separately because they must not be collected
     into the baseline `timeline` partition: they were selected precisely because
@@ -94,8 +95,10 @@ def _adaptive_targets(
     instead - the same discipline `hate_expand` already applies.
 
     Promoted KEYWORDS stay in the baseline search pass: chasing a bursting
-    hashtag is a topical widening, not a per-account selection. That is still a
-    sampling bias, just a milder and pre-existing one."""
+    hashtag is a topical widening, not a per-account selection. They are
+    returned as a set so the search pass can anchor them to Kenyan discourse -
+    unanchored, a globally trending tag pulled its entire global audience into
+    the baseline partition."""
     static = load_targets().get("x", PlatformTargets())
     try:
         entries = adaptive.promote(
@@ -104,15 +107,16 @@ def _adaptive_targets(
             storage.clusters_view(platform="x"),
             storage.authors_view(platform="x"),
             stories_view=storage.stories_view(platform="x"),
+            hatespeech_view=storage.hatespeech_view(platform="x"),
             dry_run=dry_run,
         )
     except Exception:
         log.exception("adaptive promotion failed; using static targets")
-        return static, []
+        return static, [], set()
     promoted_accounts = [e.value for e in entries if e.kind == "account"]
     keyword_entries = [e for e in entries if e.kind == "keyword"]
     merged = adaptive.merge_targets(static, keyword_entries)
-    return merged, promoted_accounts
+    return merged, promoted_accounts, {e.value.lower() for e in keyword_entries}
 
 
 async def run_once(
@@ -123,7 +127,7 @@ async def run_once(
     adaptive promotions."""
     storage = Storage(R2Config.from_env())
     collector = await build_x_collector(load_accounts())
-    targets, promoted_accounts = _adaptive_targets(storage)
+    targets, promoted_accounts, anchored_keywords = _adaptive_targets(storage)
     windows = recent_windows(SEARCH_RECENT_DAYS)
     if include_backfill:
         windows += backfill_windows(SEARCH_RECENT_DAYS, SEARCH_BACKFILL_WINDOW_DAYS)
@@ -137,6 +141,8 @@ async def run_once(
         timeline_limit=limit,
         keywords=keywords,
         accounts=accounts,
+        anchored_keywords=anchored_keywords,
+        anchors=load_hate_terms().anchors.get("wide"),
     )
     if accounts and promoted_accounts:
         # Quarantined: coordination-promoted accounts never enter the baseline

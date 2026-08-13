@@ -71,7 +71,10 @@ async def _search_keyword(
     search_windows: list[Window],
     min_faves: int,
     window_limit: int,
+    anchors: list[str] | None = None,
 ) -> list[Post]:
+    """One keyword across the windows. `anchors` conjoins a Kenya OR-group,
+    scoping the query the way the hate-seek path already does."""
     kw_posts: list[Post] = []
     for since, until in search_windows:
         kw_posts.extend(
@@ -85,10 +88,14 @@ async def _search_keyword(
                     min_faves=min_faves,
                     product=SEARCH_PRODUCT,
                     include_retweets=SEARCH_INCLUDE_RETWEETS,
+                    anchors=anchors,
                 )
             ]
         )
-    log.info("search %r (%d windows) -> %d posts", kw, len(search_windows), len(kw_posts))
+    log.info(
+        "search %r (%d windows, %sanchored) -> %d posts",
+        kw, len(search_windows), "" if anchors else "un", len(kw_posts),
+    )
     return kw_posts
 
 
@@ -105,11 +112,23 @@ async def collect_x(
     search_type: str = "search",
     timeline_type: str = "timeline",
     include_replies: bool = False,
+    anchored_keywords: set[str] | None = None,
+    anchors: list[str] | None = None,
 ) -> dict[str, int]:
     """`search_type` / `timeline_type` pick the R2 `posts/type=` partition.
     Targeted passes override them so their oversampled posts stay out of the
-    baseline prevalence denominator (see kma.db.BASELINE_TYPES)."""
+    baseline prevalence denominator (see kma.db.BASELINE_TYPES).
+
+    `anchored_keywords` names the subset of `targets.keywords` to search with a
+    Kenya OR-group. Promoted burst hashtags go here: they were searched
+    platform-wide, so a globally trending tag pulled its whole global audience
+    into `type=search`. Curated targets are deliberately NOT anchored - they are
+    already Kenya-specific, and conjoining an anchor would only cost recall."""
     counts: dict[str, int] = {}
+    anchored_keywords = anchored_keywords or set()
+
+    def _anchors_for(kw: str) -> list[str] | None:
+        return anchors if kw.lower() in anchored_keywords else None
 
     if keywords and targets.keywords and search_windows:
         search_posts: list[Post] = []
@@ -120,7 +139,8 @@ async def collect_x(
             async def bounded(kw: str) -> list[Post]:
                 async with sem:
                     return await _search_keyword(
-                        collector, kw, search_windows, min_faves, window_limit
+                        collector, kw, search_windows, min_faves, window_limit,
+                        anchors=_anchors_for(kw),
                     )
 
             chunks = await asyncio.gather(*[bounded(kw) for kw in targets.keywords])
@@ -130,7 +150,8 @@ async def collect_x(
             for kw in targets.keywords:
                 search_posts.extend(
                     await _search_keyword(
-                        collector, kw, search_windows, min_faves, window_limit
+                        collector, kw, search_windows, min_faves, window_limit,
+                        anchors=_anchors_for(kw),
                     )
                 )
         key = storage.write_posts(search_posts, target_type=search_type)

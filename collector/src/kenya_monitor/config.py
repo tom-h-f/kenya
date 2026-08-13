@@ -119,13 +119,28 @@ DYNAMIC_HASHTAG_RATIO = float(os.getenv("DYNAMIC_HASHTAG_RATIO", "5.0"))  # vs p
 # Min story_suspicion_index for a flagged story's terms to be promoted (Phase 4).
 STORY_FLAG_MIN_INDEX = float(os.getenv("STORY_FLAG_MIN_INDEX", "0.6"))
 # Min supporting channels for a coordination cluster to drive targeting.
-# Measured on the live corpus (2026-07-28): of 906 clusters / 4,732 accounts,
-# 894 clusters (4,674 accounts) rest on a single channel and 12 clusters (58
-# accounts) are corroborated across co_retweet AND co_reply. Promoting at
-# n_channels >= 1 would hand nearly the whole active author base to the
-# expansion passes, which is not a signal. Cross-channel corroboration is the
-# strongest evidence available short of ground truth (docs/analysis/phase-3).
-CLUSTER_MIN_CHANNELS = int(os.getenv("CLUSTER_MIN_CHANNELS", "1"))
+# Promoting at n_channels >= 1 hands nearly the whole active author base to the
+# expansion passes, which is not a signal: on 2026-07-28, 894 of 906 clusters
+# rested on a single channel.
+#
+# This was lowered to 1 on 2026-08-01 because corroboration was then structurally
+# 0 - the co_retweet and co_reply layers observed disjoint account populations,
+# so a floor of 2 promoted nobody and cluster targeting was inert. That premise
+# died with the census conversation-band fix: measured 2026-08-13, 446 bridge
+# accounts and 485 pairs validated in both channels.
+CLUSTER_MIN_CHANNELS = int(os.getenv("CLUSTER_MIN_CHANNELS", "2"))
+# Min share of a cluster's scored posts that must reference Kenya before it can
+# promote accounts. Corroboration alone is the WRONG gate on its own: measured
+# 2026-08-12, corroborated clusters are 8.3% Kenya-referencing against 51.5% for
+# single-channel ones, because reciprocal engagement pods are the most abundant
+# coordination on the platform and co_reply detects them best. Without this,
+# raising the channel floor targets Ugandan, Nigerian and US pods harder.
+CLUSTER_MIN_KENYA_SHARE = float(os.getenv("CLUSTER_MIN_KENYA_SHARE", "0.15"))
+# Same gate for promoted keywords. A burst detector that measures only volume
+# and acceleration promotes whatever is globally trending: #bbnaija,
+# #thirstyformore and #citizenweekend all cleared it, and their posts landed in
+# the BASELINE search partition.
+KEYWORD_MIN_KENYA_SHARE = float(os.getenv("KEYWORD_MIN_KENYA_SHARE", "0.10"))
 
 # Hate-seeking collection (docs/collection/hate-seeking.md). Runs as its own
 # cycle step with its own concurrency, never merged into the baseline keyword
