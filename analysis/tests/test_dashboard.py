@@ -101,6 +101,8 @@ def _metrics():
         "n_accounts": [5, 5],
         "n_corroborated_clusters": [1, 1],
         "n_corroborated_accounts": [4, 4],
+        "bridge_accounts": [446, 446],
+        "shared_pairs": [485, 485],
     })
 
 
@@ -122,6 +124,7 @@ def _toxicity_rows():
             'in_kenya_scope': True,
             'coded_suspect': i < 3,
             'explicit_toxic': i < 10,
+            'first_type': 'search' if i < 30 else 'replies',
             'dehumanisation_score': 0.7 if i < 3 else None,
         })
     thin_day = pd.Timestamp('2026-07-21T09:00:00Z')
@@ -132,6 +135,7 @@ def _toxicity_rows():
             'text': 'a thin day', 'label': 'neither', 'p_hate': 0.01,
             'hate_flag': False, 'domain': 'kenya', 'in_kenya_scope': True,
             'coded_suspect': False, 'explicit_toxic': False,
+            'first_type': 'search',
             'dehumanisation_score': None,
         })
     rows.append({
@@ -139,6 +143,7 @@ def _toxicity_rows():
         'created_at': day_one, 'text': 'US politics', 'label': 'hate',
         'p_hate': 0.9, 'hate_flag': True, 'domain': 'offdomain',
         'in_kenya_scope': False, 'coded_suspect': False, 'explicit_toxic': True,
+        'first_type': 'search',
         'dehumanisation_score': None,
     })
     df = pd.DataFrame(rows)
@@ -338,3 +343,97 @@ def test_wilson_stays_in_bounds_on_zero_and_empty():
     assert d._wilson(0, 0) == (0.0, 0.0)
     lo, hi = d._wilson(0, 50)
     assert lo == pytest.approx(0.0, abs=1e-12) and 0.0 < hi < 1.0
+
+
+# --- composition standardisation --------------------------------------------
+
+
+def test_toxicity_publishes_raw_and_standardised(stub_tox):
+    """The raw daily series moves with collection policy as well as discourse,
+    so a standardised counterpart must ship alongside it."""
+    tox = stub_tox()
+    block = tox["standardised"]
+
+    assert block["weekly"], "a standardised weekly series must be published"
+    assert block["reference_week"] == "2026-07-06"
+    week = block["weekly"][0]
+    for series in ("explicit_toxic", "is_hate"):
+        assert set(week[series]) == {"raw", "standardised"}
+    assert "NOT comparable across time" in block["note"]
+
+
+def test_toxicity_publishes_the_composition_that_drives_the_gap(stub_tox):
+    tox = stub_tox()
+    comp = tox["standardised"]["composition"]
+
+    assert comp, "composition must be published next to the standardised rate"
+    shares = {k: v for k, v in comp[0].items() if k != "week"}
+    assert sum(shares.values()) == pytest.approx(1.0, abs=1e-6)
+    assert set(shares) <= {"search", "replies", "hydrated", "timeline"}
+
+
+def test_toxicity_reports_rates_within_each_partition(stub_tox):
+    """So a reader can see that the mix, not the discourse, moved."""
+    tox = stub_tox()
+    rows = tox["standardised"]["by_partition"]
+
+    assert rows
+    assert {r["first_type"] for r in rows} <= {"search", "replies", "hydrated", "timeline"}
+    assert all("explicit_toxic" in r and "n" in r for r in rows)
+
+
+def test_missing_strata_are_reported_not_hidden(stub_tox):
+    """Renormalising over the strata present changes what the rate means, so
+    the periods where that happened have to be visible."""
+    tox = stub_tox()
+    weeks = tox["standardised"]["weekly"]
+
+    # The fixture only carries `search` and `replies`, so the reference strata
+    # `hydrated` and `timeline` are absent and must be declared.
+    missing = {m for w in weeks for v in w.get("missing_strata", {}).values() for m in v}
+    assert {"hydrated", "timeline"} <= missing
+
+
+# --- corroboration evidence --------------------------------------------------
+
+
+def test_corroborated_count_ships_with_its_regime_indicators(payload):
+    """One bridge account can manufacture a corroborated cluster, which is what
+    the 0/1 flicker was for 23 passes. The count is not readable alone."""
+    ev = payload["coordination"]["corroborated"]["evidence"]
+
+    assert ev["bridge_accounts"] == 446
+    assert ev["shared_pairs"] == 485
+    assert "bridge_accounts" in ev["regime_note"]
+
+
+def test_kenya_caveat_ships_even_when_its_measurement_fails(payload):
+    """The payload fixture passes a bare object as the connection, so the share
+    query cannot run. The caveat must survive that: its absence would leave a
+    corroborated count with nothing saying it is mostly engagement farming."""
+    ev = payload["coordination"]["corroborated"]["evidence"]
+
+    assert ev["kenya_share"] is None
+    assert "not of election-related coordination" in ev["kenya_note"]
+
+
+def test_overlap_counters_are_omitted_before_a_pass_writes_them(monkeypatch):
+    """New metric columns are unbindable, not NULL, until the first post-deploy
+    pass writes one - readers must guard on presence."""
+    metrics = _metrics().drop(columns=["bridge_accounts", "shared_pairs"])
+    ev = d._corroboration_evidence(object(), _members(), metrics, "x")
+
+    assert "bridge_accounts" not in ev
+    assert "regime_note" in ev, "the caveat still ships without the numbers"
+
+
+def test_meta_leak_flag_follows_the_generated_sql(monkeypatch):
+    """It used to report whether targets.yaml was readable, while the toxicity
+    query it described never applied the correction."""
+    monkeypatch.setattr(d, "_collection_start", lambda con, platform="x": None)
+
+    monkeypatch.setattr(d.db, "curated_handles", lambda *a, **kw: set())
+    assert d.build_meta(object())["leak_corrected"] is False
+
+    monkeypatch.setattr(d.db, "curated_handles", lambda *a, **kw: {"williamsruto"})
+    assert d.build_meta(object())["leak_corrected"] is True

@@ -483,38 +483,6 @@ def latest_coordination_clusters(con: duckdb.DuckDBPyConnection, platform: str =
     )
 
 
-def coordination_run_latest(
-    con: duckdb.DuckDBPyConnection,
-    kind: str = "clusters",
-    platform: str = "x",
-    channel: str = "*",
-    method: str = "*",
-):
-    """Rows of the most recent persisted coordination run, as a coherent set.
-
-    `dense_rank` over `computed_at` rather than the per-entity `row_number` the
-    `latest_coordination_*` helpers use, which is the same distinction
-    `latest_stories` already draws. Anything published to a reader needs this
-    one: a sticky union of several runs would report a cluster count that no
-    single run ever produced.
-
-    `kind="edges"` partitions by (channel, method) because `persist_edges` takes
-    its own `now` per call and is invoked once per channel x method, so every
-    partition carries a slightly different `computed_at`. Ranking them together
-    would return whichever channel happened to be written last and silently drop
-    the rest. The cost is that if a run dies midway, the newest run per partition
-    can straddle two runs - visible as disagreeing `computed_at` values, which is
-    better than a missing channel."""
-    src = coordination_source(kind, platform, channel, method)
-    partition = "PARTITION BY channel, method " if kind == "edges" else ""
-    return con.sql(
-        f"""
-        SELECT * FROM {src}
-        QUALIFY dense_rank() OVER ({partition}ORDER BY computed_at DESC) = 1
-        """
-    )
-
-
 def coordination_metrics(con: duckdb.DuckDBPyConnection, platform: str = "x"):
     """Every persisted coordination-pass counter, oldest first.
 

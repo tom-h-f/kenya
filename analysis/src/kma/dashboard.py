@@ -137,14 +137,19 @@ def build_meta(con: duckdb.DuckDBPyConnection, platform: str = "x") -> dict:
     page rather than buried, so they travel with the data instead of being
     hardcoded in the site - a scoping change here cannot leave a stale caveat
     rendered next to a fresh number."""
+    # Read off the SQL that will actually be generated, not off targets.yaml
+    # being readable. The two disagreed: `leak_corrected` reported True while
+    # `_toxicity_frame` hand-rolled its scoping without `effective_type_expr`.
+    scoped = db.scoped_posts_cte(platform, "baseline")
     return {
         "code_version": os.getenv("GIT_SHA") or None,
         "scope": "baseline",
-        "leak_corrected": db.leak_corrected(),
+        "leak_corrected": scoped.applied,
         "leak_note": (
-            "Posts promoted to account timelines before 2026-08-01 landed in a "
-            "baseline partition; 41,595 posts across 407 accounts, 6.7% of "
-            "baseline. Corrected by first-seen type."
+            "Accounts promoted by coordination targeting wrote to a baseline "
+            "timeline partition before 2026-08-01. Reclassified as targeted by "
+            "first-seen type; measured 2026-08-13 at 4,312 posts, 1.10% of the "
+            "baseline denominator."
         ),
         "collection_start": _collection_start(con, platform),
         "search_horizon_days": 14,
@@ -185,19 +190,18 @@ def _toxicity_frame(con: duckdb.DuckDBPyConnection, platform: str = "x") -> pd.D
     Unlike the notebook this selects the PERSISTED measurement columns and only
     recomputes the rows that predate their rollout - the notebook recomputes
     every row, which is affordable interactively and is not affordable hourly.
+
+    Scoping goes through `db.scoped_posts_cte`, which is the only spelling that
+    carries the promoted-account leak correction along with the first-seen
+    typing. Hand-rolling the CTE and predicate here omitted it while `build_meta`
+    still published `leak_corrected: true` - a provenance claim the query did not
+    honour, worth 4,312 posts (1.10%) of the baseline denominator.
     """
+    scoped = db.scoped_posts_cte(platform, "baseline", name="p")
     df = con.sql(
         f"""
-        WITH {db.first_seen_types_cte(platform, "fs")},
-        p AS (
-            SELECT p0.platform_post_id, p0.created_at, p0.text, fs.first_type
-            FROM {db.posts_source(platform)} p0
-            JOIN fs USING (platform, platform_post_id)
-            WHERE {db.scope_predicate('baseline', 'fs.first_type')}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        ), h AS (
+        WITH {scoped.cte},
+        h AS (
             SELECT * FROM {db.hatespeech_source(platform)}
             QUALIFY row_number() OVER (
                 PARTITION BY platform_post_id ORDER BY scored_at DESC
@@ -208,7 +212,7 @@ def _toxicity_frame(con: duckdb.DuckDBPyConnection, platform: str = "x") -> pd.D
                 PARTITION BY platform_post_id ORDER BY scored_at DESC
             ) = 1
         )
-        SELECT p.platform_post_id, p.created_at, p.text,
+        SELECT p.platform_post_id, p.created_at, p.text, p.first_type,
                h.label, h.p_hate, h.hate_flag,
                h.domain, h.in_kenya_scope, h.coded_suspect, h.explicit_toxic,
                i.dehumanisation_score, i.violence_call_score,
@@ -237,6 +241,77 @@ def _rate(k, n: int) -> dict:
     k = int(k)
     lo, hi = _wilson(k, n)
     return {"k": k, "p": round(k / n, 6), "lo": round(lo, 6), "hi": round(hi, 6)}
+
+
+#: Series that are standardised. Each is a boolean column on the toxicity frame.
+_STANDARDISED_SERIES = ("explicit_toxic", "is_offensive", "is_hate", "coded_suspect")
+
+
+def _composition_block(d: pd.DataFrame) -> dict:
+    """Weekly raw vs composition-standardised rates, plus the mix that drives
+    the gap between them.
+
+    The raw baseline rate is not comparable across time. `replies` is a baseline
+    type whose volume the collector tunes for coordination reasons, and it
+    carries ~3.2x the hate rate of `search`. When the 2026-08-06 conversation
+    widening moved the mix from 70.7% search / 12.1% replies to 16.3% / 71.2%,
+    the raw weekly rate rose 73% while every within-stratum rate held or fell -
+    the standardised series over the same period falls 21%.
+
+    Publishing the composition alongside is what makes that self-evident rather
+    than something a reader has to take on trust.
+    """
+    if d.empty or "first_type" not in d.columns:
+        return {"weekly": [], "composition": [], "by_partition": []}
+
+    w = d.copy()
+    # Drop the tz before bucketing: `to_period` discards it with a warning, and
+    # weeks are UTC-anchored here on purpose so they line up with the frozen
+    # reference composition rather than with the display timezone.
+    utc_naive = w["created_at"].dt.tz_convert("UTC").dt.tz_localize(None)
+    w["week"] = utc_naive.dt.to_period("W").dt.start_time.dt.strftime("%Y-%m-%d")
+
+    weekly: dict[str, dict] = {}
+    for col in _STANDARDISED_SERIES:
+        if col not in w.columns:
+            continue
+        part = measure.standardise_by_period(w, "week", "first_type", col)
+        for _, r in part.iterrows():
+            row = weekly.setdefault(r["week"], {"week": r["week"], "n": int(r["n"])})
+            row[col] = {
+                "raw": round(float(r["raw"]), 6),
+                "standardised": round(float(r["standardised"]), 6),
+            }
+            if r["missing_strata"]:
+                row.setdefault("missing_strata", {})[col] = r["missing_strata"]
+
+    comp = measure.composition_by_period(w, "week", "first_type")
+    composition = [
+        {"week": week, **{c: round(float(v), 6) for c, v in row.items()}}
+        for week, row in comp.iterrows()
+    ]
+
+    by_partition = []
+    for (week, stratum), grp in w.groupby(["week", "first_type"]):
+        entry = {"week": week, "first_type": stratum, "n": int(len(grp))}
+        for col in _STANDARDISED_SERIES:
+            if col in grp.columns:
+                entry[col] = round(float(grp[col].mean()), 6)
+        by_partition.append(entry)
+
+    return {
+        "weekly": [weekly[k] for k in sorted(weekly)],
+        "composition": composition,
+        "by_partition": by_partition,
+        "reference_week": measure.REFERENCE_WEEK,
+        "reference_composition": dict(measure.REFERENCE_COMPOSITION),
+        "note": (
+            "`raw` is NOT comparable across time: the baseline scope's "
+            "composition is set by collection policy, and replies carry ~3.2x "
+            "the toxicity rate of search. `standardised` holds the mix at the "
+            "reference week. Read `composition` to see why they diverge."
+        ),
+    }
 
 
 def build_toxicity(
@@ -340,6 +415,10 @@ def build_toxicity(
         ),
         "min_day_n": MIN_DAY_N,
         "timezone": tz,
+        # The daily `series` above is a RAW rate. It moves with collection
+        # policy as well as with discourse, so anything presented as a trend
+        # must come from here instead.
+        "standardised": _composition_block(d),
         # The coded series reads as a flat zero, and that number needs its own
         # caveat rather than a reader concluding coded incitement is absent.
         # `coded_suspect` requires a documented lexicon hit corroborated by NLI,
@@ -398,6 +477,110 @@ def _cluster_rows(members: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _corroboration_evidence(
+    con: duckdb.DuckDBPyConnection,
+    members: pd.DataFrame,
+    metrics: pd.DataFrame,
+    platform: str,
+) -> dict:
+    """What a reader needs in order to interpret the corroborated count.
+
+    Two things, both of which the count alone hides.
+
+    First the regime. Corroboration counts a CLUSTER whose internal edges span
+    two channels, which a single bridge account can manufacture - so until
+    bridge accounts are in the tens the number means "cannot be evaluated"
+    rather than "nothing is coordinated". It sat at a 0/1 flicker for 23
+    consecutive passes on exactly one bridge account, and the earlier decision
+    to publish that zero as a structural finding was correct at the time and is
+    now false: the census conversation-band fix made both real.
+
+    Second the caveat that matters more. The corroborated tier is the LEAST
+    Kenya-relevant one - reciprocal engagement pods are the most abundant form
+    of coordination on the platform, and co_reply detects them best. Publishing
+    the corroborated count without this invites reading engagement farming as
+    election interference.
+    """
+    out: dict = {}
+    if len(metrics):
+        last = metrics[metrics["computed_at"] == metrics["computed_at"].max()]
+        # Unbindable rather than NULL until a post-deploy pass writes them.
+        for col in ("bridge_accounts", "shared_pairs"):
+            if col in last.columns:
+                v = last.iloc[0].get(col)
+                out[col] = None if pd.isna(v) else int(v)
+
+    out["regime_note"] = (
+        "Read the corroborated cluster count next to bridge_accounts. One "
+        "bridge account is enough to produce a corroborated cluster, so a low "
+        "bridge count means the measurement cannot be evaluated, not that "
+        "nothing is coordinated."
+    )
+
+    # The caveat ships whether or not the measurement behind it succeeds. If it
+    # went missing on failure a reader would see a corroborated count with
+    # nothing telling them it is mostly engagement farming, which is the whole
+    # risk this key exists to cover.
+    out["kenya_share"] = _cluster_kenya_share(con, members, platform) or None
+    out["kenya_note"] = (
+        "Corroborated clusters are the strongest evidence tier and currently "
+        "the least on-topic: reciprocal engagement pods are the most abundant "
+        "coordination on the platform and co_reply detects them best. Treat a "
+        "corroborated cluster as evidence of coordination, not of "
+        "election-related coordination."
+    )
+    return out
+
+
+def _cluster_kenya_share(
+    con: duckdb.DuckDBPyConnection, members: pd.DataFrame, platform: str
+) -> dict:
+    """Share of each tier's posts that reference Kenya, via the persisted
+    `domain` column that `measure.attach_measurement_columns` writes."""
+    if members.empty or "n_channels" not in members.columns:
+        return {}
+    try:
+        posts = con.sql(
+            f"""
+            WITH lp AS (
+                SELECT author_id, platform_post_id FROM {db.posts_source(platform)}
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform, platform_post_id
+                    ORDER BY collected_at DESC) = 1
+            ), h AS (
+                SELECT platform_post_id, domain FROM {db.hatespeech_source(platform)}
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform_post_id ORDER BY scored_at DESC) = 1
+            )
+            SELECT lp.author_id, h.domain
+            FROM lp JOIN h USING (platform_post_id)
+            WHERE h.domain IS NOT NULL
+            """
+        ).df()
+    except (duckdb.Error, AttributeError):
+        # Loud, never silent: a failed measurement must not read as "no
+        # off-domain clusters". The caveat text is published regardless.
+        log.warning("coordination: Kenya-share query failed; publishing it as null")
+        return {}
+    if posts.empty:
+        return {}
+
+    tier = members.assign(corr=members["n_channels"] >= 2)[["author_id", "corr"]]
+    joined = posts.merge(tier.drop_duplicates("author_id"), on="author_id", how="inner")
+    if joined.empty:
+        return {}
+
+    out = {}
+    for corr, label in ((True, "corroborated"), (False, "single_channel")):
+        grp = joined[joined["corr"] == corr]
+        if len(grp):
+            out[label] = {
+                "posts": int(len(grp)),
+                "kenya": round(float((grp["domain"] == "kenya").mean()), 4),
+            }
+    return out
+
+
 def build_coordination(con: duckdb.DuckDBPyConnection, platform: str = "x") -> dict:
     """Statistic C, read from the persisted run of record.
 
@@ -434,7 +617,7 @@ def build_coordination(con: duckdb.DuckDBPyConnection, platform: str = "x") -> d
                 "edges_total": 0, "edges_multichannel": 0,
                 "shown_accounts": 0, "shown_clusters": 0,
             },
-            "corroborated": {"clusters": []},
+            "corroborated": {"clusters": [], "evidence": {}},
             "candidates": {"n": 0, "size_histogram": []},
             "network": {"nodes": [], "edges": [], "clusters": []},
             "share_series": _share_series(metrics),
@@ -469,6 +652,7 @@ def build_coordination(con: duckdb.DuckDBPyConnection, platform: str = "x") -> d
         "headline": headline,
         "corroborated": {
             "clusters": _annotate(clusters[clusters["corr"]], None, handles),
+            "evidence": _corroboration_evidence(con, members, metrics, platform),
         },
         "candidates": {
             "n": int(len(candidates)),
