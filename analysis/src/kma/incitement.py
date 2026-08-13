@@ -36,7 +36,7 @@ import pandas as pd
 import pyarrow as pa
 
 from kma.classify import STANCE_MODEL, _pipe, _run
-from kma.db import BUCKET, incitement_source, pending_posts, posts_source
+from kma.db import BUCKET, connect, incitement_source, pending_posts, posts_source
 
 # category -> lexicon entries. `pattern` is a case-insensitive regex fragment;
 # `fp_risk` marks terms with common innocent senses (mende = cockroach the

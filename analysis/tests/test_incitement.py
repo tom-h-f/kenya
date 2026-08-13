@@ -45,3 +45,35 @@ def test_lexicon_entries_have_metadata():
 
 def test_hypotheses_include_contrast_class():
     assert "political_criticism" in inc.HYPOTHESES
+
+
+def test_backfill_opens_its_own_connection(monkeypatch):
+    """`backfill` calls `connect()` itself, so the name must be imported at
+    module scope - not only under TYPE_CHECKING.
+
+    A `--limit` smoke run does NOT cover this: that path takes a connection from
+    its caller and never reaches `connect()`. The full drain does, and died on
+    Modal with `NameError: name 'connect' is not defined` minutes after the
+    smoke test had passed.
+    """
+    from kma import incitement
+
+    opened = []
+    monkeypatch.setattr(incitement, "connect", lambda: opened.append(1) or "con")
+    monkeypatch.setattr(incitement, "score_new", lambda *a, **k: 0)
+
+    assert incitement.backfill() == 0
+    assert opened == [1], "backfill must open exactly one connection"
+
+
+def test_backfill_drains_until_a_pass_returns_nothing(monkeypatch):
+    from kma import incitement
+
+    remaining = [500, 500, 120, 0]
+    monkeypatch.setattr(incitement, "connect", lambda: "con")
+    monkeypatch.setattr(
+        incitement, "score_new", lambda *a, **k: remaining.pop(0)
+    )
+
+    assert incitement.backfill() == 1120
+    assert remaining == []
