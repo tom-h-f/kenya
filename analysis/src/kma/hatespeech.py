@@ -33,7 +33,15 @@ import duckdb
 import pandas as pd
 import pyarrow as pa
 
-from kma.db import BUCKET, connect, hatespeech_source, incitement_source, posts_source
+from kma.db import (
+    BUCKET,
+    connect,
+    hatespeech_source,
+    incitement_source,
+    pending_posts,
+    posts_source,
+    prefix_readable,
+)
 
 MODEL = os.getenv("HATESPEECH_MODEL", "tom-h-f/kenya-hatespeech-afroxlmr")
 HATE_THRESHOLD = float(os.getenv("HATESPEECH_THRESHOLD", "0.28"))
@@ -111,32 +119,10 @@ def _predict(texts: list[str], batch_size: int = 64) -> pd.DataFrame:
     )
 
 
-def _scored_ids(con: duckdb.DuckDBPyConnection, platform: str) -> set[str]:
-    try:
-        rel = con.sql(
-            f"SELECT DISTINCT platform_post_id FROM {hatespeech_source(platform)}"
-        )
-    except duckdb.Error:
-        return set()
-    return set(rel.df()["platform_post_id"].tolist())
-
-
 def _pending(
     con: duckdb.DuckDBPyConnection, platform: str, limit: int | None
 ) -> pd.DataFrame:
-    df = con.sql(
-        f"""
-        SELECT platform_post_id, text FROM (
-            SELECT * FROM {posts_source(platform)}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        )
-        WHERE text IS NOT NULL AND length(trim(text)) > 0
-        """
-    ).df()
-    df = df[~df["platform_post_id"].isin(_scored_ids(con, platform))]
-    return df.head(limit) if limit else df
+    return pending_posts(con, hatespeech_source(platform), platform, limit)
 
 
 MEASURE_COLUMNS = (
@@ -144,6 +130,7 @@ MEASURE_COLUMNS = (
     "in_kenya_scope",
     "lexicon_hits",
     "coded_suspect",
+    "coded_suspect_kenya",
     "explicit_toxic",
     "flagged",
 )
@@ -217,6 +204,13 @@ def _hate_table(measured: pd.DataFrame, now: datetime) -> pa.Table:
             "in_kenya_scope": measured["in_kenya_scope"].astype(bool).tolist(),
             "lexicon_hits": [list(h) for h in measured["lexicon_hits"]],
             "coded_suspect": measured["coded_suspect"].astype(bool).tolist(),
+            # Persisted alongside the unscoped flag because they answer different
+            # questions and the collector reads these columns directly. Without
+            # it, an off-domain coded post - US remigration discourse using
+            # `fukuza`, say - drives Kenyan targeted collection.
+            "coded_suspect_kenya": (
+                measured["coded_suspect_kenya"].astype(bool).tolist()
+            ),
             "explicit_toxic": measured["explicit_toxic"].astype(bool).tolist(),
             "flagged": measured["flagged"].astype(bool).tolist(),
             "model": [MODEL] * len(measured),
@@ -292,12 +286,45 @@ def refresh_measure(
         present = set(con.sql(f"SELECT * FROM {hatespeech_source(platform)} LIMIT 0").columns)
     except duckdb.Error:
         return 0
-    # Before the first refresh no run carries the columns at all, so an
-    # `IS NULL` predicate cannot even bind - every row needs the rewrite.
-    stale = (
+    # Two independent reasons a row is stale.
+    #
+    # 1. It predates the measure columns entirely. Before the first refresh no
+    #    run carries them, so an `IS NULL` predicate cannot even bind.
+    #
+    # 2. Its NLI arrived AFTER it was scored. `_measure_frame` resolves
+    #    `coded_suspect` at hate-scoring time, and `measure.coded_suspect`
+    #    returns a non-null False when no incitement row exists - so a post
+    #    scored before the NLI pass reached it is written `coded_suspect=False`
+    #    permanently. An `IS NULL` check can never revisit that, which made this
+    #    a one-shot schema migration rather than a recompute. Comparing
+    #    timestamps is what lets a backfill fix history.
+    stale_cols = (
         " OR ".join(f"lh.{c} IS NULL" for c in MEASURE_COLUMNS)
         if set(MEASURE_COLUMNS) <= present
         else "TRUE"
+    )
+    # The NLI-newer-than-score predicate needs the incitement prefix to exist. A
+    # zero-file glob raises at CTE resolution rather than returning no rows, so
+    # without this probe an operator running --refresh-measure before the
+    # incitement pass has ever written gets a duckdb.Error instead of the
+    # schema-migration behaviour the command exists for.
+    has_nli = prefix_readable(con, incitement_source(platform))
+    nli_cte = (
+        f""", li AS (
+            SELECT platform_post_id, scored_at AS nli_scored_at
+            FROM {incitement_source(platform)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY scored_at DESC
+            ) = 1
+        )"""
+        if has_nli
+        else ""
+    )
+    nli_join = "LEFT JOIN li USING (platform_post_id)" if has_nli else ""
+    nli_stale = (
+        "OR (li.nli_scored_at IS NOT NULL AND li.nli_scored_at > lh.scored_at)"
+        if has_nli
+        else ""
     )
     pending = con.sql(
         f"""
@@ -313,11 +340,13 @@ def refresh_measure(
                     PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
                 ) = 1
             )
-        )
+        ){nli_cte}
         SELECT lh.platform_post_id, lp.text, lh.label,
                lh.p_neither, lh.p_offensive, lh.p_hate, lh.hate_flag
         FROM lh JOIN lp USING (platform_post_id)
-        WHERE {stale}
+        {nli_join}
+        WHERE ({stale_cols})
+           {nli_stale}
         {f"LIMIT {int(limit)}" if limit else ""}
         """
     ).df()

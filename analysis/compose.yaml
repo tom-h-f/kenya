@@ -50,5 +50,33 @@ services:
     mem_limit: 2g
     restart: unless-stopped
 
+  # Aggregates R2 into the JSON blobs kenya.tomfr.net serves. Loads no models:
+  # it reads the PERSISTED coordination run rather than rebuilding it, so the
+  # site and the collector's targeting always describe the same run, and the
+  # heaviest job in the repo does not run twice on a RAM-tight host.
+  #
+  # Writes to R2_DASHBOARD_BUCKET (the publish bucket), which holds only these
+  # blobs - an R2 binding cannot be scoped to a prefix, so the Worker must not
+  # be pointed at the bucket holding raw posts.
+  #
+  # Opt-in via profile so it does not start on pi0 beside the collector:
+  #   docker compose --profile dashboard up -d --build dashboard
+  dashboard:
+    profiles: ["dashboard"]
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-}
+    env_file: ../.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    # The image's ENTRYPOINT is hardcoded to kma-enrich.
+    entrypoint: ["uv", "run", "--no-sync", "kma-dashboard"]
+    command: ["--loop"]
+    # Measured 2026-08-05: a cold build peaks well under this; the working set is
+    # the persisted cluster/edge frames, not a model.
+    mem_limit: 2g
+    restart: unless-stopped
+
 volumes:
   hf_cache:

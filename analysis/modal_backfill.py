@@ -54,20 +54,61 @@ image = (
     ],
     timeout=6 * 3600,
 )
-def run(limit: int | None = None, batch_size: int = 256) -> int:
+def run(
+    limit: int | None = None, batch_size: int = 256, pass_name: str = "hate"
+) -> int:
+    """Drain one enrichment prefix on GPU.
+
+    `pass_name="incitement"` runs the coded-incitement NLI instead of the hate
+    classifier. That pass is four hypotheses per post through mDeBERTa rather
+    than one 3-class forward pass, so its default batch is smaller; pass
+    `--batch-size` explicitly when tuning.
+
+    Run incitement BEFORE any hate backfill. `hatespeech._measure_frame`
+    resolves `coded_suspect` from the `incitement/` prefix at scoring time and
+    writes a non-null False when it finds nothing, so hate rows written first
+    need `kma.hatespeech.refresh_measure` afterwards to pick the NLI up.
+    """
     from kma.db import connect
-    from kma.hatespeech import backfill, score_new
+
+    if pass_name == "incitement":
+        from kma.incitement import backfill, score_new
+    elif pass_name == "hate":
+        from kma.hatespeech import backfill, score_new
+    else:
+        raise ValueError(f"unknown pass {pass_name!r} (expected hate|incitement)")
 
     if limit is not None:  # smoke: one bounded pass, no full drain
         con = connect()
         n = score_new(con, limit=limit, batch_size=batch_size)
-        print(f"smoke: scored {n}")
+        print(f"smoke [{pass_name}]: scored {n}")
         return n
     total = backfill(batch_size=batch_size)
-    print(f"backfilled {total}")
+    print(f"backfilled [{pass_name}] {total}")
     return total
 
 
 @app.local_entrypoint()
-def main(limit: int | None = None, batch_size: int = 256):
-    print(run.remote(limit=limit, batch_size=batch_size))
+def main(
+    limit: int | None = None,
+    batch_size: int = 256,
+    pass_name: str = "hate",
+    spawn: bool = False,
+):
+    """`--spawn` for anything long. `run.remote()` BLOCKS on the input, and
+    `--detach` only keeps the app alive - it does not stop a client disconnect
+    from cancelling the in-flight call. A full drain killed that way dies with
+    `InputCancellation: Input was cancelled by user` partway through.
+
+    `run.spawn()` is fire-and-forget: it returns a FunctionCall id immediately
+    and the work continues server-side regardless of the client. Same pattern as
+    investigations/2026-07-18-hatespeech-finetune/modal_train.py.
+
+        modal run --detach modal_backfill.py --pass-name incitement --spawn
+        # then poll: modal.FunctionCall.from_id(<id>).get(timeout=0)
+    """
+    if spawn:
+        call = run.spawn(limit=limit, batch_size=batch_size, pass_name=pass_name)
+        print(f"spawned: {call.object_id}")
+        return
+    print(run.remote(limit=limit, batch_size=batch_size, pass_name=pass_name))

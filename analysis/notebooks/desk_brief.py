@@ -16,8 +16,7 @@ def _():
     from kma import viz
     from kma.db import (
         connect,
-        latest_coordination_clusters,
-        latest_coordination_edges,
+        coordination_run_latest,
         latest_hatespeech,
         latest_labels,
         latest_stories,
@@ -35,8 +34,7 @@ def _():
         con,
         deltas,
         fr,
-        latest_coordination_clusters,
-        latest_coordination_edges,
+        coordination_run_latest,
         latest_hatespeech,
         latest_labels,
         latest_stories,
@@ -298,8 +296,7 @@ def _(
     con,
     focus_spread,
     focus_story,
-    latest_coordination_clusters,
-    latest_coordination_edges,
+    coordination_run_latest,
     mo,
     story_pick,
 ):
@@ -312,11 +309,11 @@ def _(
         _amps = focus_spread.get("amplifiers") if focus_spread else None
         _accounts = co.story_account_set(focus_story, _amps)
         try:
-            _edges = latest_coordination_edges(con).df()
+            _edges = coordination_run_latest(con, "edges").df()
         except Exception:
             _edges = None
         try:
-            _clusters = latest_coordination_clusters(con).df()
+            _clusters = coordination_run_latest(con, "clusters").df()
         except Exception:
             _clusters = None
         coord_view = co.claim_coordination(_accounts, _edges, _clusters)

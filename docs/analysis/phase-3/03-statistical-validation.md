@@ -60,9 +60,11 @@ FDR edges on **shuffled** input. Two causes, two changes:
 Post-fix: shuffled input 0 Bonferroni / 0 FDR; synthetic injection recovery
 F1 = 1.0. Known residual: the raw shared-count statistic loses power against
 hub-heavy incidence (a surprisal-weighted statistic over TF-IDF is the
-follow-up if needed); mega objects above `hub_cap` (default max(50, 5% of
-accounts)) are excluded from the statistical incidence entirely, per the 02
-scaling note.
+follow-up if needed); mega objects above `hub_cap` (default
+`max(50, min(5% of accounts, HUB_CAP_MAX))`, so 100 on any corpus past ~2,000
+accounts) are excluded from the statistical incidence entirely, per the 02
+scaling note. The unbounded 5% term stopped filtering as the corpus grew - at
+64,002 amplifying accounts it gave 3,200 against a busiest object of 1,171.
 
 ### Time-constrained variant
 

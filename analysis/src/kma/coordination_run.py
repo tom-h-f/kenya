@@ -100,13 +100,24 @@ def run(
     n_corr_accounts = (
         int(members["cluster_id"].isin(corr_ids).sum()) if len(members) else 0
     )
+    # Read next to n_corroborated_clusters, always. Until bridge accounts are in
+    # the tens that number means "cannot be evaluated" rather than "nothing is
+    # coordinated" - a single bridge account can produce a corroborated cluster.
+    overlap = co.layer_overlap(layers)
+    for ch, edges in layers.items():
+        if ch in channel_stats:
+            channel_stats[ch]["layer_weight_max"] = co.layer_weight_max(edges)
+
     log.info(
-        "layers: %s; clusters: %d (%d accounts); corroborated: %d (%d accounts)",
+        "layers: %s; clusters: %d (%d accounts); corroborated: %d (%d accounts); "
+        "bridge accounts: %d; shared pairs: %d",
         {ch: len(e) for ch, e in layers.items()},
         len(summary),
         len(members),
         len(corr_ids),
         n_corr_accounts,
+        overlap["bridge_accounts"],
+        overlap["shared_pairs"],
     )
 
     out: dict = {
@@ -116,6 +127,7 @@ def run(
         "n_accounts": int(len(members)),
         "n_corroborated_clusters": len(corr_ids),
         "n_corroborated_accounts": n_corr_accounts,
+        **overlap,
         "channel_stats": channel_stats,
         "metrics_key": None,
         "persisted": [],
@@ -141,6 +153,7 @@ def run(
                 "n_accounts": int(len(members)),
                 "n_corroborated_clusters": len(corr_ids),
                 "n_corroborated_accounts": n_corr_accounts,
+                **overlap,
             },
             platform=platform,
         )

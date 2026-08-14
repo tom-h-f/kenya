@@ -565,11 +565,18 @@ def corroboration(
 
 
 def _coordination_author_ids(con: duckdb.DuckDBPyConnection, platform: str) -> set[str]:
-    """author_ids in the latest persisted coordination clusters (empty if none)."""
-    from kma.db import latest_coordination_clusters
+    """author_ids in the latest persisted coordination run (empty if none).
+
+    `coordination_run_latest`, not `latest_coordination_clusters`: the latter
+    unions every pass ever persisted, which saturated `coordination_overlap`
+    toward 1.0 for every story. That collapsed its percentile rank to near-ties,
+    effectively zeroing its 0.20 weight in `story_suspicion_index`, and made the
+    `coordination_overlap > 0.0` test in `assign_tiers` promote almost any
+    thin-evidence story to high_suspicion."""
+    from kma.db import coordination_run_latest
 
     try:
-        df = latest_coordination_clusters(con, platform).df()
+        df = coordination_run_latest(con, "clusters", platform).df()
     except duckdb.Error:
         return set()
     return set(df["author_id"].tolist()) if "author_id" in df.columns else set()

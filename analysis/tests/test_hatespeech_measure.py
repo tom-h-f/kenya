@@ -76,6 +76,42 @@ def test_missing_nli_leaves_coded_false_not_null():
     assert bool(out.loc[0, "coded_suspect"]) is False
 
 
+def test_refresh_revisits_rows_whose_nli_arrived_after_scoring():
+    """The consequence of the line above. `coded_suspect` is written as a
+    non-null False when no NLI exists, so an `IS NULL` staleness check can never
+    revisit it - `refresh_measure` was a one-shot schema migration, not a
+    recompute, and a post scored before the NLI pass reached it stayed
+    permanently marked not-coded. That is what the collector's hate-seeking
+    reads. The predicate must compare timestamps.
+    """
+    import inspect
+
+    from kma.hatespeech import refresh_measure
+
+    src = inspect.getsource(refresh_measure)
+    assert "nli_scored_at > lh.scored_at" in src, (
+        "refresh_measure must re-derive rows whose incitement scores are newer "
+        "than their hate scores, or a backfill cannot repair history"
+    )
+    assert "incitement_source" in src
+
+
+def test_kenya_scoped_coded_flag_is_persisted():
+    """`coded_suspect` is not Kenya-scoped, and the collector reads these columns
+    directly - so an off-domain coded post can drive Kenyan targeted
+    collection unless the scoped variant travels with it."""
+    measured = attach_persisted_measure(
+        _scored(
+            [{
+                "platform_post_id": "1", "text": KENYA_CODED, "label": "hate",
+                "hate_flag": True, "p_neither": 0.1, "p_offensive": 0.2, "p_hate": 0.7,
+            }]
+        )
+    )
+    table = _hate_table(measured, pd.Timestamp("2026-07-28", tz="UTC").to_pydatetime())
+    assert "coded_suspect_kenya" in table.column_names
+
+
 def test_hate_table_carries_every_measure_column():
     measured = attach_persisted_measure(
         _scored(

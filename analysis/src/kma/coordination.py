@@ -21,9 +21,11 @@ scorecards are a triage tool for human review, never an auto-label.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
+from collections import Counter
 from datetime import datetime, timezone
 
 import duckdb
@@ -82,6 +84,14 @@ METRIC_GLOSSARY = {
     "view. Expect a few false positives among many edges; read as a candidate set.",
     "sig_bonferroni": "Survived Bonferroni control - the high-precision core. "
     "Near-empty on random data by design; treat these edges as load-bearing.",
+    "edges_bonferroni": "COUNT UNDER A MOVING THRESHOLD - never plot it as a "
+    "trend on its own. The bar is alpha/edges_tested, and edges_tested is "
+    "data-dependent: it grows with the corpus every pass, and differs ~300x "
+    "between co_retweet and co_reply WITHIN one run. Read it next to "
+    "edges_tested, or use `edges_per_tested`.",
+    "edges_per_tested": "edges_bonferroni / edges_tested - the share of the "
+    "tested family that survived correction. The comparable form, because it "
+    "divides out the family-size growth that moves the raw count.",
     "sig_percentile": "In the top weight percentile (CooRnet-style baseline, no "
     "null model). Divergence from the SVN sets flags popular-object noise.",
     "min_gap": "Tightest inter-arrival gap (seconds) between the pair's co-actions. "
@@ -113,11 +123,19 @@ METRIC_GLOSSARY = {
     "engagement_per_follower": "Aggregate engagement over combined followers - "
     "amplification efficiency. Unusually high can mean manufactured engagement.",
     # --- the composite ---
-    "inauthenticity_index": "Transparent 0-1 triage score = weighted sum of five "
+    "inauthenticity_index": "Transparent 0-1 triage score = weighted mean of five "
     "percentile-ranked components (see INAUTHENTICITY_WEIGHTS): bot_likeness, "
     "synchrony, homogeneity, concealment, corroboration. NOT a verdict - "
     "legitimate coordination scores non-zero; the component breakdown is what an "
-    "analyst acts on, not the scalar.",
+    "analyst acts on, not the scalar. WITHIN-RUN: every component is a percentile "
+    "against the other clusters of the same run, so a cluster's score moves when "
+    "OTHER clusters change and values are not comparable across runs (`hate_index` "
+    "is, being raw shares). Weights are renormalised over the components actually "
+    "measured - see `components_measured`.",
+    "components_measured": "Which index components were measurable for this "
+    "cluster. Synchrony needs `min_gap`, which is NULL for pairs seen only "
+    "through the census engagement arm, so a census-derived cluster is scored on "
+    "the remaining four rather than penalised for an unmeasurable one.",
     # --- evaluation ---
     "precision/recall/f1": "Synthetic-injection recovery: plant a known cluster, "
     "measure how cleanly the pipeline recovers exactly those accounts.",
@@ -186,6 +204,13 @@ COORD_LOOKBACK_DAYS = int(os.getenv("COORD_LOOKBACK_DAYS", "14"))
 # Upper bound on the hub cap. At cap 50 the projection keeps 98.1% of objects and
 # 0.7% of the pairs; the discarded 1.9% are mega-viral posts whose co-amplifiers
 # are organic, not coordinated.
+#
+# SHARED WITH THE COLLECTOR. `kenya_monitor.config.SNOWBALL_BAND_MAX` reads this
+# same env var, because the census must not spend requests on objects the
+# projection then discards. One consequence worth knowing: changing it changes
+# both what is COLLECTED and what is DISCARDED, and nothing reconciles rows
+# gathered under a previous band - split any series on `code_version` before
+# comparing across such a change.
 HUB_CAP_MAX = int(os.getenv("HUB_CAP_MAX", "100"))
 
 # Which edge filter feeds community detection. Bonferroni, not FDR, and this is
@@ -816,7 +841,7 @@ def validated_edges(
     Untimed channels use the degree-corrected SVN (configuration-model null;
     `p_uniform` keeps the classic hypergeometric for comparison) over the
     incidence with hub objects excluded: objects acted on by more than
-    `hub_cap` accounts (default max(50, 5% of accounts)) carry no coordination
+    `hub_cap` accounts (default max(50, min(5% of accounts, HUB_CAP_MAX))) carry no coordination
     signal - pairs sharing only a mega-viral tweet are organic - and one such
     hub otherwise dilutes the aggregate null rate until real clusters vanish
     (doc 02 scaling note). Excluded hubs are logged. Pass `delta` for the
@@ -836,12 +861,17 @@ def validated_edges(
         stats["accounts_all"] = int(n_accounts)
         stats["traces_all"] = int(con.sql(f"SELECT count(*) FROM {t}").fetchone()[0])
     if delta is not None:
-        mc = lambda m: validate_montecarlo(  # noqa: E731
+        # ONE shuffle, both corrections. This used to call the whole thing twice
+        # - `n_iter` (500) rounds of a Python-level pair-count loop per call -
+        # for a result that differs only in the final three lines, and then
+        # assigned the second frame's column into the first by positional index
+        # rather than by key. That was correct only because the same seed made
+        # both runs emit identical row order.
+        out = validate_montecarlo(
             con, channel, delta, n_iter=n_iter, alpha=alpha,
-            min_repetition=min_repetition, method=m, trace_table=t,
-        )
-        out = mc("fdr_bh").rename(columns={"validated": "sig_fdr"})
-        out["sig_bonferroni"] = mc("bonferroni")["validated"]
+            min_repetition=min_repetition, method="fdr_bh", trace_table=t,
+        ).rename(columns={"validated": "sig_fdr"})
+        out["sig_bonferroni"] = out["p_value"] < alpha / max(len(out), 1)
     else:
         obj_deg = object_degrees(con, channel, platform, trace_table=t)
         # The 5%-of-accounts term was meant to lift the cap on tiny corpora, but
@@ -955,6 +985,21 @@ def build_layers(
     `method` picks the edge filter ("bonferroni", "fdr", "percentile");
     `deltas` maps a channel to a co-action window for the timed variant.
 
+    NOTE the default `channels=WAVE_A` is NOT what production runs.
+    `coordination_run.DEFAULT_CHANNELS` is `["co_retweet", "co_reply"]`;
+    `text_sim` and `fast_co_share` validated zero edges on the full corpus and
+    are excluded there. Cluster identity, `n_channels` and
+    `internal_edge_share` are all functions of the layer set, so a call using
+    this default produces a DIFFERENT multiplex from the persisted run and the
+    two are not comparable. Pass `DEFAULT_CHANNELS` explicitly to reproduce
+    production. (`min_size` diverges the same way: 3 in production, 2 in the
+    coordination notebook.)
+
+    Requesting `text_sim` also silently selects a different statistic:
+    `DEFAULT_DELTAS` gives it a 3600s window, which routes it to the
+    Monte-Carlo timed null with a `count(*)` weight rather than the
+    hypergeometric path.
+
     `stats`, when given, is filled with channel -> counters. It is an explicit
     parameter rather than part of `**params` on purpose: forwarded through
     `params` one dict would be shared by every channel and each would overwrite
@@ -1037,17 +1082,22 @@ def aggregate_layers(
     """Sum normalised layer weights into one multiplex graph, tracking the
     per-edge supporting channels.
 
-    `normalise="mass"` (default) scales each layer to unit total weight, so a
-    layer influences the partition by its *evidence*, not by how many edges it
-    happens to contain. `"max"` is the original per-edge scaling, kept for
-    comparison.
+    `normalise="max"` is the DEFAULT (`DEFAULT_LAYER_NORM`): divide each layer
+    by its own largest weight, bounding every edge at 1.
 
-    Why this matters: "max" divides by the layer's largest weight, which bounds
-    each edge at 1 but leaves total influence proportional to edge COUNT.
-    Measured 2026-08-02, co_retweet carried 140,518 edges against co_reply's
-    1,210 - and after the switch to Bonferroni, 5,698 against 28. At 203:1 the
-    smaller layer cannot affect a single community boundary, so Leiden was
-    partitioning one channel and the multiplex was decorative.
+    `"mass"` scales each layer to unit total weight instead, so a layer would
+    influence the partition by its evidence rather than its edge count - the
+    imbalance is real (measured 2026-08-02: co_retweet 140,518 edges against
+    co_reply's 1,210, and 5,698 against 28 under Bonferroni). It is retained
+    only as an option and must not be made the default: CPM compares internal
+    weight against an ABSOLUTE `resolution_parameter`, so dividing by the total
+    puts every weight near 0.0006, nothing clears 0.05, and the run produced 0
+    clusters against 95 under "max".
+
+    "max" has a milder version of the same disease: the effective resolution
+    becomes a function of the layer's single largest weight, so one extreme pair
+    can push everything else below the threshold. `layer_weight_max` is
+    persisted per channel so a run that loses clusters that way leaves a trace.
 
     Resolved at call time, not bind time, so the env var and tests both work."""
     normalise = normalise or DEFAULT_LAYER_NORM
@@ -1426,30 +1476,68 @@ def scorecards(
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
+    df = _inauthenticity_index(df)
+    df = attach_hate_columns(con, members, df, platform=platform)
+    return df.sort_values("inauthenticity_index", ascending=False, ignore_index=True)
+
+
+def _inauthenticity_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Add `ix_*`, `inauthenticity_index` and `components_measured` in place.
+
+    Split out from `scorecards` so the scoring rules can be tested without an
+    R2-backed cluster build."""
 
     def rank(s: pd.Series, invert: bool = False) -> pd.Series:
         r = s.rank(pct=True)
         return (1 - r) if invert else r
 
+    # `creation_burst_days` is averaged in rather than added: it is a separate
+    # signal about the accounts, not a bigger version of the profile signals.
+    # It used to be `+ rank(...) * 0`, i.e. multiplied out entirely, while
+    # METRIC_GLOSSARY advertised it as "a strong CIB signal".
+    profile = df[
+        ["share_default_image", "share_empty_bio", "handle_digit_ratio_mean",
+         "shared_profile_image"]
+    ].mean(axis=1)
+    concealment = pd.concat(
+        [rank(profile), rank(df["creation_burst_days"], invert=True)], axis=1
+    ).mean(axis=1)
+
+    # An ABSENT column is unmeasurable, not zero. Substituting a constant makes
+    # `rank(pct=True)` return 1.0 for every row, which silently added a flat
+    # +0.15 to every cluster's index whenever `layers` was not passed.
+    missing = pd.Series(np.nan, index=df.index)
     components = {
         "bot_likeness": rank(df["suspicion_mean"]),
-        "synchrony": rank(df.get("median_min_gap_s", pd.Series(np.nan, index=df.index)),
-                          invert=True),
+        "synchrony": rank(df.get("median_min_gap_s", missing), invert=True),
         "homogeneity": rank(df["near_dup_rate"]),
-        "concealment": rank(
-            df[["share_default_image", "share_empty_bio", "handle_digit_ratio_mean",
-                "shared_profile_image"]].mean(axis=1)
-            + rank(df["creation_burst_days"], invert=True).fillna(0) * 0
-        ),
-        "corroboration": rank(df.get("n_channels", pd.Series(0, index=df.index))),
+        "concealment": concealment,
+        "corroboration": rank(df.get("n_channels", missing)),
     }
     for name, comp in components.items():
-        df[f"ix_{name}"] = comp.fillna(0.0)
-    df["inauthenticity_index"] = sum(
-        w * df[f"ix_{k}"] for k, w in INAUTHENTICITY_WEIGHTS.items()
+        df[f"ix_{name}"] = comp
+
+    # Renormalise over the components actually measured for each cluster rather
+    # than scoring the rest 0. `median_min_gap_s` derives from `min_gap`, which
+    # is NULL for any pair whose traces come only from the census engagement arm
+    # - that arm writes `created_at` as NULL by design. Those clusters cannot be
+    # measured for synchrony, and treating that as "measured, and unsynchronised"
+    # applied a 20%-weighted penalty to exactly the population the pipeline runs
+    # on.
+    weights = pd.DataFrame(
+        {k: components[k].notna() * w for k, w in INAUTHENTICITY_WEIGHTS.items()}
     )
-    df = attach_hate_columns(con, members, df, platform=platform)
-    return df.sort_values("inauthenticity_index", ascending=False, ignore_index=True)
+    contributions = pd.DataFrame(
+        {k: components[k].fillna(0.0) * weights[k] for k in INAUTHENTICITY_WEIGHTS}
+    )
+    total = weights.sum(axis=1)
+    df["inauthenticity_index"] = (contributions.sum(axis=1) / total).where(total > 0, 0.0)
+    # So a reader can tell a low score from a thinly-measured one.
+    df["components_measured"] = [
+        sorted(k for k in INAUTHENTICITY_WEIGHTS if components[k].notna().iloc[i])
+        for i in range(len(df))
+    ]
+    return df
 
 
 def attach_hate_columns(
@@ -1602,6 +1690,33 @@ def persist_edges(
     return key
 
 
+def stable_cluster_id(member_author_ids: list | tuple) -> str:
+    """Deterministic cluster id from the set of member author_ids.
+
+    `cluster_id` is Leiden's internal label for the current partition
+    (`communities` returns `part.membership`), reissued positionally on every
+    run, so cluster 3 today and cluster 3 tomorrow are unrelated and any
+    cross-run join on it is silently wrong. This is the content hash that makes
+    tracking a cluster over time possible, mirroring `stories.stable_story_id`.
+    """
+    blob = "\n".join(sorted(str(a) for a in member_author_ids))
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def attach_stable_cluster_ids(members: pd.DataFrame) -> pd.DataFrame:
+    """Add `stable_cluster_id` per cluster_id group (hash of member author ids)."""
+    out = members.copy()
+    if out.empty:
+        out["stable_cluster_id"] = pd.Series(dtype=str)
+        return out
+    ids = (
+        out.groupby("cluster_id")["author_id"]
+        .apply(lambda s: stable_cluster_id(s.tolist()))
+        .rename("stable_cluster_id")
+    )
+    return out.merge(ids, left_on="cluster_id", right_index=True, how="left")
+
+
 def persist_clusters(
     con: duckdb.DuckDBPyConnection,
     members: pd.DataFrame,
@@ -1611,10 +1726,13 @@ def persist_clusters(
     """Write cluster membership (one row per member, cluster stats repeated) as
     a Parquet run under the coordination/ prefix."""
     now = datetime.now(timezone.utc)
-    buf = members.merge(
-        summary[["cluster_id", "size", "channels", "n_channels", "internal_edge_share"]],
-        on="cluster_id",
-    )
+    # `name`/`label` are optional: `coordination_run` merges `cluster_names`
+    # output in before calling this, but that returns empty when no member
+    # cluster has enough text, and a caller may pass a bare summary.
+    cols = ["cluster_id", "size", "channels", "n_channels", "internal_edge_share"]
+    cols += [c for c in ("name", "label") if c in summary.columns]
+    buf = members.merge(summary[cols], on="cluster_id")
+    buf = attach_stable_cluster_ids(buf)
     buf["computed_at"] = now
     key = (
         f"coordination/platform={platform}/kind=clusters"
@@ -1632,17 +1750,67 @@ def persist_clusters(
 
 # One row per (run, channel): run-level columns repeat on every row, the shape
 # `persist_clusters` already uses for cluster stats.
+def layer_overlap(layers: dict[str, pd.DataFrame]) -> dict[str, int]:
+    """Cross-channel overlap of the validated layers: bridge accounts and pairs.
+
+    `n_corroborated_clusters` is not readable without these. It counts a CLUSTER
+    whose internal edges span two channels, which a SINGLE bridge account can
+    manufacture - so a 1 there is a coin flip, not a finding. Both numbers were
+    only ever computed ad hoc from the persisted edge layers, which is why 23
+    consecutive passes of a structural zero went unnoticed: the 0/1 flicker in
+    `n_corroborated_clusters` was one account appearing and disappearing.
+
+    `shared_pairs` is the strong form - the same unordered pair validated
+    independently in two channels. It was 0 across every pass before the census
+    conversation arm was banded, and 408 after.
+    """
+    accounts: list[set] = []
+    pairs: list[set] = []
+    for edges in layers.values():
+        if edges is None or not len(edges):
+            continue
+        accounts.append(set(edges["src"]) | set(edges["dst"]))
+        pairs.append(set(map(frozenset, zip(edges["src"], edges["dst"]))))
+
+    def _in_two_or_more(sets: list[set]) -> int:
+        counts: Counter = Counter()
+        for s in sets:
+            counts.update(s)
+        return sum(1 for n in counts.values() if n >= 2)
+
+    return {
+        "bridge_accounts": _in_two_or_more(accounts),
+        "shared_pairs": _in_two_or_more(pairs),
+    }
+
+
+def layer_weight_max(edges: pd.DataFrame) -> float | None:
+    """The divisor `aggregate_layers` uses under the default "max" normalisation.
+
+    Worth persisting because it makes CPM's `resolution_parameter` - an ABSOLUTE
+    weight threshold - effectively corpus-dependent. One extreme-weight pair
+    scales every other edge toward zero, and a run can lose clusters entirely
+    for that reason while leaving no trace in any other counter. That is the
+    same failure the rejected "mass" normalisation caused outright.
+    """
+    if edges is None or not len(edges) or "weight" not in edges.columns:
+        return None
+    return float(edges["weight"].max())
+
+
 COORD_METRIC_COLUMNS: list[str] = [
     "run_id", "computed_at", "platform", "code_version",
     "channels", "method", "resolution", "min_size",
     "lookback_days", "hub_cap_max",
     "n_clusters", "n_accounts", "n_corroborated_clusters", "n_corroborated_accounts",
+    "bridge_accounts", "shared_pairs",
     "channel", "timed", "min_repetition",
     "hub_cap", "hub_objects", "hub_max_degree",
     "objects_all", "objects_nohub", "traces_all", "traces_nohub",
     "accounts_all", "nohub_amp", "pairable",
     "edges_tested", "edges_fdr", "edges_bonferroni", "edges_percentile",
     "edges_kept", "accounts_tested", "accounts_fdr",
+    "layer_weight_max",
 ]
 
 # Timed channels leave the hub fields NULL. Without an explicit nullable dtype
@@ -1652,6 +1820,7 @@ COORD_METRIC_COLUMNS: list[str] = [
 _COORD_METRIC_INTS: tuple[str, ...] = (
     "min_size", "lookback_days", "hub_cap_max",
     "n_clusters", "n_accounts", "n_corroborated_clusters", "n_corroborated_accounts",
+    "bridge_accounts", "shared_pairs",
     "min_repetition", "hub_cap", "hub_objects", "hub_max_degree",
     "objects_all", "objects_nohub", "traces_all", "traces_nohub",
     "accounts_all", "nohub_amp", "pairable",

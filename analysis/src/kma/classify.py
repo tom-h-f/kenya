@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 import duckdb
 import pyarrow as pa
 
-from kma.db import BUCKET, labels_source, posts_source
+from kma.db import BUCKET, labels_source, pending_posts, posts_source
 
 SENTIMENT_MODEL = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
 EMOTION_MODEL = "MilaNLProc/xlm-emo-t"
@@ -58,7 +58,18 @@ def _pipe(task: str, model: str):
 
 def _run(pipe, texts: list[str], batch_size: int, **call_kwargs) -> list:
     """Run a pipeline over `texts` in chunks, clearing the MPS cache between them.
-    Falls back to CPU for any chunk that still OOMs on the accelerator."""
+    Falls back to CPU for any chunk that still OOMs on the accelerator.
+
+    transformers logs "You seem to be using the pipelines sequentially on GPU...
+    please use a dataset" against this. It is a call-count heuristic, not a
+    measurement, and here it is a false alarm: A/B'd on an A100 over 2,000 real
+    posts through the 4-hypothesis NLI pipeline, this loop ran 13.5s against
+    13.4s for a single `pipe(texts, batch_size=...)` call - 148 vs 150 posts/sec,
+    1.01x. The per-chunk `_empty_cache()` costs nothing measurable on CUDA.
+
+    So do not "fix" the warning by removing the chunking: it is what carries the
+    MPS OOM fallback below, which the Mac dev path needs and which a Dataset
+    cannot express."""
     out: list = []
     for i in range(0, len(texts), batch_size):
         chunk = texts[i : i + batch_size]
@@ -78,28 +89,8 @@ def _run(pipe, texts: list[str], batch_size: int, **call_kwargs) -> list:
     return out
 
 
-def _labeled_ids(con: duckdb.DuckDBPyConnection, platform: str) -> set[str]:
-    try:
-        rel = con.sql(f"SELECT DISTINCT platform_post_id FROM {labels_source(platform)}")
-    except duckdb.Error:
-        return set()
-    return set(rel.df()["platform_post_id"].tolist())
-
-
 def _pending(con: duckdb.DuckDBPyConnection, platform: str, limit: int | None):
-    df = con.sql(
-        f"""
-        SELECT platform_post_id, text FROM (
-            SELECT * FROM {posts_source(platform)}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        )
-        WHERE text IS NOT NULL AND length(trim(text)) > 0
-        """
-    ).df()
-    df = df[~df["platform_post_id"].isin(_labeled_ids(con, platform))]
-    return df.head(limit) if limit else df
+    return pending_posts(con, labels_source(platform), platform, limit)
 
 
 def classify_new(

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
@@ -75,8 +76,10 @@ def curated_handles(path: Path | None = None, platform: str = "x") -> set[str]:
     pass wrote BOTH curated targets and coordination-promoted accounts into
     `type=timeline`, a baseline partition. Promoted accounts are selected for
     looking coordinated, so their timelines are targeted collection and do not
-    belong in a prevalence denominator. Measured leak: 41,595 posts from 407
-    accounts, 6.7% of the baseline corpus.
+    belong in a prevalence denominator. The leak is a FIXED historical set - the
+    collector stopped writing it on 2026-08-01 - so its share shrinks as the
+    corpus grows: 41,595 posts / 6.7% when first measured, 4,312 posts / 1.10%
+    of the baseline denominator on 2026-08-13.
 
     Returns an empty set when the file is unavailable, which disables the
     correction rather than silently dropping data - see `leak_corrected()`.
@@ -92,7 +95,8 @@ def curated_handles(path: Path | None = None, platform: str = "x") -> set[str]:
 
 def leak_corrected(path: Path | None = None) -> bool:
     """Whether the timeline-leak correction can be applied. Publish this: a rate
-    computed without it carries a known 6.7% contamination."""
+    computed without it carries a known contamination (1.10% of the baseline
+    denominator as of 2026-08-13; see `curated_handles`)."""
     return bool(curated_handles(path))
 
 
@@ -160,6 +164,62 @@ def scope_predicate(scope: str = "baseline", col: str = "first_type") -> str:
     END"""
 
 
+@dataclass(frozen=True)
+class ScopedPosts:
+    """A scope-filtered posts CTE, and whether the leak correction is inside it.
+
+    `applied` is derived from the SQL that was actually generated, not from
+    whether `targets.yaml` happens to be readable. Publishing
+    `leak_corrected: true` next to a query that never applied
+    `effective_type_expr` is a false provenance claim, and that is exactly what
+    the dashboard did: `build_meta` called `leak_corrected()` while
+    `_toxicity_frame` hand-rolled its scoping without the reclassification.
+    """
+
+    cte: str
+    name: str
+    applied: bool
+
+
+def scoped_posts_cte(
+    platform: str = "*",
+    scope: str = "baseline",
+    name: str = "_scoped",
+    type: str = "*",
+    curated: set[str] | None = None,
+) -> ScopedPosts:
+    """The one way to spell "posts in this collection scope".
+
+    Combines the three pieces that must always travel together -
+    `first_seen_types_cte` (scope on FIRST-seen type, never the latest row's),
+    `effective_type_expr` (reclassify leaked promoted-account timelines) and
+    `scope_predicate` (fail closed on an unknown partition) - and dedups to the
+    latest snapshot per post.
+
+    Before this existed, `effective_type_expr` had exactly one caller
+    (`latest_posts`), so every hand-rolled scoping query silently skipped the
+    leak correction while still reporting itself as corrected.
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"unknown scope {scope!r} (expected one of {SCOPES})")
+    curated = curated_handles() if curated is None else curated
+    eff = effective_type_expr(curated, col="fs.first_type", handle_col="p.author_handle")
+    # `_first_seen` scans every partition on purpose - first-seen type is only
+    # correct if nothing is filtered out before the min_by. Only the outer select
+    # narrows to `type`.
+    cte = f"""{first_seen_types_cte(platform, "_first_seen")},
+    {name} AS (
+        SELECT p.*, fs.first_collected_at, {eff} AS first_type
+        FROM {posts_source(platform, type)} p
+        JOIN _first_seen fs USING (platform, platform_post_id)
+        WHERE {scope_predicate(scope, eff)}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+        ) = 1
+    )"""
+    return ScopedPosts(cte=cte, name=name, applied=bool(curated))
+
+
 def posts(con: duckdb.DuckDBPyConnection, platform: str = "*", type: str = "*"):
     """All collected post rows (every engagement snapshot, not deduped)."""
     return con.sql(f"SELECT * FROM {posts_source(platform, type)}")
@@ -179,24 +239,93 @@ def latest_posts(
     """
     if scope not in SCOPES:
         raise ValueError(f"unknown scope {scope!r} (expected one of {SCOPES})")
-    dedup = """
-        QUALIFY row_number() OVER (
-            PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-        ) = 1
-    """
     if scope == "all":
-        return con.sql(f"SELECT * FROM {posts_source(platform, type)} {dedup}")
-    eff = effective_type_expr(col="fs.first_type", handle_col="p.author_handle")
+        return con.sql(
+            f"""
+            SELECT * FROM {posts_source(platform, type)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+            ) = 1
+            """
+        )
+    scoped = scoped_posts_cte(platform, scope, name="_scoped", type=type)
+    return con.sql(f"WITH {scoped.cte} SELECT * FROM {scoped.name}")
+
+
+def prefix_readable(con: duckdb.DuckDBPyConnection, source: str) -> bool:
+    """Can this `read_parquet(...)` expression be resolved at all?
+
+    A hive-partitioned glob matching ZERO files raises `IOException` rather than
+    returning an empty relation, and inside a CTE that failure happens at
+    resolution - before any LEFT JOIN can absorb it. So a prefix no pass has
+    written yet takes down the whole query rather than contributing no rows.
+
+    That is a live transitional state, not a hypothetical: `incitement/` is
+    written by a pass that only just entered the enrich loop, so any host
+    running the previous image has `hatespeech/` populated and `incitement/`
+    absent."""
+    try:
+        con.sql(f"SELECT 1 FROM {source} LIMIT 1").fetchall()
+        return True
+    except duckdb.Error:
+        return False
+
+
+def pending_posts(
+    con: duckdb.DuckDBPyConnection,
+    scored_source: str | None,
+    platform: str = "*",
+    limit: int | None = None,
+    columns: str = "platform_post_id, text",
+    priority_sql: str | None = None,
+):
+    """Posts with text that `scored_source` has not covered yet, NEWEST FIRST.
+
+    Every enrichment pass needs this and each had its own copy, all of the same
+    shape: pull the entire deduped corpus into pandas, pull the entire scored-id
+    set into pandas, anti-join in Python, then `.head(limit)`. That materialises
+    two full-corpus frames per pass and applies the cap in arbitrary Parquet
+    order, so freshly collected posts were not prioritised - they were scored
+    whenever the scan happened to reach them.
+
+    Pushing the anti-join into DuckDB lets it stream instead, and the explicit
+    ordering means a bounded pass always takes the newest work.
+
+    `priority_sql` is a boolean expression ordered ahead of recency, for a pass
+    whose budget should go somewhere other than "newest". It is applied in SQL
+    so it survives the LIMIT - sorting after a cap would only reorder work
+    already chosen.
+
+    Deliberately NOT windowed by `dt`. A window would bound the scan, but it
+    would also permanently strand everything older - and the backlog is real
+    (438,103 posts unscored by the incitement pass as of 2026-08-13). Draining
+    history is what `backfill` is for; this path must be able to reach it.
+    """
+    anti = ""
+    if scored_source is not None:
+        try:
+            con.sql(f"SELECT 1 FROM {scored_source} LIMIT 1").fetchall()
+            anti = f"""
+              AND NOT EXISTS (
+                  SELECT 1 FROM {scored_source} s
+                  WHERE s.platform_post_id = p.platform_post_id
+              )"""
+        except duckdb.Error:
+            pass  # prefix not written yet: everything is pending
     return con.sql(
         f"""
-        WITH {first_seen_types_cte(platform)}
-        SELECT p.*, fs.first_collected_at, {eff} AS first_type
-        FROM {posts_source(platform, type)} p
-        JOIN _first_seen fs USING (platform, platform_post_id)
-        WHERE {scope_predicate(scope, eff)}
-        {dedup}
+        SELECT {columns} FROM (
+            SELECT * FROM {posts_source(platform)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+            ) = 1
+        ) p
+        WHERE text IS NOT NULL AND length(trim(text)) > 0
+        {anti}
+        ORDER BY {f"({priority_sql}) DESC, " if priority_sql else ""}collected_at DESC
+        {f"LIMIT {int(limit)}" if limit else ""}
         """
-    )
+    ).df()
 
 
 def metrics_source(platform: str = "*") -> str:
@@ -210,7 +339,12 @@ def authors_source(platform: str = "*") -> str:
 
 
 def latest_authors(con: duckdb.DuckDBPyConnection, platform: str = "*"):
-    """One row per author: their most recently collected profile snapshot."""
+    """One row per author: their most recently collected profile snapshot.
+
+    Sticky, like `latest_posts`, and intentionally so: a suspended or deleted
+    account keeps its last known profile rather than vanishing from the corpus.
+    That is the right semantics here - unlike `latest_engagements` /
+    `latest_follows`, where the same stickiness is a trap."""
     return con.sql(
         f"""
         SELECT * FROM {authors_source(platform)}
@@ -232,7 +366,7 @@ def latest_embeddings(con: duckdb.DuckDBPyConnection, platform: str = "*", model
         f"""
         SELECT * FROM {embeddings_source(platform, model)}
         QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id, model ORDER BY embedded_at DESC
+            PARTITION BY platform, platform_post_id, model ORDER BY embedded_at DESC
         ) = 1
         """
     )
@@ -249,7 +383,7 @@ def latest_labels(con: duckdb.DuckDBPyConnection, platform: str = "*"):
         f"""
         SELECT * FROM {labels_source(platform)}
         QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id ORDER BY labeled_at DESC
+            PARTITION BY platform, platform_post_id ORDER BY labeled_at DESC
         ) = 1
         """
     )
@@ -268,7 +402,7 @@ def latest_incitement(con: duckdb.DuckDBPyConnection, platform: str = "*"):
         f"""
         SELECT * FROM {incitement_source(platform)}
         QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id ORDER BY scored_at DESC
+            PARTITION BY platform, platform_post_id ORDER BY scored_at DESC
         ) = 1
         """
     )
@@ -287,7 +421,7 @@ def latest_hatespeech(con: duckdb.DuckDBPyConnection, platform: str = "*"):
         f"""
         SELECT * FROM {hatespeech_source(platform)}
         QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id ORDER BY scored_at DESC
+            PARTITION BY platform, platform_post_id ORDER BY scored_at DESC
         ) = 1
         """
     )
@@ -299,8 +433,13 @@ def engagements_source(platform: str = "*") -> str:
 
 
 def latest_engagements(con: duckdb.DuckDBPyConnection, platform: str = "*"):
-    """One row per (post, user, kind) engagement edge (latest snapshot). Incidence
-    only - the platform does not expose when a retweet happened."""
+    """Every (post, user, kind) engagement edge EVER OBSERVED - not the current
+    set. Incidence only; the platform does not expose when a retweet happened.
+
+    There are no tombstones, so an edge seen once in a census pass is retained
+    forever and an undone retweet is invisible. Absence of a row means never
+    observed, not not-present. "Ever retweeted X" is answerable here;
+    "is currently retweeting X" is not derivable from this data at all."""
     return con.sql(
         f"""
         SELECT * FROM {engagements_source(platform)}
@@ -318,7 +457,11 @@ def follows_source(platform: str = "*") -> str:
 
 
 def latest_follows(con: duckdb.DuckDBPyConnection, platform: str = "*"):
-    """One row per (follower, followed) edge (latest snapshot)."""
+    """Every (follower, followed) edge EVER OBSERVED - not the current graph.
+
+    Tombstone-free like `latest_engagements`: unfollows are invisible and the
+    graph only ever grows. Anything reasoning about the follow graph as it
+    stands today is reading this wrong."""
     return con.sql(
         f"""
         SELECT * FROM {follows_source(platform)}
@@ -353,13 +496,54 @@ def coordination_source(
     return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
 
 
+def coordination_run_latest(
+    con: duckdb.DuckDBPyConnection,
+    kind: str = "clusters",
+    platform: str = "x",
+    channel: str = "*",
+    method: str = "*",
+):
+    """Rows of the most recent persisted coordination run, as a coherent set.
+
+    `dense_rank` over `computed_at` rather than the per-entity `row_number` the
+    `latest_coordination_*` helpers use, which is the same distinction
+    `latest_stories` already draws. Anything published to a reader needs this
+    one: a sticky union of several runs reports a cluster count that no single
+    run ever produced.
+
+    `kind="edges"` partitions by (channel, method) because `persist_edges` takes
+    its own `now` per call and is invoked once per channel x method, so every
+    partition carries a slightly different `computed_at`. Ranking them together
+    would return whichever channel happened to be written last and silently drop
+    the rest. The cost is that if a run dies midway, the newest run per partition
+    can straddle two runs - visible as disagreeing `computed_at` values, which is
+    better than a missing channel."""
+    src = coordination_source(kind, platform, channel, method)
+    partition = "PARTITION BY channel, method " if kind == "edges" else ""
+    return con.sql(
+        f"""
+        SELECT * FROM {src}
+        QUALIFY dense_rank() OVER ({partition}ORDER BY computed_at DESC) = 1
+        """
+    )
+
+
 def latest_coordination_edges(
     con: duckdb.DuckDBPyConnection,
     platform: str = "x",
     channel: str = "*",
     method: str = "*",
 ):
-    """Latest validated edge row per (src, dst, channel, method) run."""
+    """STICKY UNION across runs - not the current edge set. Use
+    `coordination_run_latest("edges", ...)` for anything a reader sees.
+
+    `row_number()` per (src, dst, channel, method) keeps the newest row FOR EACH
+    PAIR, so a pair that validated once and never again survives forever. The
+    result is a monotonic high-water mark that only ever grows: measured
+    2026-08-12 at 134,800 co_retweet edges against a true latest-run 97,240.
+
+    Kept for deliberate cross-run archaeology ("was this pair ever validated"),
+    which is the only question it answers correctly."""
     return con.sql(
         f"""
         SELECT * FROM {coordination_source('edges', platform, channel, method)}
@@ -371,7 +555,17 @@ def latest_coordination_edges(
 
 
 def latest_coordination_clusters(con: duckdb.DuckDBPyConnection, platform: str = "x"):
-    """Latest cluster membership row per (cluster_id, author_id)."""
+    """STICKY UNION across runs, and badly so - use `coordination_run_latest`.
+
+    `cluster_id` is a per-run Leiden label (`coordination.communities` returns
+    `part.membership`) with no stability across passes, so partitioning on it
+    never collapses to one clustering: the same author appears once per cluster
+    id they have ever been assigned. Measured 2026-08-12: 44,585 member rows
+    across 1,078 cluster ids drawn from 47 distinct passes, against a true latest
+    run of 1,043 rows and 128 clusters - 42.7x inflation.
+
+    There is no correct way to read a single run out of this helper. It is
+    retained only because it is re-exported from `kma/__init__.py`."""
     return con.sql(
         f"""
         SELECT * FROM {coordination_source('clusters', platform)}
@@ -389,10 +583,20 @@ def coordination_metrics(con: duckdb.DuckDBPyConnection, platform: str = "x"):
     state - you want the newest. This one is a series: the questions it exists
     to answer ("did corroborated clusters move when the census changed") are
     only answerable across runs, and reading just the newest row reproduces the
-    exact mistake that made the census-tuning Q2 figure wrong."""
+    exact mistake that made the census-tuning Q2 figure wrong.
+
+    Adds `edges_per_tested`, which is the comparable form of
+    `edges_bonferroni`. The raw count is taken under a moving threshold -
+    `alpha / edges_tested`, where the family grows with the corpus every pass
+    and differs ~300x between channels within a single run - so plotting it as
+    a trend conflates "more coordination" with "larger tested family"."""
     return con.sql(
-        f"SELECT * FROM {coordination_source('run_metrics', platform)} "
-        "ORDER BY computed_at, channel"
+        f"""
+        SELECT *,
+               edges_bonferroni::DOUBLE / nullif(edges_tested, 0) AS edges_per_tested
+        FROM {coordination_source('run_metrics', platform)}
+        ORDER BY computed_at, channel
+        """
     )
 
 
@@ -411,6 +615,25 @@ def census_runs(con: duckdb.DuckDBPyConnection, platform: str = "x"):
     `coordination_metrics`."""
     return con.sql(
         f"SELECT * FROM {census_runs_source(platform)} ORDER BY collected_at"
+    )
+
+
+def collection_runs_source(platform: str = "*") -> str:
+    """A read_parquet(...) expression for the collector's per-query audit trail.
+
+    Written by `kenya_monitor.storage.write_collection_run`. Carries the
+    *rendered* query string, which is recorded nowhere else - so this is the only
+    way to answer "what did we actually ask X for" after the fact."""
+    glob = f"r2://{BUCKET}/collection_runs/platform={platform}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def collection_runs(con: duckdb.DuckDBPyConnection, platform: str = "x"):
+    """Every collection pass's record, oldest first. A series, not a state - see
+    `coordination_metrics`. `run_id` is unique per pass, so there is nothing to
+    dedupe."""
+    return con.sql(
+        f"SELECT * FROM {collection_runs_source(platform)} ORDER BY collected_at"
     )
 
 
