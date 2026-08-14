@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from kenya_monitor.accounts import metrics_cap, posts_gap_hours
+from kenya_monitor.accounts import metrics_cap
 from kenya_monitor.pacing import AccountPacer
 
 
@@ -13,13 +13,16 @@ def test_metrics_cap_scales_with_pool():
     assert metrics_cap(54, 8, 200) == 432
 
 
-def test_posts_gap_scales_down_with_large_pool():
-    lo, hi = posts_gap_hours(50, 3.0, 5.0)
-    assert lo == 1.5
-    assert hi == 2.5
-    lo, hi = posts_gap_hours(5, 3.0, 5.0)
-    assert lo == 3.0
-    assert hi == 5.0
+def test_the_wall_clock_pacing_model_is_gone():
+    """`posts_gap_hours` and its two env knobs described an inter-pass gap that
+    nothing called - cycles run back to back, throttled by per-account pacing.
+    They were documented as live, so tuning them changed nothing."""
+    import kenya_monitor.accounts as accounts
+    import kenya_monitor.config as config
+
+    assert not hasattr(accounts, "posts_gap_hours")
+    assert not hasattr(config, "POSTS_MIN_GAP_HOURS")
+    assert not hasattr(config, "POSTS_MAX_GAP_HOURS")
 
 
 @pytest.mark.asyncio

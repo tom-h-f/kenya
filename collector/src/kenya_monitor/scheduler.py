@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import random
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from kenya_monitor import adaptive
 from kenya_monitor.accounts import active_count, metrics_cap, sync_accounts
@@ -67,17 +66,26 @@ METRICS_TOP_PCT = 0.05
 
 
 def _cycle_estimate_s(cycle: int, started_mono: float, default_s: float = 1800.0) -> float:
-    """Mean cycle duration so far, so the hate cadence stays "every Nth cycle"
-    in spirit while surviving restarts. Falls back before the first cycle ends."""
-    if cycle < 1:
+    """Mean duration of the cycles that have actually FINISHED, so the hate
+    cadence stays "every Nth cycle" in spirit while surviving restarts.
+
+    `cycle` counts the one currently in flight, so dividing by it averages the
+    elapsed time over one more cycle than has completed. On cycle 1 that made the
+    estimate ~0, clamped to the 60s floor, and the hate steps fired again on the
+    very next cycle - over-serving hate work after every redeploy, which is the
+    restart sensitivity this function was written to remove, with the sign
+    flipped. Fall back to the default until at least one cycle has completed."""
+    completed = cycle - 1
+    if completed < 1:
         return default_s
-    return max(60.0, (time.monotonic() - started_mono) / cycle)
+    return max(60.0, (time.monotonic() - started_mono) / completed)
 
 
 def _adaptive_targets(
     storage: Storage, dry_run: bool = False
-) -> tuple[PlatformTargets, list[str]]:
-    """(targets to collect as baseline, promoted account handles).
+) -> tuple[PlatformTargets, list[str], set[str]]:
+    """(targets to collect as baseline, promoted account handles, keywords to
+    search Kenya-anchored).
 
     Promoted ACCOUNTS are returned separately because they must not be collected
     into the baseline `timeline` partition: they were selected precisely because
@@ -86,8 +94,10 @@ def _adaptive_targets(
     instead - the same discipline `hate_expand` already applies.
 
     Promoted KEYWORDS stay in the baseline search pass: chasing a bursting
-    hashtag is a topical widening, not a per-account selection. That is still a
-    sampling bias, just a milder and pre-existing one."""
+    hashtag is a topical widening, not a per-account selection. They are
+    returned as a set so the search pass can anchor them to Kenyan discourse -
+    unanchored, a globally trending tag pulled its entire global audience into
+    the baseline partition."""
     static = load_targets().get("x", PlatformTargets())
     try:
         entries = adaptive.promote(
@@ -96,15 +106,16 @@ def _adaptive_targets(
             storage.clusters_view(platform="x"),
             storage.authors_view(platform="x"),
             stories_view=storage.stories_view(platform="x"),
+            hatespeech_view=storage.hatespeech_view(platform="x"),
             dry_run=dry_run,
         )
     except Exception:
         log.exception("adaptive promotion failed; using static targets")
-        return static, []
+        return static, [], set()
     promoted_accounts = [e.value for e in entries if e.kind == "account"]
     keyword_entries = [e for e in entries if e.kind == "keyword"]
     merged = adaptive.merge_targets(static, keyword_entries)
-    return merged, promoted_accounts
+    return merged, promoted_accounts, {e.value.lower() for e in keyword_entries}
 
 
 async def run_once(
@@ -115,7 +126,7 @@ async def run_once(
     adaptive promotions."""
     storage = Storage(R2Config.from_env())
     collector = await build_x_collector(load_accounts())
-    targets, promoted_accounts = _adaptive_targets(storage)
+    targets, promoted_accounts, anchored_keywords = _adaptive_targets(storage)
     windows = recent_windows(SEARCH_RECENT_DAYS)
     if include_backfill:
         windows += backfill_windows(SEARCH_RECENT_DAYS, SEARCH_BACKFILL_WINDOW_DAYS)
@@ -129,6 +140,8 @@ async def run_once(
         timeline_limit=limit,
         keywords=keywords,
         accounts=accounts,
+        anchored_keywords=anchored_keywords,
+        anchors=load_hate_terms().anchors.get("wide"),
     )
     if accounts and promoted_accounts:
         # Quarantined: coordination-promoted accounts never enter the baseline
@@ -377,6 +390,17 @@ async def run_snowball_once(**overrides) -> dict[str, int]:
 
     stats: dict = {}
     if "objects" not in overrides:
+        # Selection happens HERE, so the budget overrides have to be applied
+        # here too. Passing them on to `collect_snowball` did nothing: it takes
+        # `objects or hot_objects(...)`, and `objects` is always supplied by this
+        # branch, so `monitor snowball --top-retweeted N` changed no selection
+        # while `stats["top_retweeted"]` still recorded the env value - the run
+        # looked correctly parameterised in census_runs/ and was not.
+        selection = {
+            k: overrides.pop(k)
+            for k in ("top_retweeted", "top_conversations")
+            if k in overrides
+        }
         overrides["objects"] = select_census_objects(
             storage.con,
             storage.posts_view(platform="x"),
@@ -384,6 +408,7 @@ async def run_snowball_once(**overrides) -> dict[str, int]:
             replies_view=storage.posts_view(platform="x", target_type="replies"),
             hatespeech_view=storage.hatespeech_view(platform="x"),
             stats=stats,
+            **selection,
         )
     overrides.setdefault("stats", stats)
 
@@ -508,13 +533,26 @@ async def run_backfill_once(
 
 
 async def _maintain_accounts_loop() -> None:
+    """Pool upkeep on its own timer, concurrent with whatever cycle step is
+    running.
+
+    `reset_locks()` runs ONCE, at startup. A stale queue lock is an artifact of
+    a process that died holding one, so clearing them is a recovery step, not
+    routine maintenance - and on the recurring timer it cleared locks for
+    accounts that were checked out and in use, letting two coroutines hold the
+    same account. The per-account pacer bounds the damage, but the invariant
+    twscrape relies on was still broken every six hours for no benefit."""
+    first = True
     while True:
         try:
             api = build_api()
             await sync_accounts(api, load_accounts(), relogin_failed=True)
-            await api.pool.reset_locks()
+            if first:
+                await api.pool.reset_locks()
+                log.info("account maintenance: cleared stale queue locks at startup")
         except Exception:
             log.exception("account maintenance failed")
+        first = False
         await asyncio.sleep(ACCOUNT_SYNC_HOURS * 3600)
 
 

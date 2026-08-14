@@ -12,6 +12,7 @@ import pyarrow as pa
 from kenya_monitor.collectors.base import Author, Engagement, FollowEdge, MetricSnapshot, Post
 from kenya_monitor.config import (
     COLLECTOR_MEMORY_LIMIT,
+    COLLECTOR_TEMP_DIR,
     COLLECTOR_THREADS,
     R2Config,
 )
@@ -234,9 +235,14 @@ class Storage:
 
         Best effort: setting names drift between DuckDB versions, and a tuning
         failure must not stop collection."""
+        try:
+            COLLECTOR_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            log.warning("storage: could not create temp dir %s", COLLECTOR_TEMP_DIR)
         for stmt in (
             f"SET memory_limit='{COLLECTOR_MEMORY_LIMIT}'",
             f"SET threads={int(COLLECTOR_THREADS)}",
+            f"SET temp_directory='{COLLECTOR_TEMP_DIR}'",
             "SET preserve_insertion_order=false",
         ):
             try:
@@ -349,6 +355,18 @@ class Storage:
         now = now or datetime.now(timezone.utc)
         rid = run_id(now)
         row = {f.name: None for f in CENSUS_RUN_SCHEMA}
+        # Merging by name silently drops anything the schema does not declare,
+        # and an undeclared column reads back as NULL - indistinguishable from a
+        # genuine zero. Both `hot_objects` and `collect_snowball` write into this
+        # one dict, so a rename on either side degrades a counter to NULL rather
+        # than failing. Say so rather than losing it quietly.
+        unknown = sorted(set(stats) - set(row))
+        if unknown:
+            log.warning(
+                "census_runs: %d counter(s) not in CENSUS_RUN_SCHEMA, dropped: %s",
+                len(unknown),
+                ", ".join(unknown),
+            )
         row.update({k: v for k, v in stats.items() if k in row})
         row.update(
             {

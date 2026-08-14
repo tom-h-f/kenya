@@ -71,7 +71,10 @@ async def _search_keyword(
     search_windows: list[Window],
     min_faves: int,
     window_limit: int,
+    anchors: list[str] | None = None,
 ) -> list[Post]:
+    """One keyword across the windows. `anchors` conjoins a Kenya OR-group,
+    scoping the query the way the hate-seek path already does."""
     kw_posts: list[Post] = []
     for since, until in search_windows:
         kw_posts.extend(
@@ -85,10 +88,14 @@ async def _search_keyword(
                     min_faves=min_faves,
                     product=SEARCH_PRODUCT,
                     include_retweets=SEARCH_INCLUDE_RETWEETS,
+                    anchors=anchors,
                 )
             ]
         )
-    log.info("search %r (%d windows) -> %d posts", kw, len(search_windows), len(kw_posts))
+    log.info(
+        "search %r (%d windows, %sanchored) -> %d posts",
+        kw, len(search_windows), "" if anchors else "un", len(kw_posts),
+    )
     return kw_posts
 
 
@@ -105,11 +112,23 @@ async def collect_x(
     search_type: str = "search",
     timeline_type: str = "timeline",
     include_replies: bool = False,
+    anchored_keywords: set[str] | None = None,
+    anchors: list[str] | None = None,
 ) -> dict[str, int]:
     """`search_type` / `timeline_type` pick the R2 `posts/type=` partition.
     Targeted passes override them so their oversampled posts stay out of the
-    baseline prevalence denominator (see kma.db.BASELINE_TYPES)."""
+    baseline prevalence denominator (see kma.db.BASELINE_TYPES).
+
+    `anchored_keywords` names the subset of `targets.keywords` to search with a
+    Kenya OR-group. Promoted burst hashtags go here: they were searched
+    platform-wide, so a globally trending tag pulled its whole global audience
+    into `type=search`. Curated targets are deliberately NOT anchored - they are
+    already Kenya-specific, and conjoining an anchor would only cost recall."""
     counts: dict[str, int] = {}
+    anchored_keywords = anchored_keywords or set()
+
+    def _anchors_for(kw: str) -> list[str] | None:
+        return anchors if kw.lower() in anchored_keywords else None
 
     if keywords and targets.keywords and search_windows:
         search_posts: list[Post] = []
@@ -120,7 +139,8 @@ async def collect_x(
             async def bounded(kw: str) -> list[Post]:
                 async with sem:
                     return await _search_keyword(
-                        collector, kw, search_windows, min_faves, window_limit
+                        collector, kw, search_windows, min_faves, window_limit,
+                        anchors=_anchors_for(kw),
                     )
 
             chunks = await asyncio.gather(*[bounded(kw) for kw in targets.keywords])
@@ -130,7 +150,8 @@ async def collect_x(
             for kw in targets.keywords:
                 search_posts.extend(
                     await _search_keyword(
-                        collector, kw, search_windows, min_faves, window_limit
+                        collector, kw, search_windows, min_faves, window_limit,
+                        anchors=_anchors_for(kw),
                     )
                 )
         key = storage.write_posts(search_posts, target_type=search_type)
@@ -310,14 +331,33 @@ def hot_objects(
     backlog. Those are what make coverage saturation observable: once the
     backlog trends to zero, `SNOWBALL_REFRESH_HOURS` and not
     `SNOWBALL_TOP_RETWEETED` is the parameter that governs discovery."""
+    # `dt` is the COLLECTION date; `created_at` is the post date. A post cannot be
+    # collected before it exists, so every row inside the created_at window also
+    # lands in a dt partition at or after the same cutoff. That makes the dt
+    # predicate a pure partition-pruning hint - it cannot drop a row the
+    # created_at filter would keep - and it is the difference between reading two
+    # days of parquet and reading the entire corpus. Without it the scan cost
+    # grows with total collection forever while the useful window stays fixed,
+    # which is what pushed cycles from ~150min to 1,159min. One extra day of
+    # slack absorbs date truncation and clock skew.
+    #
+    # `known` is deliberately NOT pruned. The hydration arm below asks which
+    # referenced ids were never collected, and a dt-limited answer would report
+    # every older post as missing. It projects a single column and runs no window
+    # function, so it is far cheaper than the windowed `SELECT *` it used to
+    # share with `recent`.
     base = f"""
-        WITH lp AS (
-            SELECT * FROM {posts_view}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        ), recent AS (
-            SELECT * FROM lp WHERE created_at > now() - INTERVAL {int(lookback_days)} DAY
+        WITH recent AS (
+            SELECT * FROM (
+                SELECT * FROM {posts_view}
+                WHERE dt >= current_date - INTERVAL {int(lookback_days) + 1} DAY
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+                ) = 1
+            )
+            WHERE created_at > now() - INTERVAL {int(lookback_days)} DAY
+        ), known AS (
+            SELECT DISTINCT platform_post_id FROM {posts_view}
         )
     """
     # Exclude objects censused inside the TTL *during selection*, not after.
@@ -468,7 +508,7 @@ def hot_objects(
                        bool_or({censused_ever}) AS censused
                 FROM refs
                 WHERE NOT EXISTS (
-                    SELECT 1 FROM lp WHERE lp.platform_post_id = refs.ref
+                    SELECT 1 FROM known WHERE known.platform_post_id = refs.ref
                 )
                 GROUP BY 1
             )
@@ -491,6 +531,8 @@ def select_census_objects(
     replies_view: str | None = None,
     hatespeech_view: str | None = None,
     *,
+    top_retweeted: int = SNOWBALL_TOP_RETWEETED,
+    top_conversations: int = SNOWBALL_TOP_CONVERSATIONS,
     stats: dict | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Engagement-ranked census targets with toxic-ranked ones appended.
@@ -507,6 +549,8 @@ def select_census_objects(
     retweeted, conversations, missing = hot_objects(
         con,
         posts_view,
+        top_retweeted=top_retweeted,
+        top_conversations=top_conversations,
         engagements_view=engagements_view,
         replies_view=replies_view,
         stats=stats,
@@ -573,6 +617,18 @@ def census_discovered_handles(
         if pool:
             state["pool"] = pool
             state["pool_refreshed_at"] = datetime.now(timezone.utc).isoformat()
+        else:
+            # A refresh that yields nothing left `pool_refreshed_at` untouched,
+            # so `_pool_is_stale` stayed true and this 215-464s network scan ran
+            # again on the very next cycle, and every cycle after. Back off by
+            # recording the attempt: a genuinely empty pool is retried on the
+            # normal schedule rather than continuously.
+            state["pool_refreshed_at"] = datetime.now(timezone.utc).isoformat()
+            state["pool"] = []
+            log.warning(
+                "census timelines: pool refresh returned nothing; next attempt "
+                "in %dh rather than next cycle", int(pool_hours),
+            )
 
     picked: list[tuple[str, str]] = []
     remaining: list = []
@@ -597,8 +653,12 @@ def census_discovered_handles(
 
 
 def _pool_is_stale(state: dict, pool_hours: int) -> bool:
-    if not state.get("pool"):
-        return True
+    """Due for a refresh?
+
+    The timestamp governs, INCLUDING when the pool is empty. Treating "empty"
+    as "stale" regardless meant a refresh that legitimately returned nothing
+    re-ran a 215-464s network scan on every cycle for as long as it kept
+    returning nothing."""
     ts = state.get("pool_refreshed_at")
     if not ts:
         return True
@@ -664,8 +724,12 @@ def _load_snowball_state(path: Path = SNOWBALL_STATE_PATH) -> dict[str, str]:
 
 
 def _save_snowball_state(state: dict[str, str], path: Path = SNOWBALL_STATE_PATH) -> None:
+    """Temp file + rename. This is checkpointed every 25 objects mid-snowball, so
+    an interrupted write is a realistic way to lose the whole TTL ledger."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    os.replace(tmp, path)
 
 
 def _due(object_ids: list[str], state: dict[str, str], refresh_hours: int) -> list[str]:
@@ -736,12 +800,19 @@ async def collect_snowball(
 
     def _flush_engagements() -> None:
         nonlocal batch, pending
-        if not batch:
+        # An object whose retweeter fetch returned nothing still counts as
+        # WORKED. It leaves no row in `engagements/`, so `censused_expr` can
+        # never exclude it, and returning early here without marking `pending`
+        # left it unmarked in local state too - so it was re-selected every
+        # refresh window for as long as it stayed in the lookback, at the head
+        # of the ranking, forever.
+        if not batch and not pending:
             return
-        key = storage.write_engagements(batch)
-        counts["retweeters"] += len(batch)
-        if key:
-            log.info("wrote %d engagement rows -> %s", len(batch), key)
+        if batch:
+            key = storage.write_engagements(batch)
+            counts["retweeters"] += len(batch)
+            if key:
+                log.info("wrote %d engagement rows -> %s", len(batch), key)
         for done_id in pending:
             state[done_id] = now_iso
         _save_snowball_state(state, state_path)
@@ -785,11 +856,40 @@ async def collect_snowball(
             _flush_replies()
     _flush_replies()
 
+    # The selector cannot see this ledger - it anti-joins against collected
+    # posts, and an unhydratable id never becomes one - so the TTL is applied
+    # here, mirroring `_due` on the other two arms.
+    due_missing = [
+        ref for ref in missing
+        if f"hydrate:{ref}" not in state
+        or datetime.fromisoformat(state[f"hydrate:{ref}"])
+        < datetime.now(timezone.utc) - timedelta(hours=refresh_hours)
+    ]
+    counts["hydrate_skipped_ttl"] = len(missing) - len(due_missing)
+    missing = due_missing
+
     hydrated = [p async for p in collector.hydrate(missing)]
     key = storage.write_posts(hydrated, target_type=f"{type_prefix}hydrated")
     counts["hydrated"] = len(hydrated)
     if key:
         log.info("hydrated %d referenced posts -> %s", len(hydrated), key)
+
+    # Mark every id we ASKED for, not just the ones that came back. The arm's
+    # only self-draining mechanism is the anti-join against collected posts, so
+    # an id that can never be hydrated - deleted, suspended, `tweet_details`
+    # returning None - stays a candidate permanently. Selection is deterministic
+    # (`censused DESC, eng DESC`), so those ids occupy the same slots on every
+    # single pass and starve the budget. `hydrate:` keys keep them out of the
+    # retweeter namespace.
+    got_ids = {p.platform_post_id for p in hydrated}
+    for ref in missing:
+        state[f"hydrate:{ref}"] = now_iso
+    counts["hydrate_unresolved"] = len([r for r in missing if r not in got_ids])
+    if counts["hydrate_unresolved"]:
+        log.info(
+            "hydrate: %d of %d referenced ids did not resolve; deferred for %dh",
+            counts["hydrate_unresolved"], len(missing), int(refresh_hours),
+        )
 
     authors = collector.collected_authors()
     key = storage.write_authors(authors)
@@ -804,7 +904,13 @@ async def collect_snowball(
 
     stats.update(
         {
-            "pass_kind": pass_kind,
+            # Deferring to an already-set value, like the `selected_*` fields
+            # below. `select_census_objects` marks a merged baseline+toxic
+            # selection as "merged" BEFORE this runs, and overwriting it with the
+            # parameter default recorded every merged pass as plain "baseline" -
+            # so the label was unreachable in production and any split on
+            # pass_kind silently averaged the two selections together.
+            "pass_kind": stats.get("pass_kind", pass_kind),
             "retweeters_limit": int(retweeters_limit),
             "refresh_hours": int(refresh_hours),
             "band_max": int(band_max),

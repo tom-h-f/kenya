@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 
 from twscrape import API
 from twscrape.accounts_pool import AccountsPool
 from twscrape.utils import parse_cookies
 
-from kenya_monitor.config import XAccount
+# TWS_ACCOUNT_ORDER is how twscrape picks the next account:
+# ORDER BY <this> LIMIT 1
+from kenya_monitor.config import TWS_ACCOUNT_ORDER, XAccount
+from kenya_monitor.pacing import install_per_account_pacing
 
 log = logging.getLogger("kenya_monitor")
-
-# twscrape picks the next account with: ORDER BY <this> LIMIT 1
-from kenya_monitor.config import TWS_ACCOUNT_ORDER
-from kenya_monitor.pacing import install_per_account_pacing
 
 
 @dataclass(frozen=True)
@@ -138,10 +136,3 @@ def metrics_cap(active_accounts: int, per_account: int, floor: int) -> int:
     return max(floor, active_accounts * per_account)
 
 
-def posts_gap_hours(active_accounts: int, lo: float, hi: float) -> tuple[float, float]:
-    """Shorter gaps when more accounts can share the request load."""
-    if active_accounts >= 40:
-        return (lo * 0.5, hi * 0.5)
-    if active_accounts >= 15:
-        return (lo * 0.7, hi * 0.7)
-    return (lo, hi)

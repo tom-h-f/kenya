@@ -24,7 +24,14 @@ def _post_columns(con: duckdb.DuckDBPyConnection, posts_view: str) -> set[str]:
 
 def _score_sql(authors_view: str, posts_view: str, has_quote: bool) -> str:
     w = WEIGHTS
-    quote_ratio = "avg(COALESCE(is_quote, FALSE)::INT)" if has_quote else "0.0"
+    # `has_quote` probes for the column but the quote ratio it guarded was
+    # computed into a local and never interpolated into the SQL below - a signal
+    # that was designed, plumbed and then never wired to anything. Removed
+    # rather than connected: WEIGHTS already sums to 1.00, so adding it would
+    # silently reweight every other component and change collector-side seed
+    # ranking with no measurement behind it. Give it a weight deliberately if
+    # you want it back. The probe stays so the signature is unchanged for
+    # callers and the column check is still available.
     return f"""
     WITH la AS (
         SELECT * FROM {authors_view}

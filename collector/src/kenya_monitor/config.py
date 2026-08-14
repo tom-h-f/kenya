@@ -119,13 +119,28 @@ DYNAMIC_HASHTAG_RATIO = float(os.getenv("DYNAMIC_HASHTAG_RATIO", "5.0"))  # vs p
 # Min story_suspicion_index for a flagged story's terms to be promoted (Phase 4).
 STORY_FLAG_MIN_INDEX = float(os.getenv("STORY_FLAG_MIN_INDEX", "0.6"))
 # Min supporting channels for a coordination cluster to drive targeting.
-# Measured on the live corpus (2026-07-28): of 906 clusters / 4,732 accounts,
-# 894 clusters (4,674 accounts) rest on a single channel and 12 clusters (58
-# accounts) are corroborated across co_retweet AND co_reply. Promoting at
-# n_channels >= 1 would hand nearly the whole active author base to the
-# expansion passes, which is not a signal. Cross-channel corroboration is the
-# strongest evidence available short of ground truth (docs/analysis/phase-3).
-CLUSTER_MIN_CHANNELS = int(os.getenv("CLUSTER_MIN_CHANNELS", "1"))
+# Promoting at n_channels >= 1 hands nearly the whole active author base to the
+# expansion passes, which is not a signal: on 2026-07-28, 894 of 906 clusters
+# rested on a single channel.
+#
+# This was lowered to 1 on 2026-08-01 because corroboration was then structurally
+# 0 - the co_retweet and co_reply layers observed disjoint account populations,
+# so a floor of 2 promoted nobody and cluster targeting was inert. That premise
+# died with the census conversation-band fix: measured 2026-08-13, 446 bridge
+# accounts and 485 pairs validated in both channels.
+CLUSTER_MIN_CHANNELS = int(os.getenv("CLUSTER_MIN_CHANNELS", "2"))
+# Min share of a cluster's scored posts that must reference Kenya before it can
+# promote accounts. Corroboration alone is the WRONG gate on its own: measured
+# 2026-08-12, corroborated clusters are 8.3% Kenya-referencing against 51.5% for
+# single-channel ones, because reciprocal engagement pods are the most abundant
+# coordination on the platform and co_reply detects them best. Without this,
+# raising the channel floor targets Ugandan, Nigerian and US pods harder.
+CLUSTER_MIN_KENYA_SHARE = float(os.getenv("CLUSTER_MIN_KENYA_SHARE", "0.15"))
+# Same gate for promoted keywords. A burst detector that measures only volume
+# and acceleration promotes whatever is globally trending: #bbnaija,
+# #thirstyformore and #citizenweekend all cleared it, and their posts landed in
+# the BASELINE search partition.
+KEYWORD_MIN_KENYA_SHARE = float(os.getenv("KEYWORD_MIN_KENYA_SHARE", "0.10"))
 
 # Hate-seeking collection (docs/collection/hate-seeking.md). Runs as its own
 # cycle step with its own concurrency, never merged into the baseline keyword
@@ -162,6 +177,9 @@ FOLLOW_FETCH_LIMIT = int(os.getenv("FOLLOW_FETCH_LIMIT", "500"))  # edges per di
 FOLLOW_MAX_ACCOUNTS = int(os.getenv("FOLLOW_MAX_ACCOUNTS", "30"))  # accounts per pass
 FOLLOW_CRAWL_REFRESH_DAYS = int(os.getenv("FOLLOW_CRAWL_REFRESH_DAYS", "30"))
 FOLLOW_CRAWL_MAX_PER_RUN = int(os.getenv("FOLLOW_CRAWL_MAX_PER_RUN", "50"))
+# Give up on an account after this many consecutive failed/unresolvable attempts.
+# Without it a handle that can never resolve is re-tried every single run.
+FOLLOW_CRAWL_MAX_ATTEMPTS = int(os.getenv("FOLLOW_CRAWL_MAX_ATTEMPTS", "3"))
 
 # Account pool / throughput (scale with pool size; see kenya_monitor.accounts).
 TWS_ACCOUNT_ORDER = os.getenv("TWS_ACCOUNT_ORDER", "COALESCE(last_used, '1970-01-01') ASC")
@@ -172,12 +190,20 @@ ACCOUNT_SYNC_HOURS = float(os.getenv("ACCOUNT_SYNC_HOURS", "6"))
 CYCLE_COOLDOWN_MIN_S = int(os.getenv("CYCLE_COOLDOWN_MIN_S", "60"))
 CYCLE_COOLDOWN_MAX_S = int(os.getenv("CYCLE_COOLDOWN_MAX_S", "300"))
 FOLLOW_CRAWL_TOP_SUSPICIOUS = int(os.getenv("FOLLOW_CRAWL_TOP_SUSPICIOUS", "10"))
-POSTS_MIN_GAP_HOURS = float(os.getenv("POSTS_MIN_GAP_HOURS", "3"))
-POSTS_MAX_GAP_HOURS = float(os.getenv("POSTS_MAX_GAP_HOURS", "5"))
+# POSTS_MIN_GAP_HOURS / POSTS_MAX_GAP_HOURS removed 2026-08-13 along with
+# `accounts.posts_gap_hours`. They described a wall-clock inter-pass gap that
+# nothing ever called: `monitor run` cycles back to back, throttled only by
+# per-account pacing and twscrape's rate-limit rotation. Both were documented as
+# live in docs/collection/README.md, so an operator tuning them changed nothing.
 METRICS_MAX_POSTS_FLOOR = int(os.getenv("METRICS_MAX_POSTS_FLOOR", "200"))
 METRICS_MAX_POSTS_PER_ACCOUNT = int(os.getenv("METRICS_MAX_POSTS_PER_ACCOUNT", "8"))
 
 STATE_DIR = APP_ROOT / "state"
+# Where DuckDB spills when a scan exceeds COLLECTOR_MEMORY_LIMIT. It otherwise
+# defaults to `.tmp` relative to the process cwd, which in the container is
+# inside the image layer - so spill files are invisible to the state volume's
+# sizing and are lost on redeploy. STATE_DIR is the mounted volume.
+COLLECTOR_TEMP_DIR = Path(os.getenv("COLLECTOR_TEMP_DIR", STATE_DIR / "duckdb-tmp"))
 DYNAMIC_TARGETS_PATH = Path(os.getenv("DYNAMIC_TARGETS_PATH", STATE_DIR / "dynamic_targets.json"))
 SNOWBALL_STATE_PATH = Path(os.getenv("SNOWBALL_STATE_PATH", STATE_DIR / "snowball.json"))
 CENSUS_TIMELINE_STATE_PATH = Path(

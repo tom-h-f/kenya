@@ -22,11 +22,16 @@ def con():
     c = duckdb.connect()
     c.execute(
         """
+        -- `dt` mirrors the R2 hive partition key, generated from collected_at
+        -- exactly as the writer derives it. Generated so the positional INSERTs
+        -- below stay unchanged, and so a fixture can never drift from the
+        -- partitioning the selection queries prune on.
         CREATE TABLE _posts (
             platform VARCHAR, platform_post_id VARCHAR, author_id VARCHAR,
             text VARCHAR, created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ,
             repost_of_id VARCHAR, in_reply_to_id VARCHAR, conversation_id VARCHAR,
-            is_repost BOOLEAN, is_quote BOOLEAN, repost_count BIGINT
+            is_repost BOOLEAN, is_quote BOOLEAN, repost_count BIGINT,
+            dt DATE GENERATED ALWAYS AS (CAST(collected_at AS DATE))
         )
         """
     )
@@ -471,7 +476,8 @@ def test_both_selectors_use_the_one_censused_filter(monkeypatch):
         "CREATE TABLE p (platform VARCHAR, platform_post_id VARCHAR, author_id VARCHAR,"
         " created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ, repost_of_id VARCHAR,"
         " quoted_post_id VARCHAR, in_reply_to_id VARCHAR, conversation_id VARCHAR,"
-        " repost_count BIGINT, reply_count BIGINT, quote_count BIGINT, is_repost BOOLEAN)"
+        " repost_count BIGINT, reply_count BIGINT, quote_count BIGINT, is_repost BOOLEAN,"
+        " dt DATE)"
     )
     c.execute("CREATE TABLE h (platform_post_id VARCHAR, platform VARCHAR,"
               " scored_at TIMESTAMPTZ, label VARCHAR, hate_flag BOOLEAN, p_hate DOUBLE)")

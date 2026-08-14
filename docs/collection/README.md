@@ -423,10 +423,16 @@ Grouped env vars (defaults in `kenya_monitor.config`). Set in repo root `.env`.
 
 ### Scheduler / pool
 
+There is no wall-clock schedule for the cycle. Cycles run back to back; the
+throttle is per-account pacing plus twscrape's rate-limit rotation, and the only
+wall-clock wait is the inter-cycle cooldown below. `POSTS_MIN_GAP_HOURS` /
+`POSTS_MAX_GAP_HOURS` were documented here until 2026-08-13 but nothing read
+them - they have been removed rather than left as knobs that do nothing.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `POSTS_MIN_GAP_HOURS` | 3 | Min gap between post passes |
-| `POSTS_MAX_GAP_HOURS` | 5 | Max gap between post passes |
+| `CYCLE_COOLDOWN_MIN_S` | 60 | Inter-cycle jitter, low bound |
+| `CYCLE_COOLDOWN_MAX_S` | 300 | Inter-cycle jitter, high bound |
 | `ACCOUNT_SYNC_HOURS` | 6 | Pool maintenance interval |
 | `TWS_ACCOUNT_ORDER` | LRU SQL | twscrape account rotation |
 | `REQUEST_DELAY_MIN` / `MAX` | (pacing) | Per-account delay between requests |
@@ -441,10 +447,10 @@ Grouped env vars (defaults in `kenya_monitor.config`). Set in repo root `.env`.
 | `SNOWBALL_BAND_MIN` / `SNOWBALL_BAND_MAX` | 3 / 100 | Repost-count band for census selection |
 | `SNOWBALL_FLUSH_EVERY` | 25 | Objects per write (checkpointed) |
 | `TOXIC_LOOKBACK_DAYS` | 14 | How far back the toxic selector reaches |
-| `SNOWBALL_TOP_CONVERSATIONS` | 10 | Hot reply threads |
+| `SNOWBALL_TOP_CONVERSATIONS` | 250 | Hot reply threads (banded, same as the retweeted arm) |
 | `SNOWBALL_RETWEETERS_LIMIT` | 300 | Max retweeters per object |
 | `SNOWBALL_REPLIES_LIMIT` | 150 | Max replies per thread |
-| `SNOWBALL_HYDRATE_LIMIT` | 50 | Max hydrated originals |
+| `SNOWBALL_HYDRATE_LIMIT` | 150 | Max hydrated originals |
 | `SNOWBALL_LOOKBACK_DAYS` | 2 | Hot-object lookback |
 | `SNOWBALL_REFRESH_HOURS` | 12 | Per-object re-fetch TTL |
 
@@ -453,12 +459,15 @@ Grouped env vars (defaults in `kenya_monitor.config`). Set in repo root `.env`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DYNAMIC_MAX_KEYWORDS` | 10 | Cap promoted hashtags |
-| `DYNAMIC_MAX_ACCOUNTS` | 20 | Cap promoted accounts |
+| `DYNAMIC_MAX_ACCOUNTS` | 60 | Cap promoted accounts |
 | `DYNAMIC_EXPIRY_DAYS` | 7 | Drop stale promotions |
 | `DYNAMIC_HASHTAG_MIN_COUNT` | 20 | 24h hashtag floor |
 | `DYNAMIC_HASHTAG_RATIO` | 5.0 | Burst ratio vs 7d avg |
 | `BURST_ZSCORE` | 3.0 | Volume spike threshold |
 | `BURST_MIN_POSTS` | 100 | Hourly floor for burst |
+| `CLUSTER_MIN_CHANNELS` | 2 | Corroboration floor before a cluster promotes |
+| `CLUSTER_MIN_KENYA_SHARE` | 0.15 | Min Kenya-domain share before a cluster promotes |
+| `KEYWORD_MIN_KENYA_SHARE` | 0.10 | Same gate for bursting hashtags |
 
 ### Follow graph
 

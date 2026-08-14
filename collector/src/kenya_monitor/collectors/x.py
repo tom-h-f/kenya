@@ -16,7 +16,9 @@ from kenya_monitor.collectors.base import (
     MetricSnapshot,
     Post,
 )
-from kenya_monitor.accounts import configure_pool, sync_accounts  # re-export for callers
+# Re-exported so callers reach the whole X collection surface from one module;
+# `runner` imports sync_accounts from here.
+from kenya_monitor.accounts import configure_pool, sync_accounts  # noqa: F401
 from kenya_monitor.config import APP_ROOT
 
 DEFAULT_DB_PATH = Path(os.getenv("TWS_ACCOUNTS_DB", APP_ROOT / "state" / "accounts.db"))

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import duckdb
 import pytest
 
@@ -89,21 +91,28 @@ def test_write_census_run_persists_a_pass_that_fetched_nothing(storage):
     assert row["candidates_in_band"] == 412
 
 
-def test_write_census_run_ignores_unknown_counters(storage):
+def test_write_census_run_ignores_unknown_counters(storage, caplog):
     """`collect_snowball` threads one stats dict through several stages; a key
-    the schema does not carry must not fail the write."""
-    key = storage.write_census_run(
-        {"fetched_retweeted": 1, "selected_deg_min": 4, "not_a_column": "x"}
-    )
+    the schema does not carry must not fail the write - but it must be reported.
+
+    An undeclared column reads back as NULL, which is indistinguishable from a
+    genuine zero, so a rename on either writer would silently retire a counter."""
+    with caplog.at_level(logging.WARNING, logger="kenya_monitor"):
+        key = storage.write_census_run(
+            {"fetched_retweeted": 1, "selected_deg_min": 4, "not_a_column": "x"}
+        )
 
     assert key is not None
     row = _one(storage.out)
     assert "not_a_column" not in row
     assert row["selected_deg_min"] == 4
+    assert "not_a_column" in caplog.text
 
 
 def test_write_census_run_skips_an_empty_stats_dict(storage):
     assert storage.write_census_run({}) is None
+
+
 
 
 def test_census_run_schema_keeps_the_supply_denominator():
