@@ -88,12 +88,42 @@ def run(
     return total
 
 
+@app.function(
+    image=image,
+    # No GPU: this reuses the persisted model scores and only recomputes the
+    # measurement columns, which are regex and threshold work on CPU.
+    volumes={"/root/hf-cache": vol},
+    secrets=[
+        modal.Secret.from_name("huggingface"),
+        modal.Secret.from_name("kenya-r2"),
+    ],
+    timeout=6 * 3600,
+)
+def refresh_measure(limit: int | None = None, chunk: int = 20_000) -> int:
+    """Recompute the persisted measurement columns on already-scored hate rows.
+
+    This is what makes an incitement backfill RETROACTIVE. `_measure_frame`
+    resolves `coded_suspect` at hate-scoring time and writes a non-null False
+    when no NLI row exists yet, so every row scored before the incitement pass
+    reached it is marked not-coded permanently - and the collector's
+    hate-seeking reads exactly those persisted flags. Run it after any
+    incitement backfill.
+    """
+    from kma.db import connect
+    from kma.hatespeech import refresh_measure as refresh
+
+    n = refresh(connect(), limit=limit, chunk=chunk)
+    print(f"refresh_measure: rewrote {n} row(s)")
+    return n
+
+
 @app.local_entrypoint()
 def main(
     limit: int | None = None,
     batch_size: int = 256,
     pass_name: str = "hate",
     spawn: bool = False,
+    refresh: bool = False,
 ):
     """`--spawn` for anything long. `run.remote()` BLOCKS on the input, and
     `--detach` only keeps the app alive - it does not stop a client disconnect
@@ -107,8 +137,13 @@ def main(
         modal run --detach modal_backfill.py --pass-name incitement --spawn
         # then poll: modal.FunctionCall.from_id(<id>).get(timeout=0)
     """
+    fn = refresh_measure if refresh else run
+    kwargs = (
+        {"limit": limit}
+        if refresh
+        else {"limit": limit, "batch_size": batch_size, "pass_name": pass_name}
+    )
     if spawn:
-        call = run.spawn(limit=limit, batch_size=batch_size, pass_name=pass_name)
-        print(f"spawned: {call.object_id}")
+        print(f"spawned: {fn.spawn(**kwargs).object_id}")
         return
-    print(run.remote(limit=limit, batch_size=batch_size, pass_name=pass_name))
+    print(fn.remote(**kwargs))
