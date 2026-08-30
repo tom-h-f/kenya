@@ -266,7 +266,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=18" },
     { name = "python-dotenv", specifier = ">=1" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "twscrape", specifier = ">=0.13" },
+    { name = "twscrape", specifier = ">=0.20.1" },
     { name = "typer", specifier = ">=0.15" },
 ]
 
@@ -648,7 +648,7 @@ wheels = [
 
 [[package]]
 name = "twscrape"
-version = "0.19.2"
+version = "0.20.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
@@ -659,9 +659,9 @@ dependencies = [
     { name = "py-machineid" },
     { name = "pyotp" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f5/5d/4b699b057df39d07c33d893b182cc6adaa848c69a2c3c0dfb92c7a3ae641/twscrape-0.19.2.tar.gz", hash = "sha256:98e8ad96c183cb3d0a20e58f4880e13c3b294f218606a167f457174162fae819", size = 983807, upload-time = "2026-07-21T21:19:46.579Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/8b/30cb0f511c50681c164a75ecd94e390a8c1b113404108ebaf65f16a7bd39/twscrape-0.20.1.tar.gz", hash = "sha256:09b3b768e701fb71a6f785dba9744f60c96d03308c76abfa66cbf2cdb360eb63", size = 1000312, upload-time = "2026-08-25T16:21:21.008Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/d6/334d2d73dc13df48c9e94eadb091d5ae39075a6b9b6b691e6d2c2aa32a48/twscrape-0.19.2-py3-none-any.whl", hash = "sha256:7f4d03c4531b0fe9ef6dea6a609626e6ff2056e58dffe0eb250c2fa3ca6b1533", size = 49337, upload-time = "2026-07-21T21:19:45.259Z" },
+    { url = "https://files.pythonhosted.org/packages/68/39/e3ea377d785dbe6b74e6371e118b942d2598e551aa7179f09fbc40d30d45/twscrape-0.20.1-py3-none-any.whl", hash = "sha256:bfad943020361fc882b09ac49685e11d65b88743723de419b3d7873fe09d56e3", size = 52288, upload-time = "2026-08-25T16:21:19.81Z" },
 ]
 
 [[package]]
