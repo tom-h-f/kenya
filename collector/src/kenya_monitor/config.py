@@ -111,6 +111,15 @@ CENSUS_TIMELINE_POOL_HOURS = int(os.getenv("CENSUS_TIMELINE_POOL_HOURS", "12"))
 COLLECTOR_MEMORY_LIMIT = os.getenv("COLLECTOR_MEMORY_LIMIT", "600MB")
 COLLECTOR_THREADS = int(os.getenv("COLLECTOR_THREADS", "2"))
 
+# How far back the suspicion ranking looks. It reads posts and authors, both of
+# which grow without bound, so it is windowed rather than corpus-wide: the
+# ranking picks crawl seeds, and an account with nothing recent is not a seed.
+# Measured 2026-09-01 on a 47-day corpus: 2,165,609 post rows over 35 dt
+# partitions, of which 1,466,911 fall in 30 days. Partition pruning is what
+# makes the window cheap - the pruned count returns in 7.8s against 554s
+# unpruned - so this bounds cost as the corpus ages rather than shrinking it now.
+SUSPICION_LOOKBACK_DAYS = int(os.getenv("SUSPICION_LOOKBACK_DAYS", "30"))
+
 DYNAMIC_MAX_KEYWORDS = int(os.getenv("DYNAMIC_MAX_KEYWORDS", "10"))
 DYNAMIC_MAX_ACCOUNTS = int(os.getenv("DYNAMIC_MAX_ACCOUNTS", "60"))
 DYNAMIC_EXPIRY_DAYS = int(os.getenv("DYNAMIC_EXPIRY_DAYS", "7"))
