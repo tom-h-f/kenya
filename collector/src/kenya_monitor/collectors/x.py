@@ -20,6 +20,9 @@ from kenya_monitor.collectors.base import (
 # `runner` imports sync_accounts from here.
 from kenya_monitor.accounts import configure_pool, sync_accounts  # noqa: F401
 from kenya_monitor.config import APP_ROOT
+from kenya_monitor.twscrape_compat import install as _install_twscrape_compat
+
+_install_twscrape_compat()
 
 DEFAULT_DB_PATH = Path(os.getenv("TWS_ACCOUNTS_DB", APP_ROOT / "state" / "accounts.db"))
 
