@@ -31,7 +31,7 @@ from kenya_monitor.config import (
     SNOWBALL_BAND_MIN,
     SNOWBALL_REFRESH_HOURS,
 )
-from kenya_monitor.suspicion import _post_columns, _score_sql, _struct
+from kenya_monitor.suspicion import _post_columns, _struct, materialise
 
 log = logging.getLogger("kenya_monitor")
 
@@ -161,8 +161,8 @@ def _hate_account_sql(
     min_repeat_peers: int,
     min_brigades: int,
     has_quote: bool,
+    susp_table: str,
     toxic_cols: tuple[str, ...] = ("label", "hate_flag"),
-    has_dt: bool = True,
 ) -> str:
     """Rank accounts as hate-network seeds.
 
@@ -291,11 +291,10 @@ def _hate_account_sql(
         FROM toxic_replies WHERE conversation_id IN (SELECT conversation_id FROM brigades)
         GROUP BY author_id
     ), susp AS (
-        -- Same window as everything else in this query, so the suspicion
-        -- component describes the period being ranked rather than all history.
-        SELECT * FROM (
-            {_score_sql(authors_view, posts_view, has_quote, lookback_days, has_dt)}
-        )
+        -- Read from the table `suspicion.materialise` already built, not from a
+        -- nested copy of that query: inlining it here is what let DuckDB fuse
+        -- the corpus-wide aggregates back into one pipeline and exceed the cap.
+        SELECT * FROM {susp_table}
     ), la AS (
         -- Only authors with posts in the window can reach `metrics` (it joins
         -- `acct`, built from `recent`), so restricting here changes no result -
@@ -389,7 +388,8 @@ def hate_accounts(
         hatespeech_view, posts_view, authors_view, engagements_view,
         _toxic_expr(hate_cols), lookback_days, min_posts, min_toxic,
         min_repeat_peers, min_brigades, "is_quote" in post_cols,
-        _toxic_cols(hate_cols), "dt" in post_cols,
+        materialise(con, authors_view, posts_view, lookback_days),
+        _toxic_cols(hate_cols),
     )
     rel = con.sql(f"SELECT * FROM ({sql}) ORDER BY hate_seed_score DESC LIMIT {int(n)}")
     cols = rel.columns

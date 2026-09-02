@@ -119,6 +119,12 @@ COLLECTOR_THREADS = int(os.getenv("COLLECTOR_THREADS", "2"))
 # makes the window cheap - the pruned count returns in 7.8s against 554s
 # unpruned - so this bounds cost as the corpus ages rather than shrinking it now.
 SUSPICION_LOOKBACK_DAYS = int(os.getenv("SUSPICION_LOOKBACK_DAYS", "30"))
+# How long a materialised suspicion table may be reused. Both seed paths build
+# the same table, and a cycle calls both: measured on pi0 2026-09-02, the build
+# is 1,508s of the hate path's 3,738s, spent recomputing what the suspicion call
+# minutes earlier already had. Well under the ~170min cycle, so a rebuild still
+# happens once per cycle.
+SUSPICION_CACHE_MINUTES = int(os.getenv("SUSPICION_CACHE_MINUTES", "60"))
 
 DYNAMIC_MAX_KEYWORDS = int(os.getenv("DYNAMIC_MAX_KEYWORDS", "10"))
 DYNAMIC_MAX_ACCOUNTS = int(os.getenv("DYNAMIC_MAX_ACCOUNTS", "60"))

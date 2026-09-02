@@ -119,11 +119,10 @@ def test_dedup_keeps_the_latest_collection_of_a_post():
     con = duckdb.connect()
     con.register("authors_tbl", authors)
     con.register("posts_tbl", posts)
-    from kenya_monitor.suspicion import _score_sql
+    from kenya_monitor.suspicion import materialise
 
-    row = con.sql(
-        f"SELECT duplicate_text_ratio FROM ({_score_sql('authors_tbl', 'posts_tbl', False)})"
-    ).fetchone()
+    table = materialise(con, "authors_tbl", "posts_tbl")
+    row = con.sql(f"SELECT duplicate_text_ratio FROM {table}").fetchone()
     # p1 resolves to "same", so both surviving posts share one text: 1 - 1/2.
     assert row[0] == 0.5
 
@@ -139,11 +138,10 @@ def test_duplicate_text_ratio_matches_the_distinct_form():
     con = duckdb.connect()
     con.register("authors_tbl", authors)
     con.register("posts_tbl", posts)
-    from kenya_monitor.suspicion import _score_sql
+    from kenya_monitor.suspicion import materialise
 
-    got = con.sql(
-        f"SELECT duplicate_text_ratio FROM ({_score_sql('authors_tbl', 'posts_tbl', False)})"
-    ).fetchone()[0]
+    table = materialise(con, "authors_tbl", "posts_tbl")
+    got = con.sql(f"SELECT duplicate_text_ratio FROM {table}").fetchone()[0]
     want = con.sql(
         """
         SELECT 1.0 - count(DISTINCT lower(trim(text))) * 1.0 / count(*)
@@ -167,3 +165,24 @@ def test_ranks_without_a_dt_column():
         }
     )
     assert _rank(duckdb.connect(), authors, posts) == ["acct"]
+
+
+def test_materialise_is_reused_within_the_cache_window():
+    """Both seed paths build this table in one cycle; the second must not pay
+    for it again."""
+    from kenya_monitor.suspicion import materialise
+
+    today = date.today()
+    authors = _authors(["a1"], ["acct"], [NOW])
+    posts = _posts(["p1"], ["a1"], ["hello"], [today], [NOW])
+    con = duckdb.connect()
+    con.register("authors_tbl", authors)
+    con.register("posts_tbl", posts)
+
+    materialise(con, "authors_tbl", "posts_tbl")
+    con.execute("DELETE FROM _susp_scored")
+    materialise(con, "authors_tbl", "posts_tbl")
+    assert con.sql("SELECT count(*) FROM _susp_scored").fetchone()[0] == 0
+
+    materialise(con, "authors_tbl", "posts_tbl", max_age_minutes=0)
+    assert con.sql("SELECT count(*) FROM _susp_scored").fetchone()[0] == 1
