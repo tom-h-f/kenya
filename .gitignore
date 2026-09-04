@@ -23,6 +23,9 @@ node_modules/
 **/__marimo__/
 /analysis/notebooks/__marimo__/session
 
+# DuckDB spill storage from notebook runs
+/analysis/.tmp/
+
 .worktrees/
 
 # Claude Code session state and worktrees (worktrees are embedded git repos)
