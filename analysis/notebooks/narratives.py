@@ -10,12 +10,12 @@ def _():
 
     from kma import viz
     from kma.db import connect
-    from kma.semantic import assign_topics, search, topic_summary
+    from kma.semantic import load_topics, search, topic_summary
 
     viz.use_theme()
     con = connect()
     con.execute("SET enable_progress_bar=false")
-    return assign_topics, con, mo, search, topic_summary, viz
+    return con, load_topics, mo, search, topic_summary, viz
 
 
 @app.cell
@@ -44,8 +44,9 @@ def _(mo):
       target*, which is different from sentiment: a post can be angry (negative
       sentiment) yet *support* the person it is angry on behalf of.
 
-    Run `embed_new` to cover the full corpus before reading topics - clusters
-    sharpen with more data.
+    Run `embed_new` to cover the full corpus, then rebuild the topic
+    assignments with `modal run --detach modal_backfill.py --topic --spawn` -
+    clusters sharpen with more data. Topics are read from R2, not fitted here.
     """)
     return
 
@@ -68,8 +69,12 @@ def _(con, query, search):
 
 
 @app.cell
-def _(assign_topics, con):
-    topics_df = assign_topics(con, min_cluster_size=60)
+def _(con, load_topics):
+    # Read the assignments the Modal `topics` job persisted to R2. Fitting UMAP
+    # here is not an option: 658k x 768 embeddings, single-threaded under the
+    # reproducibility seed. Refresh with
+    # `modal run --detach modal_backfill.py --topic --spawn`.
+    topics_df = load_topics(con)
     return (topics_df,)
 
 

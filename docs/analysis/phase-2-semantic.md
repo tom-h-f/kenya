@@ -8,7 +8,7 @@ the existing README TODO.
 - `kma/db.py`: `embeddings_source()`, `latest_embeddings()`.
 - `kma/semantic.py`: `embed_new` (incremental, persists to R2
   `embeddings/platform=x/model=<slug>/dt=/run=.parquet`, 768d normalized),
-  `search` (cosine k-NN via DuckDB `vss`), `assign_topics` (PCA-50 + HDBSCAN),
+  `search` (cosine k-NN via DuckDB `vss`), `assign_topics` (UMAP + HDBSCAN),
   `topic_summary` (tf-idf terms).
 - Model: `paraphrase-multilingual-mpnet-base-v2`. Validated on live data: search
   handles code-mixed English/Swahili/Sheng well ("Kasongo"/"wantam" resolve to

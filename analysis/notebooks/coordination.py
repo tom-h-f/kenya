@@ -13,12 +13,12 @@ def _():
     from kma import netviz
     from kma import viz
     from kma.db import connect
-    from kma.semantic import assign_topics, topic_summary
+    from kma.semantic import load_topics, topic_summary
 
     viz.use_theme()
     con = connect()
     con.execute("SET enable_progress_bar=false")
-    return assign_topics, co, con, mo, netviz, np, topic_summary, viz
+    return co, con, load_topics, mo, netviz, np, topic_summary, viz
 
 
 @app.cell
@@ -368,8 +368,11 @@ def _(aggregated, cluster_names, color_ui, focus_ui, mo, netviz, node_attrs):
 
 
 @app.cell
-def _(assign_topics, co, con, layers, members, summary, topic_summary):
-    topics = assign_topics(con, min_cluster_size=60)
+def _(co, con, layers, load_topics, members, summary, topic_summary):
+    # Topics come from the Modal `topics` job, not a live UMAP fit: the
+    # corpus is 658k x 768 and the reproducibility seed pins UMAP to one
+    # thread. Refresh with `modal run --detach modal_backfill.py --topic --spawn`.
+    topics = load_topics(con)
     topic_names = topic_summary(topics)
     cluster_names = co.cluster_names(con, members, summary) if len(members) else None
     cards = co.scorecards(con, members, layers, topics=topics) if len(members) else None

@@ -117,6 +117,65 @@ def refresh_measure(limit: int | None = None, chunk: int = 20_000) -> int:
     return n
 
 
+# RAPIDS cuML, on its own image so the ~3GB CUDA payload stays out of the
+# hate/incitement functions. Measured on an A100 (2026-09-04): UMAP over
+# 20k x 768 takes 5.1s and HDBSCAN 0.4s, against a CPU run over the full 658k
+# that burned ~8 cores for hours without reaching the write.
+topics_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install("cuml-cu12", extra_index_url="https://pypi.nvidia.com")
+    .pip_install(
+        "pandas>=2",
+        "pyarrow>=18",
+        "duckdb>=1.1",
+        "python-dotenv>=1.0",
+    )
+    .env({"PYTHONPATH": "/root/src"})
+    .add_local_dir("src", remote_path="/root/src", ignore=["**/__pycache__/**", "*.pyc"])
+)
+
+
+@app.function(
+    image=topics_image,
+    gpu="A100",
+    secrets=[modal.Secret.from_name("kenya-r2")],
+    timeout=6 * 3600,
+)
+def topics(
+    # 60, not the library default of 25: this is the value narratives.py passed
+    # when it still fitted UMAP inline, so the persisted topics match what the
+    # notebook used to render.
+    min_cluster_size: int = 60,
+    n_neighbors: int = 15,
+    n_components: int = 5,
+    random_state: int | None = 42,
+    backend: str = "gpu",
+) -> int:
+    """Cluster the persisted embeddings and write assignments to R2 `topics/`.
+
+    `notebooks/narratives.py`, `coordination.py` and `desk_brief.py` read the
+    result via `semantic.load_topics` rather than fitting UMAP themselves - at
+    658k x 768 that is hours of CPU and tens of GB of RSS, which is why this is
+    a batch job on GPU.
+
+    cuML and umap-learn are different implementations, so a `backend="cpu"` run
+    does not reproduce a GPU one. Do not mix them within a series.
+    """
+    from kma.db import connect
+    from kma.semantic import persist_topics
+
+    n = persist_topics(
+        connect(),
+        min_cluster_size=min_cluster_size,
+        n_neighbors=n_neighbors,
+        n_components=n_components,
+        random_state=random_state,
+        backend=backend,
+    )
+    print(f"topics: assigned {n} post(s)")
+    return n
+
+
 @app.local_entrypoint()
 def main(
     limit: int | None = None,
@@ -124,6 +183,7 @@ def main(
     pass_name: str = "hate",
     spawn: bool = False,
     refresh: bool = False,
+    topic: bool = False,
 ):
     """`--spawn` for anything long. `run.remote()` BLOCKS on the input, and
     `--detach` only keeps the app alive - it does not stop a client disconnect
@@ -135,14 +195,16 @@ def main(
     investigations/2026-07-18-hatespeech-finetune/modal_train.py.
 
         modal run --detach modal_backfill.py --pass-name incitement --spawn
+        modal run --detach modal_backfill.py --topic --spawn
         # then poll: modal.FunctionCall.from_id(<id>).get(timeout=0)
     """
-    fn = refresh_measure if refresh else run
-    kwargs = (
-        {"limit": limit}
-        if refresh
-        else {"limit": limit, "batch_size": batch_size, "pass_name": pass_name}
-    )
+    if topic:
+        fn, kwargs = topics, {}
+    elif refresh:
+        fn, kwargs = refresh_measure, {"limit": limit}
+    else:
+        fn = run
+        kwargs = {"limit": limit, "batch_size": batch_size, "pass_name": pass_name}
     if spawn:
         print(f"spawned: {fn.spawn(**kwargs).object_id}")
         return

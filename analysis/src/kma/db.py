@@ -393,6 +393,23 @@ def latest_embeddings(con: duckdb.DuckDBPyConnection, platform: str = "*", model
     )
 
 
+def topics_source(platform: str = "*", model: str = "*") -> str:
+    glob = f"r2://{BUCKET}/topics/platform={platform}/model={model}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def latest_topics(con: duckdb.DuckDBPyConnection, platform: str = "*", model: str = "*"):
+    """One topic assignment per post (latest run), for a given model."""
+    return con.sql(
+        f"""
+        SELECT * FROM {topics_source(platform, model)}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform_post_id ORDER BY assigned_at DESC
+        ) = 1
+        """
+    )
+
+
 def labels_source(platform: str = "*") -> str:
     glob = f"r2://{BUCKET}/labels/platform={platform}/dt=*/run=*.parquet"
     return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"

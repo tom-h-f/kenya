@@ -2,7 +2,9 @@
 
 Embeddings are expensive so they are persisted to the R2 `embeddings/` prefix
 and built incrementally (only posts not already embedded for a given model).
-Everything else (search, later topics/sentiment) computes live.
+Topic assignments are persisted too, to `topics/`: the UMAP fit is a batch job
+(see `persist_topics`), and readers take the result via `load_topics`. Search
+computes live.
 
     from kma.db import connect
     from kma.semantic import embed_new, search
@@ -13,13 +15,20 @@ Everything else (search, later topics/sentiment) computes live.
 
 from __future__ import annotations
 
+import gc
 import re
 from datetime import datetime, timezone
 
 import duckdb
 import pyarrow as pa
 
-from kma.db import BUCKET, embeddings_source, pending_posts, posts_source
+from kma.db import (
+    BUCKET,
+    embeddings_source,
+    pending_posts,
+    posts_source,
+    topics_source,
+)
 
 _CLEAN = re.compile(r"https?://\S+|@\w+|#\w+|[^\w\s]", re.UNICODE)
 
@@ -190,27 +199,197 @@ def assign_topics(
     min_cluster_size: int = 25,
     n_neighbors: int = 15,
     n_components: int = 5,
+    random_state: int | None = 42,
+    backend: str = "auto",
 ):
     """Cluster embeddings into narrative topics via UMAP -> HDBSCAN (the BERTopic
     recipe: UMAP preserves local structure far better than PCA, so most posts land
     in a cluster instead of noise). Returns the per-post frame with a `topic`
-    column; topic -1 is unclustered."""
+    column; topic -1 is unclustered.
+
+    `backend` picks the implementation: ``"cpu"`` is umap-learn + sklearn,
+    ``"gpu"`` is RAPIDS cuML, ``"auto"`` takes the GPU when cuML imports. These
+    are DIFFERENT implementations, not one algorithm at two speeds - assignments
+    from the two backends are not comparable, so do not mix them in one series.
+
+    A set `random_state` makes the CPU fit reproducible.
+    """
     import numpy as np
-    from sklearn.cluster import HDBSCAN
-    from umap import UMAP
 
     df = _embeddings_with_text(con, platform, model)
     if len(df) < max(min_cluster_size, n_neighbors + 1):
         df["topic"] = -1
         return df
     x = np.asarray(df["embedding"].tolist(), dtype="float32")
-    x = UMAP(
-        n_neighbors=n_neighbors, n_components=n_components, metric="cosine", random_state=42
-    ).fit_transform(x)
-    df["topic"] = HDBSCAN(
-        min_cluster_size=min_cluster_size, min_samples=1, metric="euclidean"
-    ).fit_predict(x)
+    # The vector column is dead weight from here on and no caller reads it back,
+    # but as pandas objects it is the largest thing in the process, so holding it
+    # through the fit costs tens of GB for nothing.
+    df = df.drop(columns=["embedding"])
+    gc.collect()
+    df["topic"] = _cluster_vectors(
+        x, min_cluster_size, n_neighbors, n_components, random_state, backend
+    )
     return df
+
+
+def _resolve_backend(backend: str) -> str:
+    if backend not in ("auto", "cpu", "gpu"):
+        raise ValueError(f"unknown backend {backend!r} (expected auto|cpu|gpu)")
+    if backend != "auto":
+        return backend
+    try:
+        import cuml  # noqa: F401
+    except Exception:
+        return "cpu"
+    return "gpu"
+
+
+def _cluster_vectors(
+    x,
+    min_cluster_size: int,
+    n_neighbors: int,
+    n_components: int,
+    random_state: int | None,
+    backend: str,
+):
+    """UMAP -> HDBSCAN on a float32 matrix, returning integer topic labels."""
+    import numpy as np
+
+    resolved = _resolve_backend(backend)
+    if resolved == "gpu":
+        from cuml.cluster import HDBSCAN
+        from cuml.manifold import UMAP
+
+        reduced = UMAP(
+            n_neighbors=n_neighbors,
+            n_components=n_components,
+            metric="cosine",
+            random_state=random_state,
+            verbose=True,
+        ).fit_transform(x)
+        labels = HDBSCAN(
+            min_cluster_size=min_cluster_size, min_samples=1
+        ).fit_predict(reduced)
+        return np.asarray(labels).astype("int64")
+
+    from sklearn.cluster import HDBSCAN
+    from umap import UMAP
+
+    reduced = UMAP(
+        n_neighbors=n_neighbors,
+        n_components=n_components,
+        metric="cosine",
+        random_state=random_state,
+        verbose=True,
+    ).fit_transform(x)
+    return HDBSCAN(
+        min_cluster_size=min_cluster_size, min_samples=1, metric="euclidean"
+    ).fit_predict(reduced)
+
+
+def persist_topics(
+    con: duckdb.DuckDBPyConnection,
+    platform: str = "x",
+    model: str = MODEL,
+    min_cluster_size: int = 25,
+    n_neighbors: int = 15,
+    n_components: int = 5,
+    random_state: int | None = 42,
+    backend: str = "auto",
+) -> int:
+    """Run `assign_topics` and write the assignments to the R2 `topics/` prefix.
+
+    UMAP over the whole embedding corpus is hours of work and tens of GB of
+    peak RSS, far past what a notebook should do live. This is the batch half:
+    run it on Modal, then `load_topics` serves every reader from the persisted
+    result.
+    """
+    df = assign_topics(
+        con,
+        platform=platform,
+        model=model,
+        min_cluster_size=min_cluster_size,
+        n_neighbors=n_neighbors,
+        n_components=n_components,
+        random_state=random_state,
+        backend=backend,
+    )
+    if not len(df):
+        return 0
+    # Only the id and its cluster get written. Holding `embedding` past the fit
+    # is what killed the first Modal run: 658k rows of 768 floats live as pandas
+    # objects, which dwarfs everything else in the frame.
+    ids = df["platform_post_id"].tolist()
+    topics = [int(t) for t in df["topic"]]
+    del df
+    gc.collect()
+    now = datetime.now(timezone.utc)
+    # `backend` belongs in the provenance: cuML and umap-learn are different
+    # implementations, so runs from the two are not comparable.
+    params = (
+        f"min_cluster_size={min_cluster_size},n_neighbors={n_neighbors},"
+        f"n_components={n_components},random_state={random_state},"
+        f"backend={_resolve_backend(backend)}"
+    )
+    n = len(ids)
+    table = pa.table(
+        {
+            "platform_post_id": ids,
+            "topic": topics,
+            "model": [_slug(model)] * n,
+            "params": [params] * n,
+            "assigned_at": [now] * n,
+        }
+    )
+    key = (
+        f"topics/platform={platform}/model={_slug(model)}"
+        f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
+    )
+    con.register("_topic_buf", table)
+    try:
+        con.execute(
+            f"COPY _topic_buf TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)"
+        )
+    finally:
+        con.unregister("_topic_buf")
+    return n
+
+
+def load_topics(
+    con: duckdb.DuckDBPyConnection, platform: str = "x", model: str = MODEL
+):
+    """Persisted topic assignments joined back to post text.
+
+    Shaped exactly like `assign_topics` output minus the embedding vector, so
+    `topic_summary` consumes it unchanged.
+    """
+    try:
+        con.sql(f"SELECT 1 FROM {topics_source(platform, _slug(model))} LIMIT 1").fetchall()
+    except duckdb.IOException as exc:
+        raise RuntimeError(
+            f"No persisted topics for platform={platform} model={_slug(model)}. "
+            "Build them first: "
+            "`modal run --detach modal_backfill.py --topic --spawn` (from analysis/)."
+        ) from exc
+    return con.sql(
+        f"""
+        WITH t AS (
+            SELECT * FROM {topics_source(platform, _slug(model))}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY assigned_at DESC
+            ) = 1
+        ), lp AS (
+            SELECT * FROM {posts_source(platform)}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+            ) = 1
+        )
+        SELECT t.platform_post_id, t.topic, p.author_handle, p.text,
+               p.created_at, p.lang
+        FROM t JOIN lp p USING (platform_post_id)
+        ORDER BY t.platform_post_id
+        """
+    ).df()
 
 
 def _short_name_from_terms(terms: str, max_words: int = 3) -> str:

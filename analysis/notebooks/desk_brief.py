@@ -22,13 +22,13 @@ def _():
         latest_stories,
         authors_source,
     )
-    from kma.semantic import assign_topics, topic_summary
+    from kma.semantic import load_topics, topic_summary
 
     viz.use_theme()
     con = connect()
     con.execute("SET enable_progress_bar=false")
     return (
-        assign_topics,
+        load_topics,
         authors_source,
         co,
         con,
@@ -210,7 +210,7 @@ def _(con, mo, st, stories, story_pick):
 
 @app.cell
 def _(
-    assign_topics,
+    load_topics,
     con,
     fr,
     latest_labels,
@@ -221,7 +221,9 @@ def _(
 ):
     _sid = story_pick.value
 
-    _topics = assign_topics(con, min_cluster_size=60)
+    # Persisted by the Modal `topics` job; fitting UMAP inline is not
+    # viable at 658k x 768 with the seed pinning it to one thread.
+    _topics = load_topics(con)
     _summary = topic_summary(_topics)
     try:
         _labels = latest_labels(con).df()

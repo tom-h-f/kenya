@@ -45,6 +45,7 @@ all in `analysis/src/kma/db.py`.
 | `follows/` | collector | `platform`, `dt` | (edge rows) | `follows_source`, `latest_follows` |
 | `census_runs/` | collector | `platform`, `dt` | (series, never deduped) | `census_runs_source`, `census_runs` |
 | `embeddings/` | analysis (`semantic.py`) | `platform`, `model`, `dt` | `platform_post_id` (by `embedded_at`) | `embeddings_source`, `latest_embeddings` |
+| `topics/` | analysis (`semantic.py`) | `platform`, `model`, `dt` | `platform_post_id` (by `assigned_at`) | `topics_source`, `latest_topics` |
 | `labels/` | analysis (`classify.py`) | `platform`, `dt` | `platform_post_id` (by `labeled_at`) | `labels_source`, `latest_labels` |
 | `incitement/` | analysis (`incitement.py`) | `platform`, `dt` | `platform_post_id` (by `scored_at`) | `incitement_source`, `latest_incitement` |
 | `hatespeech/` | analysis (`hatespeech.py`) | `platform`, `dt` | `platform_post_id` (by `scored_at`) | `hatespeech_source`, `latest_hatespeech` |
@@ -177,6 +178,23 @@ corpus; compare within the crawled set).
 `paraphrase-multilingual-mpnet-base-v2` (English/Swahili/Sheng in one space).
 `latest_embeddings` dedups per post by `embedded_at`; the vector column is cast
 to `FLOAT[768]` for DuckDB `array_cosine_similarity`.
+
+### topics/ (`semantic.py`)
+
+`platform_post_id`, `topic` (int, `-1` = unclustered), `model` (encoder slug),
+`params` (the UMAP/HDBSCAN settings that produced the run), `assigned_at`.
+Written by `persist_topics`, read by `load_topics`, which joins the assignments
+back to post text so `topic_summary` consumes it unchanged.
+
+This prefix exists because the fit does not run interactively: the corpus is
+658k x 768, and the fit costs hours of CPU plus tens of GB of peak RSS
+(measured 2026-09-03: ~8 cores saturated, 45 GB resident two hours in).
+Rebuild it on Modal:
+
+    modal run --detach modal_backfill.py --topic --spawn
+
+`notebooks/narratives.py`, `coordination.py` and `desk_brief.py` all read the
+persisted result and raise a message naming that command if it is missing.
 
 ### labels/ (`classify.py`)
 
