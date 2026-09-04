@@ -60,8 +60,6 @@ def _():
         mo,
         np,
         pd,
-        posts_source,
-        scope_predicate,
         scoped_posts_cte,
         semantic,
         sns,
@@ -71,27 +69,25 @@ def _():
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        # Hate & offensive speech in the Kenya 2027 stream
+    mo.md("""
+    # Hate & offensive speech in the Kenya 2027 stream
 
-        Every collected post is scored by the fine-tuned afro-xlmr 3-class
-        classifier (`neither` / `offensive` / `hate`) and joined here to author
-        origin, NCIC/PeaceTech coded-term rhetoric, sentiment/emotion, reach,
-        and account behaviour.
+    Every collected post is scored by the fine-tuned afro-xlmr 3-class
+    classifier (`neither` / `offensive` / `hate`) and joined here to author
+    origin, NCIC/PeaceTech coded-term rhetoric, sentiment/emotion, reach,
+    and account behaviour.
 
-        Rates below are **automated measurement**, not a human review queue.
-        Two series, both excluding clearly off-domain (non-Kenya) posts:
+    Rates below are **automated measurement**, not a human review queue.
+    Two series, both excluding clearly off-domain (non-Kenya) posts:
 
-        1. **Explicit** - model `offensive` / `hate` / `hate_flag` (`p_hate >= 0.28`)
-        2. **Coded** - live NCIC lexicon hit corroborated by incitement NLI,
-           gated by each term's `fp_risk` (high-fp terms like `nyoka` / `fukuza`
-           need strong menace NLI and must beat `political_criticism`)
+    1. **Explicit** - model `offensive` / `hate` / `hate_flag` (`p_hate >= 0.28`)
+    2. **Coded** - live NCIC lexicon hit corroborated by incitement NLI,
+       gated by each term's `fp_risk` (high-fp terms like `nyoka` / `fukuza`
+       need strong menace NLI and must beat `political_criticism`)
 
-        Geographic/ethnic lenses remain coarse author-origin proxies, not
-        statements about who any post targets.
-        """
-    )
+    Geographic/ethnic lenses remain coarse author-origin proxies, not
+    statements about who any post targets.
+    """)
     return
 
 
@@ -108,10 +104,16 @@ def _(
     pd,
     scoped_posts_cte,
 ):
-    # One enriched frame, loaded once. Post (latest) INNER hatespeech (100%
-    # coverage), LEFT the author-origin proxy, incitement rhetoric (81%) and
-    # sentiment/emotion (100%). Measurement columns (domain, coded_suspect,
-    # explicit_toxic) are derived in pandas via kma.measure - not persisted.
+    # One enriched frame, loaded once. Post (latest) INNER hatespeech, LEFT the
+    # author-origin proxy, incitement rhetoric and sentiment/emotion.
+    # Measurement columns (domain, coded_suspect, explicit_toxic) are derived in
+    # pandas via kma.measure - not persisted.
+    #
+    # Coverage of the 668,176 baseline-scoped x posts, measured 2026-09-03:
+    # hatespeech 92.1%, incitement 92.3%, sentiment/emotion 65.2%. The
+    # hatespeech join is INNER, so the 7.9% with no hate row are dropped from
+    # this frame entirely; the LEFT joins leave nulls instead. None of these is
+    # full coverage, so a per-post null is a missing score, not a negative one.
     #
     # Scoping goes through `scoped_posts_cte`, which is the only spelling that
     # carries all three guards together: FIRST-seen type (a post found by a
@@ -176,20 +178,25 @@ def _(
     df["is_hate"] = df["label"] == "hate"
     df["toxic"] = (df["label"] != "neither") | df["hate_flag"]
 
-    # Measurement columns are persisted onto hatespeech/ from 2026-07 onward.
-    # Recompute only the rows that predate the rollout, so the notebook and the
-    # automated consumers read exactly the same values.
+    _derived = (
+        "domain", "in_kenya_scope", "coded_suspect", "explicit_toxic",
+        "coded_suspect_kenya", "lexicon_hits_live", "lexicon_categories_live",
+    )
     _needs = df["domain"].isna() if "domain" in df.columns else pd.Series(True, index=df.index)
     if _needs.any():
         _live = measure.attach_measurement_columns(df[_needs])
-        for _c in ("domain", "in_kenya_scope", "coded_suspect", "explicit_toxic"):
-            df.loc[_needs, _c] = _live[_c]
-    df["in_kenya_scope"] = df["in_kenya_scope"].astype(bool)
+        for _c in _derived:
+            if _c in df.columns:
+                df.loc[_needs, _c] = _live[_c]
+            else:
+                df[_c] = _live[_c].reindex(df.index)
+    for _c in ("in_kenya_scope", "coded_suspect", "explicit_toxic", "coded_suspect_kenya"):
+        df[_c] = df[_c].fillna(False).astype(bool)
     return (df,)
 
 
 @app.cell
-def _(SCOPE, TARGETED_TYPES, con, first_seen_types_cte, mo, posts_source):
+def _(SCOPE, TARGETED_TYPES, con, first_seen_types_cte, mo):
     # What the scope filter above actually removed. Targeted passes (hate-seeking
     # search, ethnonym search, seed-account timelines, CIB expansion) chase the
     # toxic tail on purpose, so their posts cannot sit in a prevalence
@@ -276,16 +283,14 @@ def _(df, mo):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## A. How severe, and how confident
+    mo.md("""
+    ## A. How severe, and how confident
 
-        The classifier emits a probability per class. `p_hate` separates cleanly
-        for `neither`, but `offensive` and `hate` overlap - which is exactly why
-        the deploy rule flags on a **0.28 threshold** (dashed line) rather than
-        the argmax winner. Posts to the right of the line reach the human queue.
-        """
-    )
+    The classifier emits a probability per class. `p_hate` separates cleanly
+    for `neither`, but `offensive` and `hate` overlap - which is exactly why
+    the deploy rule flags on a **0.28 threshold** (dashed line) rather than
+    the argmax winner. Posts to the right of the line reach the human queue.
+    """)
     return
 
 
@@ -308,7 +313,7 @@ def _(CLASS_COLORS, CLASS_ORDER, df, sns, viz):
 
 
 @app.cell
-def _(df, mo):
+def _(mo):
     klass = mo.ui.dropdown(
         {"all": "all", "hate": "hate", "offensive": "offensive", "neither": "neither"},
         value="hate", label="Class",
@@ -338,15 +343,13 @@ def _(df, klass, mo, sort_by):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## B. Is toxicity trending toward the election?
+    mo.md("""
+    ## B. Is toxicity trending toward the election?
 
-        Daily share among **Kenya-scoped** posts: model `offensive` / `hate`,
-        plus the separate `coded_suspect` series (lexicon ∩ NLI). Bold lines are
-        7-day means. Restricted to 2026 (99.8% of the corpus).
-        """
-    )
+    Daily share among **Kenya-scoped** posts: model `offensive` / `hate`,
+    plus the separate `coded_suspect` series (lexicon ∩ NLI). Bold lines are
+    7-day means. Restricted to 2026 (99.8% of the corpus).
+    """)
     return
 
 
@@ -412,7 +415,7 @@ def _(df, viz):
 
 
 @app.cell
-def _(df, pd, sns, viz):
+def _(df, sns, viz):
     # Heatmap keeps the explicit series for continuity with prior charts.
     _d = df[(df["created_at"].dt.year == 2026) & df["in_kenya_scope"]].copy()
     _d["hour"] = _d["created_at"].dt.hour
@@ -441,17 +444,15 @@ def _(df, pd, sns, viz):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## C. Where it comes from
+    mo.md("""
+    ## C. Where it comes from
 
-        Prevalence by the **author's** region, derived from self-declared
-        profile location. Two hard caveats: only ~a third of accounts carry a
-        mappable location, and this is where the *poster* is from, **not who a
-        post targets**. Read as a coarse aggregate signal, never about an
-        individual.
-        """
-    )
+    Prevalence by the **author's** region, derived from self-declared
+    profile location. Two hard caveats: only ~a third of accounts carry a
+    mappable location, and this is where the *poster* is from, **not who a
+    post targets**. Read as a coarse aggregate signal, never about an
+    individual.
+    """)
     return
 
 
@@ -532,16 +533,14 @@ def _(df, sns, viz):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## D. What kind of dangerous speech
+    mo.md("""
+    ## D. What kind of dangerous speech
 
-        Live NCIC/PeaceTech lexicon categories among **`coded_suspect`** posts
-        (lexicon ∩ NLI with `fp_risk` gates), Kenya-scoped. The crosstab is
-        model class × live lexicon category on Kenya-scoped rows with a lexicon
-        hit - where the fine-tuned model and the coded-term scan meet.
-        """
-    )
+    Live NCIC/PeaceTech lexicon categories among **`coded_suspect`** posts
+    (lexicon ∩ NLI with `fp_risk` gates), Kenya-scoped. The crosstab is
+    model class × live lexicon category on Kenya-scoped rows with a lexicon
+    hit - where the fine-tuned model and the coded-term scan meet.
+    """)
     return
 
 
@@ -600,16 +599,14 @@ def _(CLASS_ORDER, df, pd, sns, viz):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## E. Does it spread, and who spreads it
+    mo.md("""
+    ## E. Does it spread, and who spreads it
 
-        Amplification on the Kenya-scoped slice. Mean engagement by model class;
-        the viral tail table is `hate_flag` posts that are not off-domain (US/
-        Western engagement pollution is dropped). Account-suspicion compares
-        authors of explicit-toxic Kenya posts against everyone else.
-        """
-    )
+    Amplification on the Kenya-scoped slice. Mean engagement by model class;
+    the viral tail table is `hate_flag` posts that are not off-domain (US/
+    Western engagement pollution is dropped). Account-suspicion compares
+    authors of explicit-toxic Kenya posts against everyone else.
+    """)
     return
 
 
@@ -692,16 +689,14 @@ def _(authenticity, con, df, mo, sns, viz):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## F. What the hate is about
+    mo.md("""
+    ## F. What the hate is about
 
-        Narrative lenses over Kenya-scoped **explicit-toxic** posts. Hashtags
-        are the cheap, legible cut; topic clusters (UMAP → HDBSCAN on the
-        multilingual embeddings, labelled by distinctive c-TF-IDF terms)
-        surface conversations the hashtags miss.
-        """
-    )
+    Narrative lenses over Kenya-scoped **explicit-toxic** posts. Hashtags
+    are the cheap, legible cut; topic clusters (UMAP → HDBSCAN on the
+    multilingual embeddings, labelled by distinctive c-TF-IDF terms)
+    surface conversations the hashtags miss.
+    """)
     return
 
 
