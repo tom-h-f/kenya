@@ -3,6 +3,13 @@
 Monitors social media activity around the 2027 Kenyan general election. Scraped posts
 land in Cloudflare R2 as partitioned Parquet; analysis is done with DuckDB.
 
+## Objectives and methodology
+
+What the project is for, with a measurable outcome per objective:
+[docs/OBJECTIVES.md](docs/OBJECTIVES.md). The v2 coordination methodology
+(adopting Luceri et al., WWW 2024, wholesale) and the bench that scores it:
+[docs/plans/2026-09-05-v2-methodology.md](docs/plans/2026-09-05-v2-methodology.md).
+
 ## Disinformation-analysis roadmap
 
 Phased build in `docs/analysis/`:
