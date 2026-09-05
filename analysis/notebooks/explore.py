@@ -9,34 +9,16 @@ def _():
     import marimo as mo
     import numpy as np
 
-    from kma import connect
+    from kma import connect_quack
     from kma import viz
-    from kma.db import authors_source, metrics_source, posts_source
 
     viz.use_theme()
-    con = connect()
+    con = connect_quack()
 
     def remote(sql: str):
-        """Run SQL directly against R2 via local DuckDB."""
-        return con.sql(sql)
+        """Run SQL on the tf1 server. Views: posts, latest_posts, metrics, authors, latest_authors."""
+        return con.sql(f"FROM kenya.query('{sql.replace(chr(39), chr(39) * 2)}')")
 
-    con.execute(f"CREATE OR REPLACE VIEW posts AS SELECT * FROM {posts_source()}")
-    con.execute(
-        f"""CREATE OR REPLACE VIEW latest_posts AS
-        SELECT * FROM {posts_source()}
-        QUALIFY row_number() OVER (
-            PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-        ) = 1"""
-    )
-    con.execute(f"CREATE OR REPLACE VIEW metrics AS SELECT * FROM {metrics_source()}")
-    con.execute(f"CREATE OR REPLACE VIEW authors AS SELECT * FROM {authors_source()}")
-    con.execute(
-        f"""CREATE OR REPLACE VIEW latest_authors AS
-        SELECT * FROM {authors_source()}
-        QUALIFY row_number() OVER (
-            PARTITION BY platform_user_id ORDER BY collected_at DESC
-        ) = 1"""
-    )
     return mo, np, remote, viz
 
 
@@ -56,7 +38,7 @@ def _(mo, remote):
             "# Kenya 2027 monitor\n"
             "The **raw-data overview**: how much has been collected, who posts, "
             "when, and what gets engagement - before any modelling. Queried live "
-            "direct from R2.\n\n"
+            "through the **tf1 quack server**.\n\n"
             "- **Unique posts** - distinct tweets (deduped to their latest state).\n"
             "- **Snapshots** - every collection of a post over time; the ratio to "
             "unique posts shows how often we re-measure engagement.\n"
@@ -263,6 +245,19 @@ def _(remote, viz):
     _ax.set_title("Post volume by author region, profile-location proxy")
     _ax.set_xlabel("posts")
     _fig
+    return
+
+
+@app.cell
+def _(remote):
+    _recents = remote(
+        f"""
+        SELECT *
+        FROM latest_posts p JOIN latest_authors a ON p.author_id = a.platform_user_id
+        WHERE p.platform = 'x'
+        ORDER BY p.created_at DESC 
+        """
+    ).df()
     return
 
 

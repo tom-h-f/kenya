@@ -295,3 +295,24 @@ def test_persist_columns_include_tier_and_stable_id():
     assert "stable_story_id" in cols
     assert "tier" in cols
     assert "high_suspicion" in cols
+
+
+def test_posts_cte_prunes_partitions_only_where_a_window_exists():
+    """The two windowed readers get a `dt` floor; the replier lookup must not.
+    It walks whole conversations, and a conversation can be older than the story
+    it belongs to, so a floor there drops real repliers."""
+    windowed = st._latest_posts_cte("x", lookback_days=7)
+    unwindowed = st._latest_posts_cte("x")
+
+    assert "dt >= current_date - INTERVAL 8 DAY" in windowed
+    assert "dt >=" not in unwindowed
+
+
+def test_posts_cte_dt_floor_is_looser_than_the_window():
+    """`dt` is the date the batch was WRITTEN, so it is never earlier than the
+    post's creation date - but a run straddling midnight UTC needs the slack.
+    Tightening this to `days` silently drops rows at the boundary."""
+    for days in (1, 7, 30):
+        assert f"dt >= current_date - INTERVAL {days + 1} DAY" in st._latest_posts_cte(
+            "x", lookback_days=days
+        )

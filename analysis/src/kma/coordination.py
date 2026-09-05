@@ -164,6 +164,25 @@ WAVE_B = ["co_hashtag", "co_url", "co_mention"]
 # Measured on live 18k corpus (2026-07-07); re-sweep when data grows.
 DEFAULT_TAU = 0.9
 DEFAULT_RESOLUTION = 0.05
+# The published setting, and the one the collector targets on. Held at 0.05 for
+# series continuity, NOT because it is optimal - it is not.
+#
+# Leiden CPM `resolution_parameter` is an ABSOLUTE weight threshold: a community
+# must be denser than it to survive. Swept against confirmed information
+# operations 2026-08-15, recall and the chance share move the same way:
+#
+#   resolution   IO recall   share attributable to the null
+#   0.001          50.6%                14.0%
+#   0.005          39.9%                17.8%
+#   0.050 (this)   18.6%                28.6%
+#
+# So the strict default is off the efficient frontier - lowering it wins on BOTH
+# axes. What stops it being changed outright is downstream: on the live corpus
+# the same move takes 154 clusters to 852 and 1,302 accounts to 6,642, which
+# breaks a published series and multiplies collector targeting. Hence a second
+# clustering at TRIAGE_RESOLUTION from the same validated edges, written to its
+# own prefix and read only by adjudication.
+TRIAGE_RESOLUTION = float(os.getenv("COORD_TRIAGE_RESOLUTION", "0.005"))
 DEFAULT_DELTAS: dict[str, int] = {"fast_co_share": 300, "text_sim": 3600}
 
 _SIMPLE_TRACES = {
@@ -261,13 +280,62 @@ DEFAULT_EDGE_METHOD = os.getenv("COORD_EDGE_METHOD", "bonferroni")
 DEFAULT_LAYER_NORM = os.getenv("COORD_LAYER_NORM", "max")
 
 
-def _latest_posts_cte(platform: str, lookback_days: int | None = None) -> str:
+def _latest_posts_cte(
+    platform: str,
+    lookback_days: int | None = None,
+    author_scope: str | None = None,
+    post_scope: str | None = None,
+) -> str:
+    """Deduplicated posts in the coordination window.
+
+    `author_scope` / `post_scope` name relations of `author_id` / of
+    `platform_post_id` to restrict to, and they are joined here rather than by
+    the caller wrapping this expression: QUALIFY is evaluated after the window,
+    so an outer filter leaves DuckDB deduplicating every post in the corpus
+    before discarding it. `post_scope` is what the dossier layer needs, because
+    the posts it wants were authored by anyone - it can only be narrowed by
+    which objects the cluster actually touched.
+
+    This is strictly less work, but do not expect it to be faster - measured
+    2026-08-14 it was not, within a run-to-run noise band of ~20%. What dominates
+    is fetching the posts prefix from R2 at all, and only the `dt` predicate
+    below reduces that."""
     days = COORD_LOOKBACK_DAYS if lookback_days is None else lookback_days
-    window = (
-        f"WHERE created_at > now() - INTERVAL {int(days)} DAY" if days and days > 0 else ""
-    )
+    preds = []
+    if days and days > 0:
+        preds.append(f"created_at > now() - INTERVAL {int(days)} DAY")
+        # Partition pruning. Worth ~1.19x on this read (101.1s -> 85.0s, mean of
+        # two runs each order, fresh process per query) and ~9% on the scorecard
+        # pass. Modest because the partitions it drops are the OLDEST, and
+        # collection volume has grown - the recent partitions hold most rows.
+        #
+        # Measure this in separate processes if you ever revisit it. Timing the
+        # two variants back to back in one process reports 4-18x, which is
+        # false: the pruned read touches a subset of the files the unpruned one
+        # has already fetched, so it is scored against a warm httpfs cache.
+        #
+        # Lossless because `dt` is the date the BATCH WAS WRITTEN, not a
+        # per-row value: collected_at >= created_at and the write follows the
+        # collection, so every row satisfying the created_at window necessarily
+        # sits at dt >= date(created_at). The extra day absorbs clock skew and
+        # runs that straddle midnight UTC. Verified directly - zero rows in the
+        # window fall below the floor.
+        #
+        # Do NOT copy this to `authenticity._features_sql`: that has no window
+        # at all, because `duplicate_text_ratio` and `n_posts` are cumulative
+        # over an author's whole collected history. A floor there would silently
+        # redefine the features rather than speed them up.
+        preds.append(f"dt >= current_date - INTERVAL {int(days) + 1} DAY")
+    window = f"WHERE {' AND '.join(preds)}" if preds else ""
+    scopes = []
+    if author_scope:
+        scopes.append(f"SEMI JOIN {author_scope} USING (author_id)")
+    if post_scope:
+        scopes.append(f"SEMI JOIN {post_scope} USING (platform_post_id)")
+    scope = "\n        ".join(scopes)
     return f"""
         SELECT * FROM {posts_source(platform)}
+        {scope}
         {window}
         QUALIFY row_number() OVER (
             PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
@@ -621,6 +689,93 @@ def object_degrees(
     return df.set_index("action_object")["n"]
 
 
+def _curveball_trade(user_sets: dict, n_trades: int, rng) -> None:
+    """One curveball pass (Strona 2014), in place.
+
+    Two accounts swap the objects only one of them holds, keeping the shared
+    ones fixed. Both the account degrees and the object degrees are invariant,
+    which is what makes it a null for "these two co-acted more than their
+    activity and the objects' popularity explain" rather than for "these two
+    were active at all"."""
+    keys = list(user_sets)
+    for _ in range(n_trades):
+        a, b = rng.choice(len(keys), 2, replace=False)
+        sa, sb = user_sets[keys[a]], user_sets[keys[b]]
+        only_a, only_b = list(sa - sb), list(sb - sa)
+        if not only_a or not only_b:
+            continue
+        pool = only_a + only_b
+        rng.shuffle(pool)
+        take_a = set(pool[: len(only_a)])
+        user_sets[keys[a]] = (sa & sb) | take_a
+        user_sets[keys[b]] = (sa & sb) | (set(pool) - take_a)
+
+
+def shuffle_traces(
+    con: duckdb.DuckDBPyConnection,
+    trace_table: str,
+    seed: int = 0,
+    burn_in: int = 5,
+    out_table: str | None = None,
+) -> str:
+    """A degree-preserving randomisation of a trace table.
+
+    `validate_curveball` uses this null at the EDGE level. This exposes it as a
+    trace table so the whole pipeline - projection, `validate_svn`, Leiden - can
+    be run end to end on data with every real co-action destroyed but both
+    degree sequences intact. Any cluster that survives that is a false positive
+    by construction, which is the only way to get a false-positive rate for a
+    corpus with no labels.
+
+    It is also the honest replacement for mixing in a sample of organic
+    accounts: sampling k of n accounts keeps only ~(k/n)^2 of the pairs, so a
+    sampled negative class reports ~0 false positives whatever the detector
+    does.
+
+    `created_at` is redealt within each author, so per-account timing profiles
+    survive. The default channels project untimed anyway - timestamps reach only
+    `min_gap`, which gates nothing at validation."""
+    tr = con.sql(
+        f"SELECT DISTINCT author_id, action_object FROM {trace_table}"
+    ).df()
+    stamps = con.sql(
+        f"SELECT author_id, created_at FROM {trace_table}"
+    ).df()
+    if tr.empty:
+        raise ValueError(f"{trace_table} has no traces to shuffle")
+
+    sets = {a: set(g) for a, g in tr.groupby("author_id")["action_object"]}
+    rng = np.random.default_rng(seed)
+    _curveball_trade(sets, burn_in * len(sets), rng)
+
+    # Built as three parallel lists and assembled once. Assigning timestamps
+    # into an existing column instead trips pandas' dtype coercion the moment
+    # the source is tz-aware.
+    by_author = {a: list(g) for a, g in stamps.groupby("author_id")["created_at"]}
+    fallback = stamps["created_at"].iloc[0] if len(stamps) else pd.Timestamp.utcnow()
+    authors_col, objects_col, times_col = [], [], []
+    for a, objs in sets.items():
+        objs = list(objs)
+        pool = by_author.get(a) or [fallback]
+        idx = rng.integers(0, len(pool), len(objs))
+        authors_col.extend([a] * len(objs))
+        objects_col.extend(objs)
+        times_col.extend(pool[i] for i in idx)
+    shuffled = pd.DataFrame({
+        "author_id": authors_col,
+        "action_object": objects_col,
+        "created_at": pd.Series(times_col, dtype=stamps["created_at"].dtype),
+    })
+
+    name = out_table or f"{trace_table}_shuffled"
+    con.register("_shuf_df", shuffled)
+    try:
+        con.execute(f"CREATE OR REPLACE TEMP TABLE {name} AS SELECT * FROM _shuf_df")
+    finally:
+        con.unregister("_shuf_df")
+    return name
+
+
 def validate_curveball(
     con: duckdb.DuckDBPyConnection,
     channel: str,
@@ -670,18 +825,7 @@ def validate_curveball(
     rng = np.random.default_rng(seed)
 
     def trade(user_sets: dict, n_trades: int) -> None:
-        keys = list(user_sets)
-        for _ in range(n_trades):
-            a, b = rng.choice(len(keys), 2, replace=False)
-            sa, sb = user_sets[keys[a]], user_sets[keys[b]]
-            only_a, only_b = list(sa - sb), list(sb - sa)
-            if not only_a or not only_b:
-                continue
-            pool = only_a + only_b
-            rng.shuffle(pool)
-            take_a = set(pool[: len(only_a)])
-            user_sets[keys[a]] = (sa & sb) | take_a
-            user_sets[keys[b]] = (sa & sb) | (set(pool) - take_a)
+        _curveball_trade(user_sets, n_trades, rng)
 
     work = {a: set(s) for a, s in sets.items()}
     trade(work, 5 * len(authors))  # burn-in
@@ -1366,10 +1510,38 @@ def _burstiness_days(created: pd.Series, share: float = 0.5) -> float:
     return float((t[k - 1 :] - t[: len(t) - k + 1]).min())
 
 
-def _member_posts(con, platform: str) -> str:
-    con.execute(
-        f"CREATE OR REPLACE TEMP TABLE _member_posts AS {_latest_posts_cte(platform)}"
-    )
+def _member_posts(con, platform: str, authors: list[str] | None = None) -> str:
+    """Latest posts, optionally restricted to a set of authors.
+
+    The filter is opt-in rather than the default because the callers want
+    opposite things. `scorecards` and `attach_hate_columns` only ever read posts
+    belonging to cluster members - ~1,200 accounts against a corpus of ~200k
+    authors - so the wide table was pure waste for them. `internal_validation`
+    compares clusters against RANDOM account groups drawn from the whole
+    authenticity universe, so it genuinely needs it.
+
+    The saving is in memory and rows returned, NOT in wall time: the scan still
+    fetches the whole posts prefix from R2, which is what a scorecard pass
+    actually spends its time on (measured 2026-08-14).
+
+    Note the TEMP TABLE name is fixed, so a nested unscoped call would widen an
+    outer scoped one. Today that cannot bite - `attach_hate_columns` runs after
+    `scorecards` has already materialised its reads to pandas - but a new caller
+    must not assume the table it asked for is still the table it gets.
+    """
+    if authors is None:
+        con.execute(
+            f"CREATE OR REPLACE TEMP TABLE _member_posts AS {_latest_posts_cte(platform)}"
+        )
+        return "_member_posts"
+    con.register("_scope_authors", pd.DataFrame({"author_id": list(authors)}))
+    try:
+        con.execute(
+            "CREATE OR REPLACE TEMP TABLE _member_posts AS "
+            + _latest_posts_cte(platform, author_scope="_scope_authors")
+        )
+    finally:
+        con.unregister("_scope_authors")
     return "_member_posts"
 
 
@@ -1396,7 +1568,12 @@ def scorecards(
     p90 = auth["suspicion"].quantile(0.9)
     rng = np.random.default_rng(seed)
 
-    lp = _member_posts(con, platform)
+    # Scoped to cluster members. Everything below is filtered by
+    # `author_id in ids` anyway, and the embedding read in particular used to
+    # pull the ENTIRE matrix - 505k vectors x 768 dims - into pandas in order to
+    # use at most `max_posts_per_cluster` rows per cluster.
+    member_ids = members["author_id"].astype(str).unique().tolist()
+    lp = _member_posts(con, platform, authors=member_ids)
     posts = con.sql(
         f"""
         SELECT author_id, platform_post_id,
@@ -1404,16 +1581,26 @@ def scorecards(
         FROM {lp}
         """
     ).df()
+    # The SEMI JOIN sits INSIDE the subquery, ahead of the QUALIFY, and that
+    # placement is the whole point. QUALIFY is applied after the window, so
+    # deduplicating first and pruning afterwards makes DuckDB sort all ~505k
+    # embeddings - 768 floats each, ~1.5 GiB - before anything can be discarded.
+    # Measured on tf1: OutOfMemoryException at the 1.5 GiB coordination limit,
+    # and an R2 read timeout over a slower link. Pruning first leaves the window
+    # running over member posts only.
     emb = con.sql(
         f"""
-        SELECT platform_post_id, embedding
-        FROM {embeddings_source(platform, _slug(model))}
-        QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id ORDER BY embedded_at DESC
-        ) = 1
+        SELECT e.platform_post_id, e.embedding, p.author_id
+        FROM (
+            SELECT * FROM {embeddings_source(platform, _slug(model))}
+            SEMI JOIN {lp} USING (platform_post_id)
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY embedded_at DESC
+            ) = 1
+        ) e
+        JOIN {lp} p USING (platform_post_id)
         """
     ).df()
-    emb = emb.merge(posts[["platform_post_id", "author_id"]], on="platform_post_id")
 
     corroborated = corroborate(layers) if layers else None
     topic_by_post = (
@@ -1476,9 +1663,47 @@ def scorecards(
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
+    # Before attach_*: the index is a within-run percentile blend over
+    # INAUTHENTICITY_WEIGHTS, and self-amplification is deliberately NOT in that
+    # dict. Adding a component silently reweights every existing one and moves
+    # every ranking, so this ships as a column to watch across runs first.
     df = _inauthenticity_index(df)
+    df = attach_self_amplification(con, members, df, platform=platform, seed=seed)
     df = attach_hate_columns(con, members, df, platform=platform)
     return df.sort_values("inauthenticity_index", ascending=False, ignore_index=True)
+
+
+def attach_self_amplification(
+    con: duckdb.DuckDBPyConnection,
+    members: pd.DataFrame,
+    scorecard: pd.DataFrame,
+    platform: str = "x",
+    n_perm: int = 1000,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Merge `self_amplification*` onto a scorecard, nulls on failure.
+
+    Same contract as `attach_hate_columns`: a cluster below `min_size`, or one
+    whose members never amplified anything, gets NaN rather than 0. Those are
+    different claims - 0 means "measured, points outward", NaN means "not
+    measurable" - and `components_measured` exists because conflating them is
+    how a thinly-measured cluster comes to look clean."""
+    out = scorecard.copy()
+    cols = ["self_amplification", "self_amplification_null_mean",
+            "self_amplification_z", "p_self_amplification"]
+    try:
+        sa = self_amplification(
+            con, members, platform=platform, n_perm=n_perm, seed=seed
+        )
+    except Exception:
+        log.exception("self-amplification failed; leaving the columns null")
+        sa = pd.DataFrame(columns=["cluster_id", *cols])
+    keep = ["cluster_id", *[c for c in cols if c in sa.columns]]
+    out = out.merge(sa[keep], on="cluster_id", how="left")
+    for c in cols:
+        if c not in out.columns:
+            out[c] = np.nan
+    return out
 
 
 def _inauthenticity_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -1565,11 +1790,17 @@ def attach_hate_columns(
     try:
         con.register("_hate_members", members[["cluster_id", "author_id"]])
         try:
-            posts = _member_posts(con, platform)
+            posts = _member_posts(
+                con, platform, authors=members["author_id"].astype(str).unique().tolist()
+            )
             stats = con.sql(
                 f"""
                 WITH lh AS (
+                    -- Prune to member posts BEFORE the window, not after: QUALIFY
+                    -- runs post-window, so the other order sorts every scored row
+                    -- in the corpus to keep the few thousand belonging to members.
                     SELECT * FROM {hatespeech_source(platform)}
+                    SEMI JOIN {posts} USING (platform_post_id)
                     QUALIFY row_number() OVER (
                         PARTITION BY platform_post_id ORDER BY scored_at DESC
                     ) = 1
@@ -1717,14 +1948,253 @@ def attach_stable_cluster_ids(members: pd.DataFrame) -> pd.DataFrame:
     return out.merge(ids, left_on="cluster_id", right_index=True, how="left")
 
 
+CAMPAIGN_MIN_JACCARD = float(os.getenv("CAMPAIGN_MIN_JACCARD", "0.25"))
+CAMPAIGN_MIN_SHARED = int(os.getenv("CAMPAIGN_MIN_SHARED", "3"))
+
+
+def campaigns(
+    members: pd.DataFrame,
+    acts: pd.DataFrame,
+    min_jaccard: float = CAMPAIGN_MIN_JACCARD,
+    min_shared: int = CAMPAIGN_MIN_SHARED,
+) -> pd.DataFrame:
+    """Group clusters that push the same accounts into campaigns.
+
+    The reason this exists is a measured failure. Adjudicating confirmed
+    information operations 2026-08-15, a reader correctly called 4 of 6 - and
+    the 2 misses were the operation's PURE ENGAGEMENT-BAIT clusters, whose
+    content ("#NBSKatchup Am following the first 100 people to Retweet") is
+    genuinely indistinguishable from the reciprocal pods in our own corpus. They
+    are not judgeable on their own content, and no statistic recovers them
+    either, because an operation runs bait assets deliberately alongside its
+    political ones - cluster IO-0 carries Jumia giveaways AND
+    #MuhooziOurNextPresident in one group.
+
+    What DOES connect them is who they amplify. So clusters are linked when
+    their amplification-target sets overlap - Jaccard >= `min_jaccard` on at
+    least `min_shared` shared targets - and connected components of that graph
+    become campaigns. A bait cluster wired to a cluster with a political payload
+    inherits the payload's verdict, which is the correct reading: they are one
+    operation.
+
+    Both thresholds matter. Jaccard alone lets two tiny clusters that happen to
+    share one viral target merge; `min_shared` alone lets a huge cluster absorb
+    everything it brushes against. Returns (cluster_id, campaign_id,
+    campaign_size, n_shared_targets) - one row per cluster, always, so a cluster
+    linked to nothing is its own campaign rather than missing.
+    """
+    cols = ["cluster_id", "campaign_id", "campaign_size", "n_linked_clusters"]
+    if members.empty:
+        return pd.DataFrame(columns=cols)
+    ids = sorted(members["cluster_id"].unique())
+    if acts.empty:
+        return pd.DataFrame(
+            [{"cluster_id": c, "campaign_id": i, "campaign_size": 1,
+              "n_linked_clusters": 0} for i, c in enumerate(ids)],
+            columns=cols,
+        )
+
+    by_cluster = (
+        acts.merge(
+            members[["cluster_id", "author_id"]].drop_duplicates(),
+            left_on="actor", right_on="author_id", how="inner",
+        )
+        .groupby("cluster_id")["object_author"]
+        .apply(set)
+        .to_dict()
+    )
+
+    parent = {c: c for c in ids}
+
+    def find(c):
+        while parent[c] != c:
+            parent[c] = parent[parent[c]]
+            c = parent[c]
+        return c
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    linked = {c: 0 for c in ids}
+    for i, a in enumerate(ids):
+        sa = by_cluster.get(a)
+        if not sa:
+            continue
+        for b in ids[i + 1:]:
+            sb = by_cluster.get(b)
+            if not sb:
+                continue
+            shared = len(sa & sb)
+            if shared < min_shared:
+                continue
+            if shared / len(sa | sb) < min_jaccard:
+                continue
+            union(a, b)
+            linked[a] += 1
+            linked[b] += 1
+
+    roots = {}
+    for c in ids:
+        roots.setdefault(find(c), len(roots))
+    campaign_of = {c: roots[find(c)] for c in ids}
+    sizes = pd.Series(list(campaign_of.values())).value_counts().to_dict()
+    return pd.DataFrame(
+        [
+            {"cluster_id": c, "campaign_id": campaign_of[c],
+             "campaign_size": int(sizes[campaign_of[c]]),
+             "n_linked_clusters": linked[c]}
+            for c in ids
+        ],
+        columns=cols,
+    )
+
+
+def inherit_verdicts(
+    verdicts: pd.DataFrame,
+    campaign_map: pd.DataFrame,
+    priority: tuple[str, ...] = (
+        "influence_operation", "political_campaign", "commercial_spam",
+        "news_amplification", "fandom_or_interest", "engagement_pod", "unclear",
+    ),
+) -> pd.DataFrame:
+    """Propagate the most serious verdict in a campaign to its whole campaign.
+
+    Directional on purpose: a bait cluster sitting in the same campaign as an
+    `influence_operation` becomes one, and never the reverse. That asymmetry is
+    the point - the bait assets are the part a reader cannot judge alone, so
+    they must inherit rather than dilute.
+
+    `inherited_from` records which cluster supplied the verdict, so a reader can
+    always see whether a call was made on a cluster's own evidence or on its
+    company. A verdict that cannot be traced back is not usable as evidence."""
+    if verdicts.empty or campaign_map.empty:
+        return verdicts
+    rank = {t: i for i, t in enumerate(priority)}
+    merged = verdicts.merge(campaign_map[["cluster_id", "campaign_id"]],
+                            on="cluster_id", how="left")
+    merged["_rank"] = merged["cluster_type"].map(rank).fillna(len(rank))
+    best = (
+        merged.sort_values("_rank")
+        .groupby("campaign_id", dropna=False)
+        .first()[["cluster_type", "cluster_id"]]
+        .rename(columns={"cluster_type": "_campaign_type",
+                         "cluster_id": "_source_cluster"})
+    )
+    out = merged.join(best, on="campaign_id")
+    promoted = out["_campaign_type"].map(rank).fillna(len(rank)) < out["_rank"]
+    out["inherited_from"] = out["_source_cluster"].where(promoted)
+    out["cluster_type"] = out["_campaign_type"].where(promoted, out["cluster_type"])
+    return out.drop(columns=["_rank", "_campaign_type", "_source_cluster"])
+
+
+def persist_verdicts(
+    con: duckdb.DuckDBPyConnection,
+    verdicts: pd.DataFrame,
+    members: pd.DataFrame,
+    platform: str = "x",
+    adjudicator: str | None = None,
+) -> str:
+    """Write per-cluster adjudications under `coordination/kind=verdicts`.
+
+    Its own kind, not columns on `kind=scorecards`: a scorecard is measured and
+    a verdict is JUDGED, by a model or a person, on a slower cadence. Keeping
+    them apart means a reader can always tell which is which, and a stale
+    verdict never masquerades as a fresh measurement.
+
+    `adjudicator` records WHO judged - model id, or a person. Without it a
+    series of verdicts cannot be compared across a prompt or model change, which
+    is the same mistake `code_version` on run_metrics exists to prevent."""
+    now = datetime.now(timezone.utc)
+    buf = verdicts.copy()
+    stable = (
+        attach_stable_cluster_ids(members[["cluster_id", "author_id"]])
+        [["cluster_id", "stable_cluster_id"]]
+        .drop_duplicates()
+    )
+    buf = buf.merge(stable, on="cluster_id", how="left")
+    buf["adjudicator"] = adjudicator
+    buf["adjudicated_at"] = now
+    buf["computed_at"] = now
+    key = (
+        f"coordination/platform={platform}/kind=verdicts"
+        f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
+    )
+    con.register("_verdict_buf", buf)
+    try:
+        con.execute(
+            f"COPY _verdict_buf TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)"
+        )
+    finally:
+        con.unregister("_verdict_buf")
+    return key
+
+
+def persist_scorecards(
+    con: duckdb.DuckDBPyConnection,
+    cards: pd.DataFrame,
+    members: pd.DataFrame,
+    platform: str = "x",
+) -> str:
+    """Write per-cluster triage scores as a Parquet run under
+    `coordination/kind=scorecards`.
+
+    Its OWN kind, not merged into `kind=clusters`: a scorecard is one row per
+    CLUSTER and a cluster row is one per MEMBER. Mixing those grains under one
+    prefix is how the `latest_*` readers came to return a 42x-inflated union, and
+    a reader cannot tell the two apart after the fact.
+
+    Until this existed the whole triage layer was unreachable from anything
+    automated - `scorecards` was called only from a docstring example and the
+    marimo notebook, so `inauthenticity_index`, `topic_entropy`, `near_dup_rate`
+    and `hate_index` were computed on a human's screen and then discarded. Those
+    are the signals that separate an engagement pod from an influence operation.
+    """
+    now = datetime.now(timezone.utc)
+    buf = cards.copy()
+    # Same content hash the cluster rows carry, so a scorecard can be followed
+    # across runs despite Leiden reissuing `cluster_id` every pass.
+    stable = (
+        attach_stable_cluster_ids(members[["cluster_id", "author_id"]])
+        [["cluster_id", "stable_cluster_id"]]
+        .drop_duplicates()
+    )
+    buf = buf.merge(stable, on="cluster_id", how="left")
+    buf["computed_at"] = now
+    key = (
+        f"coordination/platform={platform}/kind=scorecards"
+        f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
+    )
+    con.register("_score_buf", buf)
+    try:
+        con.execute(
+            f"COPY _score_buf TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)"
+        )
+    finally:
+        con.unregister("_score_buf")
+    return key
+
+
 def persist_clusters(
     con: duckdb.DuckDBPyConnection,
     members: pd.DataFrame,
     summary: pd.DataFrame,
     platform: str = "x",
+    kind: str = "clusters",
 ) -> str:
     """Write cluster membership (one row per member, cluster stats repeated) as
-    a Parquet run under the coordination/ prefix."""
+    a Parquet run under the coordination/ prefix.
+
+    `kind="triage_clusters"` writes the SAME shape to a separate prefix. That
+    separation is the whole point of the dual-resolution design: the collector's
+    targeting and the published cluster count read `kind=clusters` at
+    `DEFAULT_RESOLUTION` and must keep doing so, because changing that
+    mid-series is a methodology break in a number people compare over time.
+    The triage clustering exists to catch what the strict setting misses and
+    feeds adjudication only - never targeting, never the headline count."""
+    if kind not in ("clusters", "triage_clusters"):
+        raise ValueError(f"refusing to write cluster rows under kind={kind!r}")
     now = datetime.now(timezone.utc)
     # `name`/`label` are optional: `coordination_run` merges `cluster_names`
     # output in before calling this, but that returns empty when no member
@@ -1735,7 +2205,7 @@ def persist_clusters(
     buf = attach_stable_cluster_ids(buf)
     buf["computed_at"] = now
     key = (
-        f"coordination/platform={platform}/kind=clusters"
+        f"coordination/platform={platform}/kind={kind}"
         f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
     )
     con.register("_coord_buf", buf)
@@ -2176,4 +2646,186 @@ def internal_validation(
                 "p_homogeneity": p_hom,
             }
         )
+    return pd.DataFrame(rows).sort_values("cluster_id", ignore_index=True)
+
+
+def _amplification_acts(
+    con: duckdb.DuckDBPyConnection, platform: str = "x"
+) -> pd.DataFrame:
+    """Every retweet act in the window as (actor, author-of-the-thing-amplified).
+
+    The join to posts is what makes the act directional: `engagements` records
+    who amplified WHICH POST, and only the post row says whose post it was. Acts
+    whose object was never collected are dropped - their author is unknowable,
+    and counting them as external would bias every cluster towards looking less
+    self-referential than it is."""
+    return con.sql(
+        f"""
+        WITH lp AS ({_latest_posts_cte(platform)}),
+        acts AS (
+            SELECT DISTINCT e.platform_user_id AS actor, e.platform_post_id
+            FROM {engagements_source(platform)} e
+            WHERE e.kind = 'retweet'
+        )
+        SELECT a.actor, lp.author_id AS object_author
+        FROM acts a JOIN lp ON lp.platform_post_id = a.platform_post_id
+        WHERE lp.author_id IS NOT NULL AND a.actor IS NOT NULL
+        """
+    ).df()
+
+
+def self_amplification(
+    con: duckdb.DuckDBPyConnection,
+    members: pd.DataFrame,
+    platform: str = "x",
+    n_perm: int = 1000,
+    min_size: int = 3,
+    seed: int = 0,
+    acts: pd.DataFrame | None = None,
+    universe: str = "clustered",
+) -> pd.DataFrame:
+    """Reciprocity: what share of a cluster's amplification lands on its own
+    members, against a permutation null of random same-size account groups.
+
+    A POSITIVE structural test rather than a topic proxy: accounts that amplify
+    each other point their acts inward. Measured on the 2026-08-14 run, the
+    large corroborated clusters spent 22-51% of all their amplification on their
+    own members (101 actors / 30,165 acts at 40.1%; 82 actors / 13,323 acts at
+    50.9%).
+
+    It does NOT distinguish an engagement pod from an influence operation, which
+    is what it was introduced to do. Measured 2026-08-15 against 3,322 accounts
+    X attributed to information operations, confirmed operations self-amplify
+    MORE than our own corroborated clusters (median 0.132 vs 0.017, z 2.92 vs
+    0.37, Cohen's d +0.78; the largest IO cluster runs 65.5% internal against
+    24-53% for our largest pods). Read it as coordination INTENSITY, and do not
+    gate on it to drop "mere pods" - that would discard real operations first.
+    See analysis/investigations/2026-08-15-io-ground-truth/findings.md.
+
+    The same-size null removes the MECHANICAL size effect - a 3-account cluster
+    has almost nothing of its own to amplify, a 100-account one has plenty - and
+    it demonstrably does that: null means rise 0.0086 -> 0.0514 across the size
+    range (measured 2026-08-15).
+
+    It does NOT make the result size-independent, and that expectation was
+    wrong. Measured on the same run: corr(size, raw share) = +0.545,
+    corr(size, z) = +0.564. Removing the mechanical component leaves the
+    relationship essentially intact, which is evidence it is substantive rather
+    than artifactual - in this corpus the largest clusters ARE the reciprocal
+    pods (clusters of 77-99 accounts at 40-53% internal). Do not "fix" this by
+    dividing z by size; that would suppress the finding, not a bias.
+
+    `universe` selects who the null groups are drawn from, and it decides
+    whether the size correction works at all:
+
+    - `"clustered"` (default): accounts the clustering actually placed in a
+      cluster. This is the population the observed groups came from, so the
+      question becomes "more inward-facing than other COORDINATED accounts",
+      which is the comparison that separates a pod from an operation.
+    - `"amplifiers"`: every account with at least one act. Measured 2026-08-15
+      this is DEGENERATE here - 329,708 amplifiers against clusters of 3-99, so
+      a random group of any size self-amplifies ~0.2%, the null carries no size
+      information, and z tracks size through the standard error instead:
+      corr(size, z) = +0.740 against +0.545 for the uncorrected share, i.e.
+      worse than doing nothing. Kept only so that result stays reproducible.
+
+    Switching to `"clustered"` also makes the test stricter, as a fairer null
+    should: significant clusters at p < 0.05 fell from 73/150 to 31/150.
+
+    Convention (effect size, `(1 + count) / (1 + n)` p-value floor) is
+    `internal_validation`'s, deliberately - do not invent a second one."""
+    rng = np.random.default_rng(seed)
+    acts = _amplification_acts(con, platform) if acts is None else acts
+    cols = ["cluster_id", "size", "n_acts", "self_amplification",
+            "self_amplification_null_mean", "self_amplification_z",
+            "p_self_amplification"]
+    if acts.empty:
+        return pd.DataFrame(columns=cols)
+
+    # Integer codes so group membership is an array lookup rather than a hash
+    # set rebuilt per permutation.
+    codes, vocab = pd.factorize(
+        pd.concat([acts["actor"], acts["object_author"]], ignore_index=True)
+    )
+    n_acts = len(acts)
+    actor_code = codes[:n_acts]
+    object_code = codes[n_acts:]
+
+    order = np.argsort(actor_code, kind="stable")
+    actor_sorted, object_sorted = actor_code[order], object_code[order]
+    starts = np.searchsorted(actor_sorted, np.arange(len(vocab)), side="left")
+    ends = np.searchsorted(actor_sorted, np.arange(len(vocab)), side="right")
+    amplifiers = np.flatnonzero(ends > starts)
+
+    code_of = {a: i for i, a in enumerate(vocab)}
+    if universe == "clustered":
+        clustered = np.array(
+            sorted({code_of[a] for a in members["author_id"].astype(str) if a in code_of}),
+            dtype=np.int64,
+        )
+        # Fall back rather than crash: on a run where almost nothing clustered,
+        # a null drawn from a handful of accounts is worse than a wide one.
+        pool = clustered if len(clustered) > 50 else amplifiers
+    elif universe == "amplifiers":
+        pool = amplifiers
+    else:
+        raise ValueError(f"unknown universe {universe!r}")
+
+    # `mark` is stamped with a per-permutation generation instead of being
+    # cleared, so membership tests cost O(group) rather than O(universe).
+    mark = np.zeros(len(vocab), dtype=np.int64)
+    gen = 0
+
+    def internal_share(group: np.ndarray) -> tuple[float, int]:
+        nonlocal gen
+        gen += 1
+        mark[group] = gen
+        objs = [object_sorted[starts[a]:ends[a]] for a in group if ends[a] > starts[a]]
+        if not objs:
+            return float("nan"), 0
+        objs = np.concatenate(objs)
+        return float((mark[objs] == gen).mean()), int(len(objs))
+
+    # The null depends only on GROUP SIZE, and 158 clusters share ~15 distinct
+    # sizes, so caching by size turns 158k permutations into ~15k.
+    null_by_size: dict[int, np.ndarray] = {}
+
+    def null_for(size: int) -> np.ndarray:
+        if size not in null_by_size:
+            draws = np.empty(n_perm)
+            for i in range(n_perm):
+                draws[i] = internal_share(
+                    rng.choice(pool, min(size, len(pool)), replace=False)
+                )[0]
+            null_by_size[size] = draws
+        return null_by_size[size]
+
+    rows = []
+    for cid, grp in members.groupby("cluster_id"):
+        ids = grp["author_id"].astype(str).unique().tolist()
+        if len(ids) < min_size:
+            continue
+        group = np.array([code_of[a] for a in ids if a in code_of], dtype=np.int64)
+        if not len(group):
+            continue
+        obs, n = internal_share(group)
+        null = null_for(len(group))
+        ok = ~np.isnan(null)
+        rows.append(
+            {
+                "cluster_id": cid,
+                "size": len(ids),
+                "n_acts": n,
+                "self_amplification": obs,
+                "self_amplification_null_mean": float(null[ok].mean()) if ok.any() else np.nan,
+                "self_amplification_z": (obs - null[ok].mean()) / max(null[ok].std(), 1e-9)
+                if ok.any() and not np.isnan(obs)
+                else np.nan,
+                "p_self_amplification": (1 + (null[ok] >= obs).sum()) / (1 + ok.sum())
+                if ok.any() and not np.isnan(obs)
+                else np.nan,
+            }
+        )
+    if not rows:
+        return pd.DataFrame(columns=cols)
     return pd.DataFrame(rows).sort_values("cluster_id", ignore_index=True)

@@ -648,6 +648,10 @@ def build_coordination(con: duckdb.DuckDBPyConnection, platform: str = "x") -> d
 
     clusters = _cluster_rows(members)
     agg = _multiplex(edges)
+    triage = _triage_by_cluster(con, platform)
+    verdicts = _verdicts_by_cluster(con, platform)
+    for cid, v in verdicts.items():
+        triage.setdefault(cid, {}).update(v)
     corr_ids = set(clusters.loc[clusters["corr"], "cluster_id"])
     handles = db.curated_handles(platform=platform)
 
@@ -674,7 +678,7 @@ def build_coordination(con: duckdb.DuckDBPyConnection, platform: str = "x") -> d
         "run": run,
         "headline": headline,
         "corroborated": {
-            "clusters": _annotate(clusters[clusters["corr"]], None, handles),
+            "clusters": _annotate(clusters[clusters["corr"]], None, handles, triage),
             "evidence": _corroboration_evidence(con, members, metrics, platform),
         },
         "candidates": {
@@ -725,7 +729,7 @@ def build_coordination(con: duckdb.DuckDBPyConnection, platform: str = "x") -> d
             {"s": node_idx[s], "t": node_idx[d], "w": round(float(w), 4), "m": int(nc)}
             for s, d, w, nc in zip(e["src"], e["dst"], e["weight"], e["n_channels"])
         ],
-        "clusters": _annotate(drawable, cid_idx, handles),
+        "clusters": _annotate(drawable, cid_idx, handles, triage),
     }
     out["headline"] |= {
         "shown_accounts": len(node_idx),
@@ -750,14 +754,99 @@ def _safe_name(name, handles: set[str]) -> str | None:
     return name
 
 
-def _annotate(clusters: pd.DataFrame, cid_idx: dict | None, handles: set[str]) -> list[dict]:
+# Triage columns lifted from `kind=scorecards` onto the cluster cards. All are
+# per-CLUSTER aggregates - no handle, author id or post text among them - which
+# is what lets them cross into a public payload at all.
+#
+# `hate_index` stays listed beside `inauthenticity_index` rather than folded
+# into it: coordination and hate are different claims, and a reader who cannot
+# see which one fired cannot act on either.
+TRIAGE_COLUMNS = (
+    "inauthenticity_index",
+    "near_dup_rate",
+    "self_amplification",
+    "self_amplification_z",
+    "hate_index",
+    "topic_entropy",
+)
+
+
+def _triage_by_cluster(con: duckdb.DuckDBPyConnection, platform: str) -> dict:
+    """Per-cluster triage scores of the newest scorecard run, keyed by cluster_id.
+
+    Absent by design on a fresh bucket and after any run where scoring failed -
+    scorecards ride a slower timer than the coordination pass that produces the
+    clusters, so a lag of up to one scoring interval is normal, and an empty
+    prefix raises rather than returning no rows."""
+    try:
+        if not db.prefix_readable(con, db.coordination_source("scorecards", platform)):
+            return {}
+        cards = db.coordination_run_latest(con, "scorecards", platform).df()
+    except Exception:
+        # Never fatal. Triage scores decorate the cluster cards; the counts and
+        # the network are the payload, and losing the decoration must not cost
+        # the site an hourly build.
+        log.exception("dashboard: scorecards unreadable; cluster cards stay bare")
+        return {}
+    if cards.empty:
+        return {}
+    cols = [c for c in TRIAGE_COLUMNS if c in cards.columns]
+    return {
+        int(r["cluster_id"]): {
+            c: round(float(r[c]), 3) for c in cols if pd.notna(r[c])
+        }
+        for _, r in cards.iterrows()
+    }
+
+
+# What a reader JUDGED the coordination to be. `rationale` is included and the
+# free-text `what_would_change_this` is not: the first is the reason a reader
+# needs to weigh the call, the second is an internal note, and every extra free
+# text field is another way for a handle or a quoted post to reach a public
+# payload. `tests/test_dashboard.py` walks the built payload for exactly that.
+VERDICT_COLUMNS = ("cluster_type", "kenya_relevant", "confidence", "rationale",
+                   "adjudicator")
+
+
+def _verdicts_by_cluster(con: duckdb.DuckDBPyConnection, platform: str) -> dict:
+    """Adjudications of the newest verdict run, keyed by cluster_id.
+
+    Absent until layer three runs at all, and absent for any cluster the queue
+    did not reach - adjudication is capped, so most clusters legitimately have
+    no verdict. A missing verdict must read as "not yet judged", never as
+    "judged and found harmless"."""
+    try:
+        if not db.prefix_readable(con, db.coordination_source("verdicts", platform)):
+            return {}
+        rows = db.coordination_run_latest(con, "verdicts", platform).df()
+    except Exception:
+        log.exception("dashboard: verdicts unreadable; cluster cards stay unjudged")
+        return {}
+    if rows.empty:
+        return {}
+    cols = [c for c in VERDICT_COLUMNS if c in rows.columns]
+    return {
+        int(r["cluster_id"]): {
+            f"verdict_{c}" if c != "cluster_type" else "verdict": r[c]
+            for c in cols if pd.notna(r[c])
+        }
+        for _, r in rows.iterrows()
+    }
+
+
+def _annotate(
+    clusters: pd.DataFrame,
+    cid_idx: dict | None,
+    handles: set[str],
+    triage: dict | None = None,
+) -> list[dict]:
     """Cluster cards. `cid_idx` remaps to the opaque drawing index when the
     cluster is in the network; without it the raw per-run cluster_id is used,
     which is fine because it identifies nothing outside this run."""
     out = []
     for _, r in clusters.iterrows():
         cid = r["cluster_id"]
-        out.append({
+        card = {
             "id": cid_idx[cid] if cid_idx is not None else int(cid),
             "size": int(_f(r, "size")),
             "n_channels": int(_f(r, "n_channels")),
@@ -765,7 +854,11 @@ def _annotate(clusters: pd.DataFrame, cid_idx: dict | None, handles: set[str]) -
             "internal_edge_share": round(_f(r, "internal_edge_share"), 3),
             "name": _safe_name(r.get("name"), handles),
             "corr": bool(r.get("corr", False)),
-        })
+        }
+        # Merged rather than defaulted to 0: a missing score means the cluster
+        # was not measured, which must not read as "measured and clean".
+        card |= (triage or {}).get(int(cid), {})
+        out.append(card)
     return out
 
 

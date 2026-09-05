@@ -50,11 +50,23 @@ def con(monkeypatch):
              "weight": 6, "computed_at": RUN_2},
         ]
     )
+    # One row per CLUSTER, against the members frame's one row per MEMBER. The
+    # two grains are why scorecards get their own kind rather than extra columns
+    # on kind=clusters.
+    cards = pd.DataFrame(
+        [
+            {"cluster_id": 0, "size": 3, "inauthenticity_index": 0.4,
+             "topic_entropy": 2.1, "computed_at": RUN_1},
+            {"cluster_id": 7, "size": 4, "inauthenticity_index": 0.9,
+             "topic_entropy": 0.3, "computed_at": RUN_2},
+        ]
+    )
     c.register("_members", members)
     c.register("_edges", edges)
+    c.register("_cards", cards)
 
     def fake_source(kind="edges", platform="*", channel="*", method="*"):
-        return "_members" if kind == "clusters" else "_edges"
+        return {"clusters": "_members", "scorecards": "_cards"}.get(kind, "_edges")
 
     monkeypatch.setattr(db, "coordination_source", fake_source)
     return c
@@ -66,6 +78,32 @@ def test_run_latest_returns_exactly_one_run(con):
     assert got["computed_at"].nunique() == 1
     assert set(got["author_id"]) == {"a", "b", "c", "d"}
     assert set(got["cluster_id"]) == {7}
+
+
+def test_run_latest_scorecards_returns_one_row_per_cluster_of_the_newest_run(con):
+    got = db.coordination_run_latest(con, "scorecards").df()
+
+    assert got["computed_at"].nunique() == 1
+    assert len(got) == got["cluster_id"].nunique() == 1
+    assert set(got["cluster_id"]) == {7}
+    assert got["inauthenticity_index"].notna().all()
+
+
+def test_scorecards_are_not_partitioned_by_channel(con):
+    """`kind=edges` ranks per (channel, method) because each partition carries
+    its own computed_at. Scorecards are written once per run, so partitioning
+    would be a no-op at best and would resurrect an old run if the columns were
+    ever absent."""
+    assert "channel" not in db.coordination_run_latest(con, "scorecards").df().columns
+
+
+def test_scorecards_have_their_own_prefix(monkeypatch):
+    """Sharing kind=clusters would union a per-cluster grain with a per-member
+    one, which is the 42x inflation that motivated coordination_run_latest."""
+    src = db.coordination_source("scorecards", platform="x")
+
+    assert "kind=scorecards" in src
+    assert "kind=clusters" not in src
 
 
 def test_sticky_helper_unions_every_run(con):

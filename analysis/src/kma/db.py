@@ -21,38 +21,17 @@ load_dotenv(MONOREPO_ROOT / ".env")
 BUCKET = os.getenv("R2_BUCKET", "kenya-monitor-2027")
 
 
-R2_CREDENTIAL_VARS = ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ACCOUNT_ID")
-
-
-def _r2_credentials() -> list[str]:
-    missing = [v for v in R2_CREDENTIAL_VARS if not os.getenv(v)]
-    if missing:
-        raise RuntimeError(
-            f"Missing R2 credentials: {', '.join(missing)}. Expected them in "
-            f"{MONOREPO_ROOT / '.env'} (copy .env.example and fill in the R2 "
-            "S3 credentials) or in the environment."
-        )
-    return [os.environ[v] for v in R2_CREDENTIAL_VARS]
-
-
-# DuckDB defaults to a 30s per-request HTTP timeout. The embeddings backfill
-# `kenya_purge_20260716T184314Z.parquet` is a single 298 MB object, which needs
-# a sustained 10 MB/s to land inside that; an idle laptop measures 30-35 MB/s,
-# so any link contention pushes a whole-corpus read over the edge. 300s holds
-# the read open down to 1 MB/s.
-HTTP_TIMEOUT_SECONDS = 300
-HTTP_RETRIES = 5
-
-
 def connect() -> duckdb.DuckDBPyConnection:
     """A DuckDB connection with httpfs loaded and an R2 secret configured."""
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
-    con.execute(f"SET http_timeout={HTTP_TIMEOUT_SECONDS}")
-    con.execute(f"SET http_retries={HTTP_RETRIES}")
     con.execute(
         "CREATE OR REPLACE SECRET r2 (TYPE r2, KEY_ID ?, SECRET ?, ACCOUNT_ID ?)",
-        _r2_credentials(),
+        [
+            os.environ["R2_ACCESS_KEY_ID"],
+            os.environ["R2_SECRET_ACCESS_KEY"],
+            os.environ["R2_ACCOUNT_ID"],
+        ],
     )
     return con
 
@@ -393,23 +372,6 @@ def latest_embeddings(con: duckdb.DuckDBPyConnection, platform: str = "*", model
     )
 
 
-def topics_source(platform: str = "*", model: str = "*") -> str:
-    glob = f"r2://{BUCKET}/topics/platform={platform}/model={model}/dt=*/run=*.parquet"
-    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
-
-
-def latest_topics(con: duckdb.DuckDBPyConnection, platform: str = "*", model: str = "*"):
-    """One topic assignment per post (latest run), for a given model."""
-    return con.sql(
-        f"""
-        SELECT * FROM {topics_source(platform, model)}
-        QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id ORDER BY assigned_at DESC
-        ) = 1
-        """
-    )
-
-
 def labels_source(platform: str = "*") -> str:
     glob = f"r2://{BUCKET}/labels/platform={platform}/dt=*/run=*.parquet"
     return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
@@ -524,6 +486,36 @@ def coordination_source(
         )
     elif kind == "clusters":
         glob = f"r2://{BUCKET}/coordination/platform={platform}/kind=clusters/dt=*/run=*.parquet"
+    elif kind == "scorecards":
+        # One row per CLUSTER (clusters are one row per MEMBER) - the triage
+        # layer: inauthenticity_index, topic_entropy, near_dup_rate, hate_index.
+        glob = (
+            f"r2://{BUCKET}/coordination/platform={platform}"
+            f"/kind=scorecards/dt=*/run=*.parquet"
+        )
+    elif kind == "triage_clusters":
+        # The SAME shape as kind=clusters, from the same validated edges, at a
+        # lower Leiden resolution. Deliberately a separate prefix so the
+        # published cluster count and the collector's targeting cannot pick it
+        # up: measured 2026-08-15, resolution 0.05 -> 0.005 takes the live corpus
+        # from 154 clusters to 852, which as a headline would be a methodology
+        # break rather than a finding. Recall against confirmed operations rises
+        # 18.6% -> ~40% over the same move, with zero null yield, which is why
+        # it is worth computing at all.
+        glob = (
+            f"r2://{BUCKET}/coordination/platform={platform}"
+            f"/kind=triage_clusters/dt=*/run=*.parquet"
+        )
+    elif kind == "verdicts":
+        # One row per adjudicated cluster: what a reader judged the coordination
+        # to BE. Its own kind rather than columns on scorecards because it has a
+        # different provenance (a model or a person, not a computation) and a
+        # different cadence, and conflating the two would let a judgement look
+        # like a measurement.
+        glob = (
+            f"r2://{BUCKET}/coordination/platform={platform}"
+            f"/kind=verdicts/dt=*/run=*.parquet"
+        )
     elif kind == "run_metrics":
         glob = (
             f"r2://{BUCKET}/coordination/platform={platform}"

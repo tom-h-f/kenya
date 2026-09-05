@@ -288,9 +288,24 @@ def glossary_md() -> str:
     )
 
 
-def _latest_posts_cte(platform: str) -> str:
+def _latest_posts_cte(platform: str, lookback_days: int | None = None) -> str:
+    """Deduplicated posts, optionally pruned to recent `dt` partitions.
+
+    `lookback_days` is opt-in because only some callers have a time window.
+    Pass it wherever the query already filters `created_at > now() - N DAY`: the
+    floor is lossless there (`dt` is the date the batch was WRITTEN, and the
+    write follows collection which follows creation, so an in-window row is
+    never in an older partition) and it skips files rather than filtering rows.
+    Do NOT pass it to the replier lookup, which walks whole conversations and
+    has no window - a conversation can be older than the story it belongs to."""
+    dt_floor = (
+        f"WHERE dt >= current_date - INTERVAL {int(lookback_days) + 1} DAY"
+        if lookback_days and lookback_days > 0
+        else ""
+    )
     return f"""
         SELECT * FROM {posts_source(platform)}
+        {dt_floor}
         QUALIFY row_number() OVER (
             PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
         ) = 1
@@ -429,7 +444,7 @@ def candidate_stories(
     df = con.sql(
         f"""
         WITH e AS ({_latest_embeddings_cte(platform, model)}),
-             lp AS ({_latest_posts_cte(platform)})
+             lp AS ({_latest_posts_cte(platform, days)})
         SELECT lp.platform_post_id, lp.author_id, lp.author_handle, lp.text,
                lp.created_at, lp.is_repost, lp.hashtags, lp.conversation_id,
                e.embedding
@@ -481,7 +496,7 @@ def _trusted_posts(
     return con.sql(
         f"""
         WITH e AS ({_latest_embeddings_cte(platform, model)}),
-             lp AS ({_latest_posts_cte(platform)})
+             lp AS ({_latest_posts_cte(platform, days)})
         SELECT lp.platform_post_id, lp.author_handle, lp.text, lp.created_at,
                e.embedding
         FROM e JOIN lp USING (platform_post_id)

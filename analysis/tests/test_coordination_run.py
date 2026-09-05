@@ -15,6 +15,8 @@ def stub(monkeypatch):
         "persist_clusters": 0,
         "build_layers": {},
         "persist_run_metrics": [],
+        "persist_scorecards": 0,
+        "scorecards": 0,
         "order": [],
     }
 
@@ -57,6 +59,17 @@ def stub(monkeypatch):
         calls["order"].append("metrics")
         return f"coordination/platform={platform}/kind=run_metrics"
 
+    def fake_scorecards(con, members, layers, platform="x", **kw):
+        calls["scorecards"] += 1
+        return pd.DataFrame([{"cluster_id": 0, "inauthenticity_index": 0.5}])
+
+    def fake_persist_scorecards(con, cards, members, platform="x"):
+        calls["persist_scorecards"] += 1
+        calls["order"].append("scorecards")
+        return f"coordination/platform={platform}/kind=scorecards"
+
+    monkeypatch.setattr(co, "scorecards", fake_scorecards)
+    monkeypatch.setattr(co, "persist_scorecards", fake_persist_scorecards)
     monkeypatch.setattr(co, "persist_run_metrics", fake_persist_run_metrics)
     monkeypatch.setattr(co, "build_layers", fake_build_layers)
     monkeypatch.setattr(co, "clusters", fake_clusters)
@@ -263,6 +276,62 @@ def test_a_metrics_write_failure_does_not_fail_the_run(stub, monkeypatch):
 
     assert out["metrics_key"] is None
     assert stub["persist_clusters"] == 1     # the real artifacts still landed
+
+
+def test_a_persist_run_does_not_score_by_default(stub):
+    """Measured 2026-08-14: scoring one run took 2,276s on an idle laptop, against
+    a 6-hourly timer on a contended 2-core host. `kma.scorecard_run` owns this in
+    production, so the detection pass must not pick it up by accident."""
+    out = cr.run(None, channels=["co_retweet"], persist=True)
+
+    assert stub["scorecards"] == 0
+    assert stub["persist_scorecards"] == 0
+    assert out["scorecards_key"] is None
+    assert stub["persist_clusters"] == 1
+
+
+def test_scorecards_are_written_after_the_artifacts_of_record(stub):
+    """Edges and clusters feed the collector's targeting; the triage scores feed
+    a dashboard. Order encodes which one a partial run should keep."""
+    cr.run(None, channels=["co_retweet"], persist=True, scorecards=True)
+
+    order = stub["order"]
+    assert order[-1] == "scorecards"
+    assert order.index("clusters") < order.index("scorecards")
+
+
+def test_a_scorecard_failure_does_not_lose_edges_or_clusters(stub, monkeypatch):
+    """The whole point of persisting scorecards was that they were being thrown
+    away - not a reason to start throwing the edges away too."""
+    def boom(*a, **k):
+        raise RuntimeError("embeddings unavailable")
+
+    monkeypatch.setattr(co, "scorecards", boom)
+
+    out = cr.run(None, channels=["co_retweet"], persist=True, scorecards=True)
+
+    assert out["scorecards_key"] is None
+    assert stub["persist_clusters"] == 1
+    assert stub["persist_edges"]
+    assert out["metrics_key"] is not None
+
+
+def test_empty_scorecards_are_not_persisted_as_a_run(stub, monkeypatch):
+    """An empty parquet under kind=scorecards would become the newest run and
+    make `coordination_run_latest` report zero scored clusters."""
+    monkeypatch.setattr(co, "scorecards", lambda *a, **k: pd.DataFrame())
+
+    out = cr.run(None, channels=["co_retweet"], persist=True, scorecards=True)
+
+    assert stub["persist_scorecards"] == 0
+    assert out["scorecards_key"] is None
+
+
+def test_dry_run_writes_no_scorecards(stub):
+    out = cr.run(None, channels=["co_retweet"], persist=False, scorecards=True)
+
+    assert stub["scorecards"] == 0
+    assert out["scorecards_key"] is None
 
 
 def test_dry_run_writes_no_metrics(stub):
