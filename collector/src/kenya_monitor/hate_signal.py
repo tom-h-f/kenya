@@ -31,7 +31,7 @@ from kenya_monitor.config import (
     SNOWBALL_BAND_MIN,
     SNOWBALL_REFRESH_HOURS,
 )
-from kenya_monitor.suspicion import _post_columns, _score_sql
+from kenya_monitor.suspicion import _post_columns, _struct, materialise
 
 log = logging.getLogger("kenya_monitor")
 
@@ -102,6 +102,15 @@ def _toxic_expr(cols: set[str]) -> str:
     return toxic
 
 
+def _toxic_cols(cols: set[str]) -> tuple[str, ...]:
+    """The hatespeech columns `_toxic_expr` can reference, in view order.
+
+    Only these are carried through the dedup below, so a widening of the scored
+    schema does not widen what the seed query holds in memory."""
+    optional = [c for c in ("coded_suspect", "in_kenya_scope") if c in cols]
+    return ("label", "hate_flag", *optional)
+
+
 def scores_are_stale(
     con: duckdb.DuckDBPyConnection, hatespeech_view: str, max_age_hours: int = SCORES_STALE_HOURS
 ) -> bool:
@@ -152,6 +161,8 @@ def _hate_account_sql(
     min_repeat_peers: int,
     min_brigades: int,
     has_quote: bool,
+    susp_table: str,
+    toxic_cols: tuple[str, ...] = ("label", "hate_flag"),
 ) -> str:
     """Rank accounts as hate-network seeds.
 
@@ -230,12 +241,22 @@ def _hate_account_sql(
             PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
         ) = 1
     ), lh AS (
-        SELECT * FROM {hatespeech_view}
-        QUALIFY row_number() OVER (
-            PARTITION BY platform_post_id ORDER BY scored_at DESC
-        ) = 1
+        -- Bounded by `lp`, then deduped by hash aggregate. The prefix cannot be
+        -- dt-pruned - hatespeech `dt` is a SCORING date, so a backfill lands the
+        -- whole history in recent partitions - and it is rewritten in full by
+        -- every rescore, so a corpus-wide window over it grows without limit.
+        -- Restricting to the posts already in the lookback window is what bounds
+        -- it, and every consumer below reads it through `lp` anyway.
+        SELECT platform_post_id,
+               arg_max({_struct(toxic_cols)}, scored_at) AS r
+        FROM {hatespeech_view}
+        WHERE platform_post_id IN (SELECT platform_post_id FROM lp)
+        GROUP BY platform_post_id
+    ), lhx AS (
+        SELECT platform_post_id, {", ".join(f"r.{c} AS {c}" for c in toxic_cols)}
+        FROM lh
     ), flag AS (
-        SELECT h.platform_post_id, {toxic} AS toxic FROM lh h
+        SELECT h.platform_post_id, {toxic} AS toxic FROM lhx h
     ), recent AS (
         SELECT lp.*, COALESCE(f.toxic, FALSE) AS toxic
         FROM lp LEFT JOIN flag f USING (platform_post_id)
@@ -270,12 +291,18 @@ def _hate_account_sql(
         FROM toxic_replies WHERE conversation_id IN (SELECT conversation_id FROM brigades)
         GROUP BY author_id
     ), susp AS (
-        SELECT * FROM ({_score_sql(authors_view, posts_view, has_quote)})
+        -- Read from the table `suspicion.materialise` already built, not from a
+        -- nested copy of that query: inlining it here is what let DuckDB fuse
+        -- the corpus-wide aggregates back into one pipeline and exceed the cap.
+        SELECT * FROM {susp_table}
     ), la AS (
-        SELECT * FROM {authors_view}
-        QUALIFY row_number() OVER (
-            PARTITION BY platform, platform_user_id ORDER BY collected_at DESC
-        ) = 1
+        -- Only authors with posts in the window can reach `metrics` (it joins
+        -- `acct`, built from `recent`), so restricting here changes no result -
+        -- it stops the dedup from carrying the other ~900k accounts.
+        SELECT platform_user_id, arg_max(handle, collected_at) AS handle
+        FROM {authors_view}
+        WHERE platform_user_id IN (SELECT author_id FROM acct)
+        GROUP BY platform, platform_user_id
     ), metrics AS (
         SELECT
             la.handle,
@@ -344,6 +371,11 @@ def hate_accounts(
     """Accounts ranked as hate-network seeds, strongest first, with the evidence
     that put them there. Returns [] when nothing has been scored yet.
 
+    Raises `duckdb.Error` if the ranking itself fails. It used to be caught here
+    and returned as [], which the caller could not tell apart from "nothing
+    qualified" - so an OOM read as an empty cohort and hate seeding looked like
+    a threshold problem for two weeks.
+
     Co-amplification is scoped to toxic objects and computed locally; see
     `_hate_account_sql` for why persisted coordination edges are not used."""
     try:
@@ -351,19 +383,17 @@ def hate_accounts(
     except duckdb.Error:
         log.info("hate_signal: no hatespeech scores available yet")
         return []
-    has_quote = "is_quote" in _post_columns(con, posts_view)
+    post_cols = _post_columns(con, posts_view)
     sql = _hate_account_sql(
         hatespeech_view, posts_view, authors_view, engagements_view,
         _toxic_expr(hate_cols), lookback_days, min_posts, min_toxic,
-        min_repeat_peers, min_brigades, has_quote,
+        min_repeat_peers, min_brigades, "is_quote" in post_cols,
+        materialise(con, authors_view, posts_view, lookback_days),
+        _toxic_cols(hate_cols),
     )
-    try:
-        rel = con.sql(f"SELECT * FROM ({sql}) ORDER BY hate_seed_score DESC LIMIT {int(n)}")
-        cols = rel.columns
-        rows = [dict(zip(cols, row)) for row in rel.fetchall()]
-    except duckdb.Error:
-        log.exception("hate_signal: seed query failed")
-        return []
+    rel = con.sql(f"SELECT * FROM ({sql}) ORDER BY hate_seed_score DESC LIMIT {int(n)}")
+    cols = rel.columns
+    rows = [dict(zip(cols, row)) for row in rel.fetchall()]
     if 0 < len(rows) < MIN_COHORT_FOR_RANK:
         # percent_rank over a handful of rows is not a ranking: it is 0 for a
         # single row and moves in 1/(n-1) steps. Report the evidence and say so

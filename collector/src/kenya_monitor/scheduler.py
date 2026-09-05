@@ -6,6 +6,8 @@ import random
 import time
 from datetime import datetime, timezone
 
+import duckdb
+
 from kenya_monitor import adaptive
 from kenya_monitor.accounts import active_count, metrics_cap, sync_accounts
 from kenya_monitor.collectors.x import MAX_AGE_DAYS, backfill_windows, build_api, recent_windows
@@ -238,10 +240,17 @@ def _hate_seed_handles(storage: Storage, n: int) -> list[str]:
     if hsig.scores_are_stale(storage.con, hate_view):
         log.warning("hate scores are stale or missing; falling back to suspicion ranking")
         return top_suspicious_handles(storage.con, authors_view, posts_view, n=n)
-    handles = hsig.top_hate_seeds(
-        storage.con, hate_view, posts_view, authors_view,
-        storage.engagements_view(platform="x"), n=n,
-    )
+    try:
+        handles = hsig.top_hate_seeds(
+            storage.con, hate_view, posts_view, authors_view,
+            storage.engagements_view(platform="x"), n=n,
+        )
+    except duckdb.Error:
+        # Distinct from the empty case below on purpose: a broken query and an
+        # empty cohort are different faults, and reporting the first as the
+        # second is what hid a two-week seeding outage.
+        log.exception("hate seed ranking failed; falling back to suspicion ranking")
+        return top_suspicious_handles(storage.con, authors_view, posts_view, n=n)
     if not handles:
         log.info("no accounts cleared the hate-seed floors; falling back to suspicion ranking")
         return top_suspicious_handles(storage.con, authors_view, posts_view, n=n)

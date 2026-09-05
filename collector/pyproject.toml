@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "twscrape>=0.13",
+    "twscrape>=0.20.1",
     "duckdb>=1.1",
     "pyarrow>=18",
     "typer>=0.15",
