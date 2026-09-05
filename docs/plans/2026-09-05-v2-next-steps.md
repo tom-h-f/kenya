@@ -241,34 +241,59 @@ credentials in any of them. Four things the next reader needs:
 sampling in torch - rather than by adding gensim, which would be a new top-level
 dependency with a history of scipy pins that break this environment.
 
-## A5. The reproduction gate
+## A5. The reproduction gate - RUN 2026-09-05, 5/6 PASS
 
-**Validate small first.** Egypt & UAE only: 240 drivers, 370 controls, 1.9M
-tweets. The smallest campaign and the cheapest way to be wrong.
+**Decided: gate against the IOHunter benchmark**, not the WWW 2024 datasets.
+The IOHunter release (Minici, Luceri, Fabbri, Ferrara, AAAI 2025, CC-BY-4.0,
+zenodo.org/records/13357621) ships per-country pickles containing the five trace
+networks (`coRT`, `coURL`, `hashSeq`, `fastRT`, `tweetSim`) at a text-similarity
+threshold of 0.7, the fused `graph`, driver/control `labels`, and five
+train/val/test `splits`.
 
-**Deliverable.** A benchmark report per campaign: AUC, F1, precision, recall for
-each siloed network and for the fused network, unsupervised and supervised.
+**These are NOT the WWW 2024 datasets** and the WWW acceptance numbers do not
+apply: this release has 533 positives for Venezuela against Table 1's 33 drivers,
+and 275 for Russia against 3,487. Same countries, same construction, different
+inclusion rules. Targets are IOHunter Table 2, Macro-F1 over five seeds.
 
-**Acceptance, stated before the run, not after:**
+**What this gate tests, and what it does not.** The traces arrive pre-built, so
+it exercises our fusion and detection against a known answer and says nothing
+about our trace construction. Two separate claims; do not merge them. Trace
+construction is still untested and needs the raw archive.
 
-- Fused unsupervised: AUC ~0.83, F1 ~0.76.
-- Fused supervised: AUC ~0.94, F1 ~0.82, precision ~0.96.
-- Node pruning beats edge filtering on precision by roughly +0.42 at comparable
-  recall.
-- Per-trace optimized AUCs land near the paper's Table 2: fast retweet 0.62,
-  co-retweet 0.69, co-URL 0.72, hashtag sequence 0.68, text similarity 0.52.
-- Tolerance is agreed and written down before results are seen.
+**Result** (`uv run kma-iohunter-gate --data-dir <unpacked>/data/processed`):
 
-**On failure.** A missed gate means we copied it wrong, not that the method is
-wrong. Debug in this order: control-set provenance, entity extraction, TF-IDF
-normalisation, then fusion. Text similarity is the one trace where the encoder
-and our code are confounded by the Q2 decision, so judge the gate on the fused
-result and the other four; treat TS in isolation as indicative only.
+| country | nodes | edges | positives | ours | target | delta | within 2 SD |
+|---|---|---|---|---|---|---|---|
+| UAE | 9,391 | 2,118,833 | 3,349 | 84.64 | 84.66 | -0.02 | yes |
+| cuba | 20,247 | 4,737,799 | 461 | 57.92 | 57.92 | -0.00 | yes |
+| russia | 716 | 10,431 | 275 | 87.83 | 87.65 | +0.18 | yes |
+| venezuela | 5,021 | 56,741 | 533 | 95.05 | 95.05 | 0.00 | yes |
+| iran | 14,486 | 394,447 | 4,659 | 71.43 | 60.83 | **+10.60** | **no** |
+| china | 23,028 | 411,311 | 768 | 63.67 | 63.66 | +0.01 | yes |
 
-**Then scale** to Cuba, Iran, Russia, Venezuela, China, changing only the scale
-parameter.
+Five of six reproduce, four of them to within 0.2 Macro-F1 points. The mean is
+76.76 against a target of 74.96.
 
-**Runs on.** Modal, `--spawn`, never a blocking `.remote()`.
+**The Iran anomaly, unresolved.** We score 10.6 points ABOVE the published
+number. Being better than the reference is a divergence, not a success, and it
+is not explained by: the rewiring seed (identical across five seeds), the
+eigenvector convergence settings (identical at max_iter 50/100/1000 and tol
+1e-6/1e-8), or the isolated-node definition (fixing that moved Iran further out,
+from +7.05 to +10.60, which does show Iran carries self-loop-only nodes). Treat
+any Iran number from this pipeline as suspect until the cause is found.
+
+**Two spec corrections this settled, from the reference implementation rather
+than from argument:**
+
+- The centrality threshold is a **swept percentile selected on train+val**, not
+  the fixed 1e-2 the paper quotes as a conservative operating point. An absolute
+  cut cannot port between graphs, because eigenvector centrality is
+  L2-normalised across nodes: typical values run ~0.06 on a 240-node campaign
+  and ~0.001 on a 1.2M-author graph.
+- **Isolated nodes are rewired** to five random non-isolated nodes before
+  centrality is computed. We had no such step. The check is neighbour-based, not
+  degree-based: a self-loop contributes 2 to `degree`, so a node whose only edge
+  is to itself reads as connected by degree and isolated by neighbours.
 
 ## A6. Supervised model and cross-campaign transfer
 
