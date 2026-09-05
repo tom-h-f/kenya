@@ -9,14 +9,13 @@ from collections import defaultdict
 from twscrape.accounts_pool import AccountsPool
 
 # Randomized cooldown between successive requests on the same scraping account.
-# Widened from 3-12 (mean 7.5s) to 4-16 (mean 10s) on 2026-09-05, cutting the
-# per-account request rate by 25%. Three accounts went dead within four minutes
-# of each other on 2026-08-28; the cause is undiagnosed and this is precaution,
-# not a fix. Suspension risk tracks the per-account rate, so this is the lever,
-# not COLLECT_CONCURRENCY - that spreads work across accounts rather than
-# pacing any one of them.
-DELAY_MIN = float(os.getenv("REQUEST_DELAY_MIN", "4"))
-DELAY_MAX = float(os.getenv("REQUEST_DELAY_MAX", "16"))
+# Briefly widened to 4-16s on 2026-09-05 to protect the account pool, then put
+# back: the four dead accounts were not rate casualties. Two of them routed
+# through proxies and two did not, and all four failed identically, so the cause
+# is X's login flow rather than request volume. Collection now has a horizon of
+# weeks, so throughput is worth more than a precaution against the wrong thing.
+DELAY_MIN = float(os.getenv("REQUEST_DELAY_MIN", "3"))
+DELAY_MAX = float(os.getenv("REQUEST_DELAY_MAX", "12"))
 
 
 class AccountPacer:

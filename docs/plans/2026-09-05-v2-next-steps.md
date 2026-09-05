@@ -315,101 +315,76 @@ band on these passes is ~20% and single-run comparisons prove nothing.
 
 # Track C - production and operations
 
-## C1. Account pool health
+**Scoped down 2026-09-05.** Collection runs for weeks, to feed the v2 build,
+then stops or is rebuilt. Most of what was here earns its keep only over months,
+so it is dropped rather than carried as pretend work.
 
-**Current state, measured 2026-09-05:** 51 active / 54 total, 0 locked.
-`@Adiletfu`, `@Braoj9g` and `@Saniye6i6a` all last succeeded 2026-08-28 within
-four minutes of each other, at ~20,500-20,650 lifetime requests against
-~23,900-24,000 for healthy accounts. They fail relogin with Cloudflare 403 on
-every `ACCOUNT_SYNC_HOURS` pass, which is the HTML noise in the logs.
+## C1. Account pool - watch, do not invest
 
-**Open question, deliberately not yet tested.** Whether the block is
-account-level (three accounts suspended together, nothing to fix but replace) or
-login-path level (Cloudflare refusing the login endpoint from pi0's IP, in which
-case the pool decays one account at a time as sessions expire and volume looks
-normal until it does not). Distinguishing evidence is whether a *healthy*
-account can complete a fresh login from pi0 - which risks that account, so it is
-a decision, not a default.
+**Measured state:** 50 active / 54 total. Three accounts died in a single wave
+on 2026-08-28 within four minutes of each other; a fourth was spent deliberately
+on 2026-09-05 to diagnose the cause. **Eight days passed between the wave and
+that test with no further deaths**, so there is no measured background decay
+rate - one event, not a trend.
 
-**Deliverable.**
+**Diagnosed cause: X's login flow, not rate and not our IP.** Of the four dead,
+two route through proxies and two do not, and all four fail identically at
+`onboarding/task.json` with a Cloudflare 403 - the same from pi0, tf1 and a
+laptop. Read paths were patched on 2026-08-30 (`twscrape_compat.py`, SearchTimeline
+as POST); the auth path never was, and twscrape 0.20.1 is the latest release, so
+there is no upgrade to take.
 
-- A pool-health metric persisted per cycle (active count, locked count, failed
-  relogins) so decay is visible as a series rather than as log noise.
-- An alert threshold: investigate if active drops below 48.
-- A replacement procedure for dead accounts.
+**Consequence:** a lapsed session cannot be re-created by password login. There
+is a route that avoids login entirely - `accounts.sync` marks an account active
+when `accounts.yaml` supplies fresh cookies containing `ct0` - but exporting
+those is manual browser work per account.
 
-**Priority.** Higher than it looks. `MAX_AGE_DAYS=14` means collection lost to a
-decaying pool is unrecoverable, and this is the exact shape of the documented
-"volume goes to zero while everything looks healthy" failure.
+**Decision: do nothing unless the number moves.** 50 accounts is ample for a
+horizon of weeks. Do not spend more accounts on diagnosis. If active count drops
+below ~40, revisit the cookie-refresh route then.
 
-## C2. Turn adjudication on
+**Do not "protect" the pool by slowing down.** The 25% pacing cut made on
+2026-09-05 was reverted the same day: it was a defence against rate pressure,
+and rate pressure is not what killed these accounts. It cost throughput and
+bought nothing.
 
-**Blocked on:** `ANTHROPIC_API_KEY` in tf1's `~/kenya-monitor-2027/.env`, plus
-`ADJUDICATE_REFRESH_HOURS` set above 0. Without a key the pass fails loudly by
-design.
+## C2. Adjudication - dropped from this track
 
-**Deliverable.** Layer three live, adjudicating v2 output rather than v1
-clusters once A8 lands.
+No `ANTHROPIC_API_KEY` goes on tf1. Model work runs on Modal. If v2 needs an
+adjudication layer, it is designed as a Modal pass against v2 output, not as a
+revival of the dormant tf1 service.
 
-**Acceptance.** Agreement between the adjudicator and a human on a held-out set
-of clusters, and the rate at which adjudication changes the ranking.
+## C3. Collector targeting - dropped
 
-**Note the open question of unit:** the IO ground-truth work suggested the unit
-of judgement should be the campaign, not the cluster. v2 predicts accounts, so
-this needs settling when adjudication is re-pointed.
+Promotion stays off. Re-pointing it at v2 centrality ranks only pays back if
+collection continues long enough for the densification to matter, and it does
+not. The gap is now a known property of the corpus rather than a debt: the
+snapshot `2026-09-05-promotion-off` names the date the two populations split.
 
-## C3. Re-point collector targeting
+## C4. Dashboard - deferred until v2 has something to publish
 
-**Deliverable.** Promotion reads v2 centrality ranks instead of coordination
-clusters. `adaptive.py` consumes a set of handles, so this is a source swap, not
-a rewrite: replace `cluster_accounts` with a centrality-rank reader, keep the
-Kenya-share and channel gates that already exist, and flip
-`CLUSTER_PROMOTION_ENABLED` back on.
+The R2 dual-bucket token and the Zero Trust application stay unrequested until
+then. The two broken coordination readers are moot if v1 output is never
+republished.
 
-**Acceptance.** A promotion pass promotes accounts, logs its source as v2, and
-the promoted set is measurably more Kenya-relevant than the v1 cluster path was
-(the v1 path's corroborated tier was 8.3% Kenya-referencing).
+## C5. Retire v1 - moot
 
-**Cost of the gap until then**, recorded so it is not rediscovered: no new dense
-sampling of suspected coordinated accounts, so the pool of objects the census
-can band thins over time, and the loss is permanent past the 14-day horizon.
-
-## C4. Republish the dashboard on v2
-
-Per the Q4 decision the series restarts; nothing carries over.
-
-**Deliverable.**
-
-- Producer reads v2 output, still from the persisted run rather than rebuilding.
-- Only composition-standardised or within-partition rates published
-  (`OBJECTIVES` C1/A7).
-- The two broken coordination readers fixed or retired - both union every
-  historical pass instead of the latest (42.7x and 1.39x inflation).
-
-**Still blocked on the user:** an R2 API token scoped to both buckets, and the
-Zero Trust Access application.
-
-## C5. Retire the v1 coordination pass
-
-Only after C3 and C4. Until then tf1 keeps computing v1 clusters, which is the
-input the dashboard and any residual targeting still read.
-
----
+Nothing needs retiring if collection stops. tf1 can keep computing v1 output
+until it is switched off.
 
 # Sequencing
 
 ```
-A1 snapshot ──┬─> A8 Kenya transfer ──> C3 re-point ──> C4 dashboard ──> C5 retire v1
-              └─> B1 replay ──> B2 metric ──> B3 policies
-A2 archive ───┬─> A4 coord2 ──> A5 gate ──> A6 supervised ──> A7 v1 comparison
-A3 controls ──┘                                    │
-                                                   └─> A8
+A1 snapshot (done) ──┬─> A8 Kenya transfer
+                     └─> B1 replay ──> B2 metric ──> B3 policies
+A2 archive ──┬─> A4 coord2 ──> A5 gate ──> A6 supervised ──> A7 v1 comparison
+A3 controls ─┘                                    │
+                                                  └─> A8
 A9 relevance gate ── alongside A8
-C1 pool health ── independent, start now
-C2 adjudication ── needs a key, then follows A8
+Track C ── scoped to watching the pool; nothing to build
 ```
 
-**Can start today, in parallel:** A1, A2, A3 route B, C1.
+**Can start today, in parallel:** A2, A3 route B, A4. A1 is done.
 
 **Critical path:** A3. Everything supervised waits on a control set, and route A
 is out of our hands.
@@ -445,9 +420,9 @@ These are paid for in past mistakes and apply to every step:
 | **No control set** | Route A may not answer; route B is a different sampling process. | Stop rule in A3: fall back to unsupervised rank-scored detection, declared openly. |
 | **Archive anonymisation** | Sub-5k-follower ids may be unusable, or text stripped. | Verified in A2 before anything is built on it. |
 | **Temporal transfer** | Archive is 2010-2020 X; we detect on 2026-27 X. | Report it as a limitation; the forecasting task in A6 is the closest available evidence on it. |
-| **Pool decay** | Three accounts dead, cause undiagnosed. | C1, prioritised. |
+| **Pool decay** | Four accounts dead. Cause diagnosed 2026-09-05: X's login flow, not rate and not our IP. A lapsed session cannot be re-created. | Watch only. 50 accounts is ample for a horizon of weeks; revisit the cookie route below ~40. |
 | **Cost** | Fused similarity networks over ~2.5M posts and ~1.2M authors; text similarity is quadratic. | Measure, do not estimate. FAISS plus the sliding window. Modal for everything. |
-| **Collection gap** | Promotion is off, so densification thins from 2026-09-05. | Bounded by C3. The snapshot names the date so the two populations stay separable. |
+| **Collection gap** | Promotion is off, so densification thins from 2026-09-05. | Accepted. Collection stops in weeks anyway, and the snapshot names the date so the two populations stay separable. |
 
 ---
 
