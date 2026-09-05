@@ -21,17 +21,38 @@ load_dotenv(MONOREPO_ROOT / ".env")
 BUCKET = os.getenv("R2_BUCKET", "kenya-monitor-2027")
 
 
+R2_CREDENTIAL_VARS = ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ACCOUNT_ID")
+
+
+def _r2_credentials() -> list[str]:
+    missing = [v for v in R2_CREDENTIAL_VARS if not os.getenv(v)]
+    if missing:
+        raise RuntimeError(
+            f"Missing R2 credentials: {', '.join(missing)}. Expected them in "
+            f"{MONOREPO_ROOT / '.env'} (copy .env.example and fill in the R2 "
+            "S3 credentials) or in the environment."
+        )
+    return [os.environ[v] for v in R2_CREDENTIAL_VARS]
+
+
+# DuckDB defaults to a 30s per-request HTTP timeout. The embeddings backfill
+# `kenya_purge_20260716T184314Z.parquet` is a single 298 MB object, which needs
+# a sustained 10 MB/s to land inside that; an idle laptop measures 30-35 MB/s,
+# so any link contention pushes a whole-corpus read over the edge. 300s holds
+# the read open down to 1 MB/s.
+HTTP_TIMEOUT_SECONDS = 300
+HTTP_RETRIES = 5
+
+
 def connect() -> duckdb.DuckDBPyConnection:
     """A DuckDB connection with httpfs loaded and an R2 secret configured."""
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
+    con.execute(f"SET http_timeout={HTTP_TIMEOUT_SECONDS}")
+    con.execute(f"SET http_retries={HTTP_RETRIES}")
     con.execute(
         "CREATE OR REPLACE SECRET r2 (TYPE r2, KEY_ID ?, SECRET ?, ACCOUNT_ID ?)",
-        [
-            os.environ["R2_ACCESS_KEY_ID"],
-            os.environ["R2_SECRET_ACCESS_KEY"],
-            os.environ["R2_ACCOUNT_ID"],
-        ],
+        _r2_credentials(),
     )
     return con
 
@@ -367,6 +388,23 @@ def latest_embeddings(con: duckdb.DuckDBPyConnection, platform: str = "*", model
         SELECT * FROM {embeddings_source(platform, model)}
         QUALIFY row_number() OVER (
             PARTITION BY platform, platform_post_id, model ORDER BY embedded_at DESC
+        ) = 1
+        """
+    )
+
+
+def topics_source(platform: str = "*", model: str = "*") -> str:
+    glob = f"r2://{BUCKET}/topics/platform={platform}/model={model}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def latest_topics(con: duckdb.DuckDBPyConnection, platform: str = "*", model: str = "*"):
+    """One topic assignment per post (latest run), for a given model."""
+    return con.sql(
+        f"""
+        SELECT * FROM {topics_source(platform, model)}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform_post_id ORDER BY assigned_at DESC
         ) = 1
         """
     )
