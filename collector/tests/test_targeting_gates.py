@@ -208,3 +208,15 @@ def test_unscored_tag_is_allowed_through():
         )
     )
     assert "#newtag" in got
+
+
+def test_cluster_accounts_disabled_returns_empty_without_querying():
+    """The disabled path must not touch the connection. On pi0 the candidate
+    query is minutes of R2 scan, so paying for a result that is then discarded
+    is the whole thing being avoided."""
+
+    class Exploding:
+        def sql(self, *a, **k):
+            raise AssertionError("cluster_accounts queried while disabled")
+
+    assert cluster_accounts(Exploding(), "clusters", "authors", enabled=False) == []

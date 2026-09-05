@@ -128,6 +128,11 @@ STORY_FLAG_MIN_INDEX = float(os.getenv("STORY_FLAG_MIN_INDEX", "0.6"))
 # so a floor of 2 promoted nobody and cluster targeting was inert. That premise
 # died with the census conversation-band fix: measured 2026-08-13, 446 bridge
 # accounts and 485 pairs validated in both channels.
+# Promotion of coordination-cluster members to timeline targets. Off during the
+# v2 methodology rebuild (docs/plans/2026-09-05-v2-methodology.md §11): v2
+# predicts accounts rather than clusters, so this path has no input until
+# promotion is re-pointed at v2 centrality ranks.
+CLUSTER_PROMOTION_ENABLED = os.getenv("CLUSTER_PROMOTION_ENABLED", "1") not in ("0", "false", "False")
 CLUSTER_MIN_CHANNELS = int(os.getenv("CLUSTER_MIN_CHANNELS", "2"))
 # Min share of a cluster's scored posts that must reference Kenya before it can
 # promote accounts. Corroboration alone is the WRONG gate on its own: measured
