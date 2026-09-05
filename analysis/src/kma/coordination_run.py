@@ -25,6 +25,7 @@ import argparse
 import json
 import logging
 import os
+import time
 
 import duckdb
 
@@ -78,6 +79,8 @@ def run(
     resolution: float = co.DEFAULT_RESOLUTION,
     min_size: int = 3,
     method: str = co.DEFAULT_EDGE_METHOD,
+    scorecards: bool = False,
+    triage_resolution: float = co.TRIAGE_RESOLUTION,
 ) -> dict:
     """One coordination pass. Returns a summary dict; writes nothing unless
     `persist`. Channels default to the two that validate on live data."""
@@ -130,6 +133,8 @@ def run(
         **overlap,
         "channel_stats": channel_stats,
         "metrics_key": None,
+        "scorecards_key": None,
+        "triage_clusters_key": None,
         "persisted": [],
     }
     if not persist:
@@ -178,6 +183,58 @@ def run(
     names = co.cluster_names(con, members, summary, platform=platform)
     named = summary.merge(names, on="cluster_id", how="left") if len(names) else summary
     keys.append(co.persist_clusters(con, members, named, platform=platform))
+
+    # A SECOND clustering of the same validated edges at a lower resolution,
+    # written to its own prefix. Cheap - Leiden over edges already in memory, no
+    # re-projection - and it is where the recall is: 18.6% -> ~40% against
+    # confirmed operations, at zero measured null yield. Kept out of
+    # `kind=clusters` so the published count and the collector's targeting are
+    # untouched, and wrapped so a failure cannot cost the run of record.
+    if triage_resolution and triage_resolution != resolution:
+        try:
+            t_members, t_summary = co.clusters(
+                layers, resolution=triage_resolution, min_size=min_size
+            )
+            if len(t_members):
+                key = co.persist_clusters(
+                    con, t_members, t_summary, platform=platform,
+                    kind="triage_clusters",
+                )
+                keys.append(key)
+                out["triage_clusters_key"] = key
+            log.info(
+                "triage clustering at resolution %.4f: %d clusters (%d accounts) "
+                "against %d (%d) published",
+                triage_resolution, len(t_summary), len(t_members),
+                len(summary), len(members),
+            )
+        except Exception:
+            log.exception("coordination: triage clustering failed (continuing)")
+
+    # Off by default, and that is a measurement not a preference: scoring the
+    # 2026-08-14 run took 2,276s on an idle laptop, against a 6h timer on a
+    # contended 2-core host. `kma.scorecard_run` is the production path - it
+    # reads the run back out of R2 instead of recomputing the projection, so it
+    # can sit on its own slower timer. This stays for ad-hoc single-command use.
+    #
+    # Written LAST and never allowed to take the run with it. Edges and clusters
+    # are the artifacts of record - the collector's targeting reads them -
+    # whereas a missing scorecard run is a gap in a series nothing blocks on.
+    if scorecards:
+        try:
+            t0 = time.monotonic()
+            cards = co.scorecards(con, members, layers, platform=platform)
+            if len(cards):
+                key = co.persist_scorecards(con, cards, members, platform=platform)
+                keys.append(key)
+                out["scorecards_key"] = key
+            log.info(
+                "scorecards: %d cluster(s) scored in %.1fs",
+                len(cards), time.monotonic() - t0,
+            )
+        except Exception:
+            log.exception("coordination: scorecard write failed (continuing)")
+
     for k in keys:
         log.info("persisted %s", k)
     out["persisted"] = keys
@@ -202,6 +259,16 @@ def main(argv: list[str] | None = None) -> None:
         choices=["bonferroni", "fdr", "percentile"],
         help="edge filter feeding community detection (see co.DEFAULT_EDGE_METHOD)",
     )
+    p.add_argument(
+        "--triage-resolution", type=float, default=co.TRIAGE_RESOLUTION,
+        help="second, looser clustering for adjudication only (0 disables); "
+             "never feeds the published count or collector targeting",
+    )
+    p.add_argument(
+        "--scorecards",
+        action="store_true",
+        help="also score the clusters (~40min; normally left to kma.scorecard_run)",
+    )
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -220,6 +287,8 @@ def main(argv: list[str] | None = None) -> None:
         resolution=args.resolution,
         min_size=args.min_size,
         method=args.method,
+        scorecards=args.scorecards,
+        triage_resolution=args.triage_resolution,
     )
     print(json.dumps(out, indent=2))
 

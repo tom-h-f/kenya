@@ -499,6 +499,172 @@ def test_persist_run_metrics_writes_one_row_per_channel(tmp_path):
     assert set(df["channels"]) == {"co_retweet,co_reply"}
 
 
+def _posts_table(con):
+    con.execute(
+        "CREATE TABLE _src (platform VARCHAR, platform_post_id VARCHAR, "
+        "author_id VARCHAR, created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ, "
+        "dt DATE GENERATED ALWAYS AS (CAST(collected_at AS DATE)))"
+    )
+    for i in range(20):
+        con.execute(
+            "INSERT INTO _src (platform, platform_post_id, author_id, created_at, collected_at) "
+            "VALUES ('x', ?, ?, now(), now())",
+            [f"p{i}", f"a{i}"],
+        )
+    return con
+
+
+def test_latest_posts_scope_is_joined_before_the_dedup_window():
+    """QUALIFY runs after the window, so a scope applied outside this expression
+    makes DuckDB deduplicate the whole corpus and then throw it away. Assert the
+    ordering rather than just that a filter exists somewhere - the same mistake
+    was made at three call sites, and at the embeddings one it was the
+    difference between an OutOfMemoryException and a completing pass."""
+    sql = co._latest_posts_cte("x", author_scope="_scope_authors")
+
+    assert "SEMI JOIN _scope_authors" in sql
+    assert sql.index("SEMI JOIN") < sql.index("QUALIFY")
+
+
+def test_latest_posts_prunes_partitions_by_dt():
+    """`dt` is the only predicate that skips files rather than filtering rows.
+    Worth ~1.19x here (101.1s -> 85.0s), not the 4-18x a back-to-back timing
+    suggests - that figure is a warm httpfs cache, not pruning."""
+    sql = co._latest_posts_cte("x", lookback_days=14)
+
+    assert "created_at > now() - INTERVAL 14 DAY" in sql
+    assert "dt >= current_date - INTERVAL 15 DAY" in sql
+
+
+def test_the_dt_floor_is_looser_than_the_created_at_window():
+    """The floor must never be tighter than the window it accompanies. `dt` is
+    the date the batch was WRITTEN, so a post created just inside the window can
+    legitimately sit in a later partition, but never an earlier one - and a run
+    straddling midnight UTC needs the slack. Tightening this to `days` silently
+    drops real rows at the boundary."""
+    for days in (1, 7, 14, 30):
+        sql = co._latest_posts_cte("x", lookback_days=days)
+        assert f"INTERVAL {days} DAY" in sql
+        assert f"dt >= current_date - INTERVAL {days + 1} DAY" in sql
+
+
+def test_no_dt_floor_without_a_window():
+    """`lookback_days=0` means 'the whole corpus'. A floor there would silently
+    truncate it."""
+    sql = co._latest_posts_cte("x", lookback_days=0)
+
+    assert "dt >=" not in sql
+    assert "created_at >" not in sql
+
+
+def test_latest_posts_without_a_scope_is_unchanged():
+    sql = co._latest_posts_cte("x")
+
+    assert "SEMI JOIN" not in sql
+    assert "QUALIFY" in sql
+
+
+def test_member_posts_scoping_reads_only_the_requested_authors(monkeypatch):
+    """The scorecard pass used to build the wide table - every latest post in
+    the corpus - to score ~1,200 cluster members. The scope is the mechanism
+    that stopped that, so assert on the table rather than on the output."""
+    import duckdb
+
+    con = _posts_table(duckdb.connect())
+    monkeypatch.setattr(co, "posts_source", lambda platform="x": "_src")
+
+    scoped = co._member_posts(con, "x", authors=["a1", "a3"])
+    got = con.sql(f"SELECT author_id FROM {scoped}").df()
+
+    assert set(got["author_id"]) == {"a1", "a3"}
+    assert len(got) == 2
+
+
+def test_member_posts_without_authors_still_reads_everything(monkeypatch):
+    """`internal_validation` draws random comparison groups from the whole
+    universe, so the wide read has to stay available."""
+    import duckdb
+
+    con = _posts_table(duckdb.connect())
+    monkeypatch.setattr(co, "posts_source", lambda platform="x": "_src")
+
+    wide = co._member_posts(con, "x")
+
+    assert con.sql(f"SELECT count(*) FROM {wide}").fetchone()[0] == 20
+
+
+def test_member_posts_scope_is_unregistered(monkeypatch):
+    """The scope frame binds a fixed name; leaving it bound would collide with
+    the next call and could silently reuse the previous author list."""
+    import duckdb
+
+    con = _posts_table(duckdb.connect())
+    monkeypatch.setattr(co, "posts_source", lambda platform="x": "_src")
+
+    co._member_posts(con, "x", authors=["a1"])
+
+    with pytest.raises(duckdb.CatalogException):
+        con.sql("SELECT * FROM _scope_authors").df()
+
+
+def test_persist_scorecards_keeps_the_per_cluster_grain(tmp_path):
+    import duckdb
+
+    out = tmp_path / "s.parquet"
+    con = _LocalCopyCon(duckdb.connect(), out)
+    members = pd.DataFrame(
+        [{"cluster_id": 0, "author_id": a} for a in ("a", "b", "c")]
+        + [{"cluster_id": 1, "author_id": a} for a in ("d", "e")]
+    )
+    cards = pd.DataFrame(
+        [
+            {"cluster_id": 0, "size": 3, "inauthenticity_index": 0.8,
+             "topic_entropy": 0.2, "near_dup_rate": 0.5, "components_measured": 4},
+            {"cluster_id": 1, "size": 2, "inauthenticity_index": 0.1,
+             "topic_entropy": 3.4, "near_dup_rate": 0.0, "components_measured": 4},
+        ]
+    )
+
+    key = co.persist_scorecards(con, cards, members)
+
+    assert "kind=scorecards" in key and key.endswith(".parquet")
+    df = duckdb.connect().sql(f"SELECT * FROM '{out}'").df()
+    assert len(df) == 2, "one row per cluster, not per member"
+    assert set(df["cluster_id"]) == {0, 1}
+    assert df["computed_at"].nunique() == 1
+
+
+def test_persist_scorecards_carries_stable_cluster_ids(tmp_path):
+    """Leiden reissues cluster_id every pass, so without the membership hash a
+    scorecard cannot be followed from one run to the next - which is the whole
+    reason for persisting a time series of them."""
+    import duckdb
+
+    members = pd.DataFrame(
+        [{"cluster_id": 0, "author_id": a} for a in ("a", "b", "c")]
+        + [{"cluster_id": 1, "author_id": a} for a in ("d", "e")]
+    )
+    cards = pd.DataFrame([{"cluster_id": 0}, {"cluster_id": 1}])
+
+    out_1 = tmp_path / "run1.parquet"
+    co.persist_scorecards(_LocalCopyCon(duckdb.connect(), out_1), cards, members)
+
+    # Same accounts, relabelled by Leiden on the next pass.
+    relabelled = members.replace({"cluster_id": {0: 7, 1: 9}})
+    out_2 = tmp_path / "run2.parquet"
+    co.persist_scorecards(
+        _LocalCopyCon(duckdb.connect(), out_2),
+        pd.DataFrame([{"cluster_id": 7}, {"cluster_id": 9}]),
+        relabelled,
+    )
+
+    r1 = duckdb.connect().sql(f"SELECT * FROM '{out_1}'").df()
+    r2 = duckdb.connect().sql(f"SELECT * FROM '{out_2}'").df()
+    assert r1["stable_cluster_id"].notna().all()
+    assert set(r1["stable_cluster_id"]) == set(r2["stable_cluster_id"])
+    assert set(r1["cluster_id"]) != set(r2["cluster_id"])
+
+
 def test_persist_run_metrics_keeps_integer_columns_nullable(tmp_path):
     """Timed channels leave the hub fields NULL. Without an explicit nullable
     dtype pandas promotes them to float64, so successive runs write int64 and
@@ -576,10 +742,14 @@ def _con_with_posts_and_engagements(posts, engagements):
     import duckdb
 
     con = duckdb.connect()
+    # `dt` is generated rather than inserted so the fixture cannot drift from
+    # the real partition semantics: in R2 it is the date the batch was written,
+    # which is always >= the collection date it stands in for here.
     con.execute(
         "CREATE TABLE p (platform VARCHAR, platform_post_id VARCHAR,"
         " author_id VARCHAR, created_at TIMESTAMPTZ, collected_at TIMESTAMPTZ,"
-        " repost_of_id VARCHAR, in_reply_to_id VARCHAR)"
+        " repost_of_id VARCHAR, in_reply_to_id VARCHAR,"
+        " dt DATE GENERATED ALWAYS AS (CAST(collected_at AS DATE)))"
     )
     for r in posts:
         con.execute(
@@ -700,3 +870,101 @@ def test_mass_normalisation_shrinks_weights_below_the_cpm_resolution():
 
     assert by_mass["weight"].max() < co.DEFAULT_RESOLUTION
     assert by_max["weight"].max() == 1.0
+
+
+# --- degree-preserving shuffle (the labelless false-positive rate) ----------
+
+
+def _shuffle_con(pairs):
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE tr (author_id VARCHAR, action_object VARCHAR, created_at TIMESTAMP)"
+    )
+    for a, o in pairs:
+        con.execute("INSERT INTO tr VALUES (?, ?, now())", [a, o])
+    return con
+
+
+def test_shuffle_preserves_both_degree_sequences():
+    """The defining property. Preserving only ACCOUNT degrees would leave a null
+    that still rewards popular objects, which is the anti-conservative failure
+    the degree-corrected null exists to avoid."""
+    pairs = [(f"a{i}", f"o{j}") for i in range(12) for j in range(i % 5 + 1)]
+    con = _shuffle_con(pairs)
+
+    name = co.shuffle_traces(con, "tr", seed=0)
+    got = con.sql(f"SELECT author_id, action_object FROM {name}").df()
+    want = con.sql("SELECT DISTINCT author_id, action_object FROM tr").df()
+
+    assert len(got) == len(want)
+    for col in ("author_id", "action_object"):
+        assert (
+            got[col].value_counts().sort_index().equals(
+                want[col].value_counts().sort_index())
+        ), f"{col} degree sequence changed"
+
+
+def test_shuffle_actually_moves_edges():
+    """A null that returns the input is not a null. Pinned because the trade
+    silently no-ops whenever two accounts hold identical object sets."""
+    pairs = [(f"a{i}", f"o{j}") for i in range(10) for j in range(i, i + 4)]
+    con = _shuffle_con(pairs)
+
+    name = co.shuffle_traces(con, "tr", seed=0)
+    moved = con.sql(
+        f"""
+        SELECT count(*) FROM (
+            SELECT author_id, action_object FROM {name}
+            EXCEPT SELECT DISTINCT author_id, action_object FROM tr
+        )
+        """
+    ).fetchone()[0]
+
+    assert moved > 0
+
+
+def test_shuffle_is_deterministic_for_a_seed():
+    pairs = [(f"a{i}", f"o{j}") for i in range(8) for j in range(i % 4 + 1)]
+    a = co.shuffle_traces(_shuffle_con(pairs), "tr", seed=7, out_table="s")
+    con_b = _shuffle_con(pairs)
+    b = co.shuffle_traces(con_b, "tr", seed=7, out_table="s")
+    assert a == b == "s"
+
+
+def test_shuffle_rejects_an_empty_trace_table():
+    con = _shuffle_con([])
+    with pytest.raises(ValueError):
+        co.shuffle_traces(con, "tr")
+
+
+def test_shuffle_keeps_timestamps_within_each_author():
+    """Per-account timing profiles have to survive, or the null also destroys
+    activity patterns and stops being a null for co-action alone. Also pins the
+    tz-aware case, which broke an earlier assignment-based implementation."""
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE tr (author_id VARCHAR, action_object VARCHAR, created_at TIMESTAMPTZ)"
+    )
+    for i in range(6):
+        con.execute(
+            "INSERT INTO tr VALUES ('a', ?, TIMESTAMPTZ '2026-01-01 00:00:00+00')",
+            [f"oa{i}"],
+        )
+        con.execute(
+            "INSERT INTO tr VALUES ('b', ?, TIMESTAMPTZ '2026-06-01 00:00:00+00')",
+            [f"ob{i}"],
+        )
+
+    name = co.shuffle_traces(con, "tr", seed=0)
+    got = con.sql(
+        f"SELECT author_id, min(created_at) lo, max(created_at) hi FROM {name} GROUP BY 1"
+    ).df().set_index("author_id")
+
+    assert got.loc["a", "lo"] == got.loc["a", "hi"]
+    assert got.loc["b", "lo"] == got.loc["b", "hi"]
+    assert got.loc["a", "lo"] != got.loc["b", "lo"]
+    assert con.sql(f"SELECT count(*) FROM {name} WHERE created_at IS NULL").fetchone()[0] == 0

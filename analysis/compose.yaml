@@ -11,6 +11,12 @@ services:
     # live signal; line-buffering costs nothing here.
     environment:
       PYTHONUNBUFFERED: "1"
+      # The hate model repo is private and there is no HF_TOKEN on this host, so
+      # an authenticated-only HEAD 401s and kills the pass even though the
+      # weights are already in hf_cache. Offline mode reads the cache instead.
+      # Every model this image loads is cached; a NEW model needs a token and
+      # this flag removed.
+      HF_HUB_OFFLINE: "1"
     command: ["--loop"]
     # --loop isolates each pass in its own subprocess, so only one model set is
     # resident at a time. The largest is the afro-xlmr-large hate model (~2GB

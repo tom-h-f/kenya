@@ -65,6 +65,18 @@ COORD_REFRESH_HOURS = float(os.getenv("COORD_REFRESH_HOURS", "6"))
 # first attempt died on a transient R2 timeout and then sat idle for hours,
 # leaving the collector's cluster targeting frozen on a stale run.
 COORD_RETRY_MINUTES = float(os.getenv("COORD_RETRY_MINUTES", "30"))
+# Cluster scoring, on its own much slower timer. Measured 2026-08-14: 2,276s to
+# score one run on an idle laptop, dominated by whole-prefix reads of `posts/`
+# and `authors/` that no per-cluster filter avoids. Nothing in the collector
+# loop consumes scorecards, so unlike the coordination refresh above, lag here
+# costs a stale dashboard rather than stale targeting. 0 disables.
+SCORECARD_REFRESH_HOURS = float(os.getenv("SCORECARD_REFRESH_HOURS", "24"))
+# Adjudication - layer three, and the step that turns a cluster count into a
+# finding. Slower again than scoring: it reads dossiers, which cost three fixed
+# whole-prefix scans, and then a model call per candidate. Defaults to OFF,
+# because without ANTHROPIC_API_KEY the pass can only fail; set the hours once a
+# key is configured.
+ADJUDICATE_REFRESH_HOURS = float(os.getenv("ADJUDICATE_REFRESH_HOURS", "0"))
 
 
 def run_once(
@@ -162,6 +174,60 @@ def _coordination_pass() -> bool:
     return True
 
 
+def _scorecard_pass() -> bool:
+    """Score the latest persisted coordination run in a fresh subprocess.
+
+    Reads the run back out of R2 rather than rebuilding it, so this does not
+    repeat the projection the coordination pass just did. Subprocess for the
+    same reason as everything else here: it loads sklearn and a slice of the
+    embedding matrix, and must not stay resident between cycles."""
+    cmd = [sys.executable, "-m", "kma.scorecard_run", "--persist"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        log.error("scorecard refresh failed (rc=%d): %s", proc.returncode, proc.stderr[-500:])
+        return False
+    log.info("scorecards refreshed: %s", _scorecard_headline(proc.stdout))
+    return True
+
+
+def _adjudicate_pass() -> bool:
+    """Judge the latest run's candidate clusters in a fresh subprocess."""
+    cmd = [sys.executable, "-m", "kma.adjudicate_run", "--persist"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        log.error("adjudication failed (rc=%d): %s", proc.returncode, proc.stderr[-500:])
+        return False
+    log.info("adjudicated: %s", _adjudicate_headline(proc.stdout))
+    return True
+
+
+def _adjudicate_headline(stdout: str) -> str:
+    import json
+
+    try:
+        out = json.loads(stdout)
+        by_type = out.get("by_type") or {}
+        types = ", ".join(f"{k}={v}" for k, v in sorted(by_type.items())) or "none"
+        return f"{out.get('n_verdicts')}/{out.get('n_candidates')} judged ({types})"
+    except Exception:
+        return "(no summary)"
+
+
+def _scorecard_headline(stdout: str) -> str:
+    import json
+
+    try:
+        out = json.loads(stdout)
+        top = out.get("top_cluster") or {}
+        return (
+            f"{out.get('n_clusters')} clusters scored"
+            + (f", top index {top['inauthenticity_index']:.2f}"
+               f" (cluster {top['cluster_id']}, {top['size']} accounts)" if top else "")
+        )
+    except Exception:
+        return "(no summary)"
+
+
 def _coordination_headline(stdout: str) -> str:
     """The run's outcome counters as one log line.
 
@@ -190,6 +256,8 @@ def run_loop(
     incitement: bool = True,
     isolate: bool = True,
     coord_hours: float = COORD_REFRESH_HOURS,
+    scorecard_hours: float = SCORECARD_REFRESH_HOURS,
+    adjudicate_hours: float = ADJUDICATE_REFRESH_HOURS,
 ) -> None:
     """Forever: bounded passes back to back while there is a backlog, then a
     jittered idle once caught up. A per-pass failure is logged and retried, so a
@@ -203,6 +271,18 @@ def run_loop(
     last manual run."""
     cycle = 0
     next_coord = time.monotonic() if coord_hours > 0 else float("inf")
+    # Deliberately NOT due at startup, unlike the coordination refresh. Scoring
+    # needs a persisted run to read, and on a first boot there may be none; more
+    # practically, a restart should not spend its first ~40 minutes scoring
+    # before any enrichment happens.
+    next_scorecard = (
+        time.monotonic() + scorecard_hours * 3600 if scorecard_hours > 0 else float("inf")
+    )
+    # Also not due at startup, and for a stronger reason than scoring: it needs
+    # a scorecard run to have happened first, and on a fresh boot there is none.
+    next_adjudicate = (
+        time.monotonic() + adjudicate_hours * 3600 if adjudicate_hours > 0 else float("inf")
+    )
     while True:
         cycle += 1
         done = 0
@@ -212,6 +292,16 @@ def run_loop(
             ok = _coordination_pass()
             next_coord = time.monotonic() + (
                 coord_hours * 3600 if ok else COORD_RETRY_MINUTES * 60
+            )
+        if time.monotonic() >= next_scorecard:
+            ok = _scorecard_pass()
+            next_scorecard = time.monotonic() + (
+                scorecard_hours * 3600 if ok else COORD_RETRY_MINUTES * 60
+            )
+        if time.monotonic() >= next_adjudicate:
+            ok = _adjudicate_pass()
+            next_adjudicate = time.monotonic() + (
+                adjudicate_hours * 3600 if ok else COORD_RETRY_MINUTES * 60
             )
         enabled = {
             "embed": embed, "classify": classify,
@@ -258,6 +348,14 @@ def main() -> None:
         "--coord-hours", type=float, default=COORD_REFRESH_HOURS,
         help="hours between coordination cluster refreshes (0 disables)",
     )
+    ap.add_argument(
+        "--scorecard-hours", type=float, default=SCORECARD_REFRESH_HOURS,
+        help="hours between cluster scoring passes (0 disables)",
+    )
+    ap.add_argument(
+        "--adjudicate-hours", type=float, default=ADJUDICATE_REFRESH_HOURS,
+        help="hours between adjudication passes (0 disables; needs an API key)",
+    )
     args = ap.parse_args()
     embed, classify, hate = not args.no_embed, not args.no_classify, not args.no_hate
     incitement = not args.no_incitement
@@ -269,6 +367,8 @@ def main() -> None:
             args.limit, args.batch_size, embed, classify, hate,
             incitement=incitement,
             isolate=not args.no_isolate, coord_hours=args.coord_hours,
+            scorecard_hours=args.scorecard_hours,
+            adjudicate_hours=args.adjudicate_hours,
         )
 
 

@@ -72,6 +72,37 @@ def _members():
     })
 
 
+def _scorecards():
+    """Triage scores for the same two clusters, so the public-safety walk runs
+    against a payload that actually carries these columns.
+
+    `topic_entropy` is all-NaN on purpose: that is its real state, because it
+    needs a topic model over the whole embedding matrix that the automated pass
+    does not run."""
+    return pd.DataFrame({
+        "cluster_id": [0, 1],
+        "inauthenticity_index": [0.83, 0.21],
+        "near_dup_rate": [0.54, 0.11],
+        "self_amplification": [0.41, 0.02],
+        "self_amplification_z": [6.2, 0.3],
+        "hate_index": [0.19, 0.0],
+        "topic_entropy": [float("nan"), float("nan")],
+    })
+
+
+def _verdicts():
+    """One cluster judged, one not. A cluster the adjudication queue never
+    reached must read as unjudged, not as judged-and-harmless."""
+    return pd.DataFrame({
+        "cluster_id": [0],
+        "cluster_type": ["engagement_pod"],
+        "kenya_relevant": [False],
+        "confidence": ["high"],
+        "rationale": ["Jointly amplifying one account's engagement bait."],
+        "adjudicator": ["claude-sonnet-5"],
+    })
+
+
 def _edges():
     return pd.DataFrame({
         "src": [
@@ -172,9 +203,11 @@ def stub_tox(monkeypatch):
 def payload(monkeypatch):
     """A full summary built from the fabricated frames, with R2 stubbed out."""
     def fake_run_latest(con, kind="clusters", platform="x", channel="*", method="*"):
-        return _Rel(_members() if kind == "clusters" else _edges())
+        return _Rel({"clusters": _members(), "scorecards": _scorecards(),
+                     "verdicts": _verdicts()}.get(kind, _edges()))
 
     monkeypatch.setattr(d.db, "coordination_run_latest", fake_run_latest)
+    monkeypatch.setattr(d.db, "prefix_readable", lambda con, src: True)
     monkeypatch.setattr(d.db, "coordination_metrics", lambda con, platform="x": _Rel(_metrics()))
     # `leak_corrected` calls this positionally, `build_coordination` by keyword.
     monkeypatch.setattr(
@@ -243,6 +276,96 @@ def test_corroborated_and_candidates_are_never_summed(payload):
     # The two are reported separately; the total is not a third blended count.
     assert head["clusters_total"] == head["clusters_corroborated"] + co["candidates"]["n"]
     assert len(co["corroborated"]["clusters"]) == head["clusters_corroborated"]
+
+
+def test_cluster_cards_carry_the_triage_scores(payload):
+    """The point of persisting scorecards: a reader can sort clusters by
+    reciprocity and by narrative coherence, which is what distinguishes an
+    influence operation from an engagement pod at a glance."""
+    card = payload["coordination"]["corroborated"]["clusters"][0]
+
+    assert card["inauthenticity_index"] == 0.83
+    assert card["self_amplification_z"] == 6.2
+    assert card["near_dup_rate"] == 0.54
+
+
+def test_hate_index_stays_separate_from_the_inauthenticity_index(payload):
+    """Coordination and hate are different claims. A reader who cannot see which
+    one fired cannot act on either, so they travel as two fields."""
+    card = payload["coordination"]["corroborated"]["clusters"][0]
+
+    assert card["hate_index"] == 0.19
+    assert card["inauthenticity_index"] != card["hate_index"]
+
+
+def test_an_unmeasured_score_is_absent_rather_than_zero(payload):
+    """`topic_entropy` is NaN in every real run. Defaulting it to 0 would
+    publish "measured, single-topic" - the most incriminating reading available
+    - for a cluster whose topics were never computed at all."""
+    card = payload["coordination"]["corroborated"]["clusters"][0]
+
+    assert "topic_entropy" not in card
+    assert card["near_dup_rate"] == 0.54, "measured columns still come through"
+
+
+def test_a_missing_scorecard_run_leaves_the_cards_bare(monkeypatch, payload):
+    """Scorecards ride a slower timer than the coordination pass, so a fresh
+    bucket - or any run where scoring failed - has clusters but no scores. That
+    must degrade the cards, not the build."""
+    monkeypatch.setattr(d, "_triage_by_cluster", lambda con, platform: {})
+
+    out = d.build_coordination(object(), platform="x")
+    card = out["corroborated"]["clusters"][0]
+
+    assert card["size"] == 4
+    assert "inauthenticity_index" not in card
+
+
+def test_triage_survives_an_unreadable_scorecard_prefix(monkeypatch):
+    """A zero-file hive glob raises rather than returning no rows, and that must
+    not take down the hourly build."""
+    def boom(*a, **k):
+        raise RuntimeError("no files found")
+
+    monkeypatch.setattr(d.db, "prefix_readable", boom)
+
+    assert d._triage_by_cluster(object(), "x") == {}
+
+
+def test_a_judged_cluster_carries_its_verdict_and_reason(payload):
+    """The verdict is what turns a cluster count into a finding, and the
+    rationale is what lets a reader disagree with it."""
+    card = payload["coordination"]["corroborated"]["clusters"][0]
+
+    assert card["verdict"] == "engagement_pod"
+    assert card["verdict_confidence"] == "high"
+    assert "engagement bait" in card["verdict_rationale"]
+    assert card["verdict_adjudicator"] == "claude-sonnet-5"
+
+
+def test_an_unjudged_cluster_has_no_verdict_field(monkeypatch, payload):
+    """Adjudication is capped, so most clusters legitimately have no verdict.
+    A default would make "never looked at" read as "looked at and fine"."""
+    monkeypatch.setattr(d, "_verdicts_by_cluster", lambda con, platform: {})
+
+    card = d.build_coordination(object(), platform="x")["corroborated"]["clusters"][0]
+
+    assert "verdict" not in card
+    assert card["inauthenticity_index"] == 0.83, "scores still come through"
+
+
+def test_the_verdict_rationale_is_walked_for_leaks(payload):
+    """`rationale` is the only free text in the payload. It is model-written
+    from a dossier full of handles and post text, so the public-safety walk has
+    to cover it - which it does, since it walks every scalar."""
+    rationales = [
+        v for path, key, v in _walk(payload)
+        if key == "verdict_rationale"
+    ]
+
+    assert rationales, "the walk must actually reach the rationale"
+    for text in rationales:
+        assert not any(leak in str(text) for leak in LEAKY_VALUES)
 
 
 def test_edges_respect_the_payload_cap(payload, monkeypatch):

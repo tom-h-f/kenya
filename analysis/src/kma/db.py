@@ -524,6 +524,36 @@ def coordination_source(
         )
     elif kind == "clusters":
         glob = f"r2://{BUCKET}/coordination/platform={platform}/kind=clusters/dt=*/run=*.parquet"
+    elif kind == "scorecards":
+        # One row per CLUSTER (clusters are one row per MEMBER) - the triage
+        # layer: inauthenticity_index, topic_entropy, near_dup_rate, hate_index.
+        glob = (
+            f"r2://{BUCKET}/coordination/platform={platform}"
+            f"/kind=scorecards/dt=*/run=*.parquet"
+        )
+    elif kind == "triage_clusters":
+        # The SAME shape as kind=clusters, from the same validated edges, at a
+        # lower Leiden resolution. Deliberately a separate prefix so the
+        # published cluster count and the collector's targeting cannot pick it
+        # up: measured 2026-08-15, resolution 0.05 -> 0.005 takes the live corpus
+        # from 154 clusters to 852, which as a headline would be a methodology
+        # break rather than a finding. Recall against confirmed operations rises
+        # 18.6% -> ~40% over the same move, with zero null yield, which is why
+        # it is worth computing at all.
+        glob = (
+            f"r2://{BUCKET}/coordination/platform={platform}"
+            f"/kind=triage_clusters/dt=*/run=*.parquet"
+        )
+    elif kind == "verdicts":
+        # One row per adjudicated cluster: what a reader judged the coordination
+        # to BE. Its own kind rather than columns on scorecards because it has a
+        # different provenance (a model or a person, not a computation) and a
+        # different cadence, and conflating the two would let a judgement look
+        # like a measurement.
+        glob = (
+            f"r2://{BUCKET}/coordination/platform={platform}"
+            f"/kind=verdicts/dt=*/run=*.parquet"
+        )
     elif kind == "run_metrics":
         glob = (
             f"r2://{BUCKET}/coordination/platform={platform}"

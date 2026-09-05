@@ -159,7 +159,7 @@ def hate_con(monkeypatch):
         "CREATE TABLE _p (platform_post_id VARCHAR, author_id VARCHAR)"
     )
     monkeypatch.setattr(co, "hatespeech_source", lambda platform="x": "_h")
-    monkeypatch.setattr(co, "_member_posts", lambda con, platform: "_p")
+    monkeypatch.setattr(co, "_member_posts", lambda con, platform, authors=None: "_p")
     return con
 
 

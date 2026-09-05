@@ -32,13 +32,15 @@ dependencies = [
     "sqlglot>=30.12.0",
     "torch>=2.2",  # direct so the CPU-wheel source below applies on Linux
     "boto3>=1.35",  # dashboard writes JSON blobs; DuckDB only speaks parquet/csv
-    "mcp>=2.1.1",
+    "anthropic>=0.40",  # kma.adjudicate - layer three reads dossiers
 ]
 
 [project.scripts]
 kma-enrich = "kma.enrich:main"
 kma-dashboard = "kma.dashboard:main"
 kma-incitement = "kma.incitement:main"
+kma-scorecards = "kma.scorecard_run:main"
+kma-adjudicate = "kma.adjudicate_run:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
