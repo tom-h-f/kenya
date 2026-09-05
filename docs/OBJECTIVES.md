@@ -27,10 +27,16 @@ election on X, in near-real time, and produce three things:
    toxicity, coordination, and narrative that survive the criticism that they
    are artifacts of how the data was collected.
 
-The election is scheduled for August 2027, roughly 23 months out. That horizon
-sets the priorities: the archive and the measurement infrastructure matter more
-now than detection accuracy, because detection can be re-run on stored data and
-collection cannot.
+**Collection has a horizon of weeks, not years** (decided 2026-09-05). It runs
+to feed the v2 methodology build and its Kenya transfer, after which it stops or
+is rebuilt as a separate design problem. The election itself is August 2027, but
+this collector is not what will be running by then.
+
+That shortens two things and lengthens nothing. The corpus is close to final, so
+the frozen snapshot is the substrate for everything downstream rather than a
+moving target to be re-taken. And operational work on the collector earns its
+keep only if it pays back inside those weeks - pool longevity, targeting
+re-points and dashboard restarts mostly do not.
 
 ## 1. Standing constraints
 
