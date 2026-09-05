@@ -24,6 +24,7 @@ from kenya_monitor.config import (
     BURST_MIN_POSTS,
     BURST_ZSCORE,
     CLUSTER_MIN_CHANNELS,
+    CLUSTER_PROMOTION_ENABLED,
     CLUSTER_MIN_KENYA_SHARE,
     KEYWORD_MIN_KENYA_SHARE,
     DYNAMIC_EXPIRY_DAYS,
@@ -175,6 +176,7 @@ def cluster_accounts(
     posts_view: str | None = None,
     hatespeech_view: str | None = None,
     min_kenya_share: float = CLUSTER_MIN_KENYA_SHARE,
+    enabled: bool = CLUSTER_PROMOTION_ENABLED,
 ) -> list[str]:
     """Handles from the most recent persisted coordination run, gated on
     cross-channel corroboration AND on the cluster being about Kenya.
@@ -200,7 +202,13 @@ def cluster_accounts(
     that stays visible.
 
     Ordered strongest first so the caller's cap keeps the best candidates.
+
+    Returns nothing when `enabled` is false, before touching R2: the query is
+    minutes of network scan on pi0, so a disabled path must not pay for it.
     """
+    if not enabled:
+        log.info("cluster promotion disabled; no accounts promoted")
+        return []
     gate_available = posts_view is not None and hatespeech_view is not None
     if gate_available:
         kenya_cte = f"""
