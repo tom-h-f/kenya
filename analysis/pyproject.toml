@@ -42,6 +42,7 @@ kma-incitement = "kma.incitement:main"
 kma-scorecards = "kma.scorecard_run:main"
 kma-adjudicate = "kma.adjudicate_run:main"
 kma-bench = "kma.bench:main"
+kma-iohunter-gate = "kma.iohunter_gate:main"
 kma-ioa-verify = "kma.ioa_verify:main"
 
 [dependency-groups]
