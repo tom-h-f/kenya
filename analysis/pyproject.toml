@@ -41,6 +41,7 @@ kma-dashboard = "kma.dashboard:main"
 kma-incitement = "kma.incitement:main"
 kma-scorecards = "kma.scorecard_run:main"
 kma-adjudicate = "kma.adjudicate_run:main"
+kma-bench = "kma.bench:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
