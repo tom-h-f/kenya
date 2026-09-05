@@ -91,6 +91,51 @@ used, and the gate would be measuring the wrong thing.
 **Runs on.** Modal. 105.9 GB is beyond both tf1 (3.8 GB RAM) and comfortable
 laptop storage.
 
+**Verifier.** `kma.ioa_verify` runs the three checks above plus a fourth, and
+takes a sample or the full file: `uv run kma-ioa-verify PATH [--limit N]`.
+
+**Measured 2026-09-05** against the Internet Archive mirror (the only source
+left: X's own transparency page now 404s). `ioa_users.csv` read in full,
+`ioa_tweets.csv` sampled by range request over its first 3 MB of 113.72 GB:
+
+- 87,287 user rows, 86,971 distinct userids, all 21 countries rather than the
+  paper's six. 85,064 of 87,287 (97.5%) userids are hashed - the sub-5,000
+  follower anonymisation - and 2,223 are numeric.
+- **Check 1 answered: hashed ids are stable pseudonyms.** In a 4,470-row
+  sample, 10 hashed users carry 4,468 rows, mean 446.8 tweets each, max 1,946.
+  Per-row hashing would have given one row per id. Similarity networks are
+  buildable.
+- **Check 2 answered: text survives**, 100% of sampled rows.
+- **Check 3 answered: entities survive.** URLs on 89.6% of rows, hashtags on
+  4.5%, stored as an ordered list literal. All five traces are supported:
+  co_retweet via `retweet_tweetid`, fast_retweet via `retweet_userid` plus
+  `tweet_time`, co_url via `urls`, hashtag_sequence via `hashtags`,
+  text_similarity via `tweet_text`.
+
+**Check 4, and the one that is still open: campaign attribution.** Neither file
+carries a country or campaign column. The mirror is a plain concatenation of
+X's per-campaign exports and campaign identity was lost in the making of it;
+there is one embedded header row mid-file in `ioa_users.csv`, which is what a
+concatenation looks like. `check_campaign_attribution` reports the evidence for
+segmenting it - embedded header rows, contiguous runs of `account_language`,
+contiguous `userid` blocks, `account_creation_date` spread - and deliberately
+reports evidence rather than guessing a labelling, because a fabricated country
+column would sit silently under every per-campaign number in the gate.
+
+**Consequence, stated so it is not discovered at A5:** if campaigns cannot be
+attributed, per-country evaluation is impossible. The fallback is the paper's
+Task 2, global classification over all drivers combined. That keeps a valid
+benchmark and loses the per-campaign comparison, the per-trace Table 2
+reproduction per country, and the Table 1 driver-count acceptance check above.
+It is not implemented.
+
+**Also blocked by attribution:** `fast_retweet` on the archive needs the
+ORIGINAL tweet's timestamp to measure the 60s delay, and the archive carries
+only the retweet's own `tweet_time`. The original is joinable only when it is
+also an archive row, so an operation retweeting an organic account leaves
+nothing to time. Report `coord2.fast_retweet_coverage` with any fast-retweet
+number from this data.
+
 **Blocks.** A3 route B, A4, A5.
 
 ## A3. The control group - the critical path
@@ -166,6 +211,35 @@ defaults, plus unit tests on synthetic graphs with known structure.
 fixture of ten users. Fusion is verified as a union, not an intersection.
 
 **Runs on.** Laptop for tests, Modal for real data.
+
+**Delivered 2026-09-05** as `kma.coord2`, 57 offline tests, no network and no
+credentials in any of them. Four things the next reader needs:
+
+1. **Hashtag order: in-tweet order in practice, unguaranteed in principle.**
+   The chain X `entities.hashtags` -> twscrape `[x["text"] for x in ...]` ->
+   `list(tw.hashtags)` -> `list<string>` never sorts or dedupes, so the list is
+   as X returned it, which is ascending `indices`. But twscrape DISCARDS
+   `indices`, so the order cannot be verified or repaired from what we persist;
+   for long-form posts the text comes from `note_tweet` while the hashtags come
+   from the truncated `legacy` entity set, so the sequence can be short of the
+   text; and none of this has been checked against live rows, because a
+   worktree has no R2 credentials. `hashtag_sequence_traces(order="text")`
+   re-derives the sequence from the post text and is the safer default wherever
+   `text` is populated.
+2. **Thresholds are percentiles throughout**, per the Q2 decision, taken over
+   the realised (non-zero) edge weights rather than over all user pairs.
+3. **Ambiguities resolved by choice, not by evidence**, all recorded in the
+   module docstring: fast_retweet gets no similarity percentile because Table 2
+   sweeps its time interval instead; the paper does not say whether node pruning
+   runs on filtered or unfiltered networks, so `percentile=None` runs the second
+   reading; hashtag case is folded.
+4. **The text-similarity percentile is the weak point of the copy.** The paper's
+   0.95 = 96th percentile is not consistent with a percentile over all in-window
+   pairs, which is what an exhaustive scan produces. See A5's debugging order.
+
+**node2vec** is implemented directly - biased walks plus skip-gram with negative
+sampling in torch - rather than by adding gensim, which would be a new top-level
+dependency with a history of scipy pins that break this environment.
 
 ## A5. The reproduction gate
 
