@@ -250,3 +250,138 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# The IOHunter node2vec baseline uses PyTorch Geometric's Node2Vec with these
+# values, which are NOT the WWW 2024 paper's 128d / 16 walks / 16 steps that
+# `coord2.node2vec` defaults to. Gating against this benchmark means using this
+# benchmark's parameters.
+NODE2VEC_BASELINE = {
+    "dim": 128,
+    "walks": 10,      # walks_per_node
+    "length": 5,      # walk_length
+    "window": 4,      # context_size
+    "negatives": 1,   # num_negative_samples
+    "p": 1.0,
+    "q": 1.0,
+}
+
+
+def score_node2vec_rf(
+    country: Country,
+    *,
+    seed: int = 0,
+    epochs: int = 5,
+    params: dict | None = None,
+    early_stop: bool = False,
+) -> pd.DataFrame:
+    """Their supervised baseline: node2vec over the fused graph, then a
+    default-parameter Random Forest fit on each split's train mask.
+
+    With `early_stop`, the embedding is trained until mean validation Macro-F1
+    stops improving, which is their rule and removes the epoch budget from the
+    comparison. Without it, `epochs` is a fixed budget and any gap against their
+    number may be optimisation effort rather than method.
+
+    Deviation from the reference, recorded: they evaluate every epoch with a
+    patience of 20 epochs; this evaluates every `eval_every` epochs with a
+    patience of that many checks, because each check costs a Random Forest fit
+    per split.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+
+    from kma import coord2
+
+    settings = {**NODE2VEC_BASELINE, **(params or {})}
+    graph = rewire_isolated(country.graph, seed=seed)
+
+    splits_for_scoring = country.splits
+    ordered_for_scoring = (
+        [splits_for_scoring[k] for k in sorted(splits_for_scoring)]
+        if isinstance(splits_for_scoring, dict)
+        else list(splits_for_scoring)
+    )
+
+    def validation_score(frame: pd.DataFrame) -> float:
+        """Mean validation Macro-F1 across splits - the quantity their baseline
+        early-stops on. Never touches test."""
+        vectors = np.zeros((len(country.labels), frame.shape[1]), dtype=float)
+        vectors[[int(node) for node in frame.index]] = frame.to_numpy()
+        scores = []
+        for split in ordered_for_scoring:
+            model = RandomForestClassifier(random_state=seed)
+            model.fit(vectors[split["train"]], country.labels[split["train"]])
+            scores.append(_macro_f1(country.labels, model.predict(vectors), split["val"]))
+        return float(np.mean(scores))
+
+    embeddings = coord2.node2vec(
+        graph,
+        epochs=epochs,
+        seed=seed,
+        score_fn=validation_score if early_stop else None,
+        **settings,
+    )
+
+    index = [int(node) for node in embeddings.index]
+    vectors = np.zeros((len(country.labels), embeddings.shape[1]), dtype=float)
+    vectors[index] = embeddings.to_numpy()
+
+    splits = country.splits
+    ordered = [splits[k] for k in sorted(splits)] if isinstance(splits, dict) else list(splits)
+
+    rows = []
+    for split_id, split in enumerate(ordered):
+        model = RandomForestClassifier(random_state=seed)
+        model.fit(vectors[split["train"]], country.labels[split["train"]])
+        predicted = model.predict(vectors)
+        rows.append(
+            {
+                "split": split_id,
+                "val_macro_f1": _macro_f1(country.labels, predicted, split["val"]),
+                "test_macro_f1": _macro_f1(country.labels, predicted, split["test"]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+# Their baseline trains up to 1000 epochs and early-stops on validation
+# Macro-F1. We cannot early-stop inside a fixed embedding pass, so the epoch
+# count is selected over this grid - and selected on VALIDATION, never on test
+# and never against the published target. Choosing it by the delta to the target
+# would be tuning to the answer and would make the gate decorative.
+EPOCH_GRID = (5, 20, 50, 100)
+
+
+def gate_report_supervised(
+    country: Country, *, seed: int = 0, epochs: int | None = None, early_stop: bool = False
+) -> dict:
+    """One country's supervised result next to the published target.
+
+    With `epochs=None` the count is chosen by mean validation Macro-F1 across
+    the splits, mirroring their early stopping.
+    """
+    if early_stop:
+        per_split = score_node2vec_rf(
+            country, seed=seed, epochs=epochs or 1000, early_stop=True
+        )
+        epochs = f"<={epochs or 1000} early-stopped"
+    elif epochs is None:
+        by_epochs = {e: score_node2vec_rf(country, seed=seed, epochs=e) for e in EPOCH_GRID}
+        epochs = max(by_epochs, key=lambda e: by_epochs[e]["val_macro_f1"].mean())
+        per_split = by_epochs[epochs]
+    else:
+        per_split = score_node2vec_rf(country, seed=seed, epochs=epochs)
+    got = per_split["test_macro_f1"].mean() * 100
+    target = float(TARGETS.loc[country.name, "node2vec_rf"])
+    tolerance = float(TARGETS.loc[country.name, "node2vec_rf_std"])
+    return {
+        "country": country.name,
+        "nodes": country.graph.number_of_nodes(),
+        "macro_f1": round(got, 2),
+        "std": round(per_split["test_macro_f1"].std() * 100, 2),
+        "target": target,
+        "target_std": tolerance,
+        "delta": round(got - target, 2),
+        "within_2sd": bool(abs(got - target) <= 2 * tolerance),
+        "epochs": epochs,
+    }
