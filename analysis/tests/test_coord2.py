@@ -753,3 +753,52 @@ def test_min_activity_keeps_genuine_co_action():
     edges = coord2.similarity_network(traces)
     assert len(edges) == 1
     assert {edges.iloc[0]["source"], edges.iloc[0]["target"]} == {"a", "b"}
+
+
+def test_gpu_cosine_pairs_matches_the_cpu_implementation():
+    """Threshold pushdown must change only WHICH pairs are yielded, never the
+    similarity values or the indices they carry."""
+    rng = np.random.default_rng(0)
+    vectors = rng.normal(size=(40, 8))
+    times = np.arange(40, dtype="float64") * 60.0
+
+    cpu = {}
+    for i, j, sim in coord2.cosine_pairs(vectors, times, window_seconds=1e9, chunk=7):
+        for a, b, s in zip(i, j, sim, strict=True):
+            cpu[(int(a), int(b))] = float(s)
+
+    gpu = {}
+    for i, j, sim in coord2.gpu_cosine_pairs(0.3, device="cpu")(
+        vectors, times, window_seconds=1e9, chunk=7
+    ):
+        for a, b, s in zip(i, j, sim, strict=True):
+            gpu[(int(a), int(b))] = float(s)
+
+    assert set(gpu) == {k for k, v in cpu.items() if v >= 0.3}
+    for key, value in gpu.items():
+        assert value == pytest.approx(cpu[key], abs=1e-5)
+
+
+def test_gpu_cosine_pairs_respects_the_window():
+    vectors = np.ones((6, 4))
+    times = np.array([0.0, 10.0, 20.0, 1000.0, 1010.0, 1020.0])
+    pairs = list(coord2.gpu_cosine_pairs(0.0, device="cpu")(vectors, times, window_seconds=100.0, chunk=3))
+    seen = {(int(a), int(b)) for i, j, _ in pairs for a, b in zip(i, j, strict=True)}
+    assert (0, 3) not in seen
+    assert (0, 1) in seen
+
+
+def test_text_rows_is_deterministically_ordered():
+    """A bounded read must be the same bounded read next time: an unordered
+    query turned one threshold sweep into a comparison of three corpora."""
+    posts = pd.DataFrame(
+        [
+            _post(f"p{i:03d}", f"u{i % 7}", text=f"a genuine sentence number {i} here")
+            for i in range(60)
+        ]
+    )
+    con, view = _con(posts)
+    first = coord2.text_rows(con, view)
+    second = coord2.text_rows(con, view)
+    assert first["post_id"].tolist() == second["post_id"].tolist()
+    assert first["post_id"].tolist() == sorted(first["post_id"])

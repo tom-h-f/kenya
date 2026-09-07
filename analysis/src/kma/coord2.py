@@ -538,6 +538,11 @@ def text_rows(
         SELECT post_id, user_id, created_at, text
         FROM ({view})
         WHERE NOT coalesce(is_retweet, false) AND text IS NOT NULL AND user_id IS NOT NULL
+        -- Ordered so a bounded read is the SAME bounded read next time. Without
+        -- it, three runs over one pinned snapshot returned 16,478, 15,085 and
+        -- 10,883 rows for an identical limit, which silently made a threshold
+        -- sweep a comparison of different corpora.
+        ORDER BY post_id
         """
     ).df()
     if df.empty:
@@ -614,6 +619,57 @@ def cosine_pairs(
         if len(i) == 0:
             continue
         yield rows[i, 0], cols[0, j], block[i, j]
+
+
+def gpu_cosine_pairs(min_similarity: float, device: str | None = None) -> PairSimilarity:
+    """A `PairSimilarity` that runs on GPU and yields ONLY pairs at or above
+    `min_similarity`.
+
+    `cosine_pairs` streams every in-window pair for the caller to filter, which
+    is right at benchmark scale and impossible at corpus scale: 411k eligible
+    Kenyan posts is 8.4e10 upper-triangle pairs, and materialising their indices
+    exhausts memory long before any of them are thresholded. Pushing the
+    threshold into the block keeps only survivors, which at a 0.9+ cut is a tiny
+    fraction of the block.
+
+    The threshold must therefore be known BEFORE this runs, so estimate it with
+    `pair_similarity_percentile` on a sample and pass the result here.
+    """
+    import torch
+
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+
+    def pairs(vectors, times=None, *, window_seconds=None, chunk=512):
+        n = len(vectors)
+        if n < 2:
+            return
+        mat = torch.as_tensor(np.asarray(vectors), dtype=torch.float32, device=dev)
+        mat = mat / mat.norm(dim=1, keepdim=True).clamp_min(1e-12)
+        t = None if times is None else torch.as_tensor(np.asarray(times), dtype=torch.float64, device=dev)
+
+        for start in range(0, n, chunk):
+            end = min(start + chunk, n)
+            stop = n
+            if t is not None and window_seconds is not None:
+                stop = int(np.searchsorted(times, times[end - 1] + window_seconds, side="right"))
+            if stop <= start + 1:
+                continue
+            block = mat[start:end] @ mat[start:stop].T
+            rows = torch.arange(start, end, device=dev).unsqueeze(1)
+            cols = torch.arange(start, stop, device=dev).unsqueeze(0)
+            keep = (cols > rows) & (block >= min_similarity)
+            if t is not None and window_seconds is not None:
+                keep &= (t[cols] - t[rows]) <= window_seconds
+            idx = keep.nonzero(as_tuple=False)
+            if idx.numel() == 0:
+                continue
+            # Both indices are block-local; column k of the block is absolute
+            # index start + k, same as the row offset.
+            i = (idx[:, 0] + start).cpu().numpy()
+            j = (idx[:, 1] + start).cpu().numpy()
+            yield i, j, block[keep].cpu().numpy()
+
+    return pairs
 
 
 def pair_similarity_percentile(
