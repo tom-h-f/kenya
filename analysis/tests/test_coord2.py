@@ -68,7 +68,7 @@ def test_tfidf_cosine_matches_hand_computation_on_ten_users():
     """
     rows = [{"user_id": f"u{i:02d}", "entity": "popular"} for i in range(10)]
     rows += [{"user_id": u, "entity": "rare"} for u in ("u00", "u01")]
-    edges = coord2.similarity_network(pd.DataFrame(rows))
+    edges = coord2.similarity_network(pd.DataFrame(rows), min_entities=1)
 
     idf_rare = math.log((1 + 10) / (1 + 2)) + 1
     shared = np.array([1.0, idf_rare])
@@ -86,7 +86,7 @@ def test_tfidf_downweights_popular_entities_rather_than_deleting_them():
     """v2 has no hub cap: a viral object still contributes, at a lower weight."""
     rows = [{"user_id": f"u{i}", "entity": "viral"} for i in range(50)]
     rows += [{"user_id": u, "entity": "niche"} for u in ("u0", "u1")]
-    edges = coord2.similarity_network(pd.DataFrame(rows)).set_index(["source", "target"])["weight"]
+    edges = coord2.similarity_network(pd.DataFrame(rows), min_entities=1).set_index(["source", "target"])["weight"]
     assert edges[("u0", "u1")] > edges[("u0", "u2")] > 0
 
 
@@ -96,8 +96,8 @@ def test_term_frequency_counts_repeated_actions():
     )
     once = pd.DataFrame({"user_id": ["u1", "u1", "u2"], "entity": ["e1", "e2", "e1"]})
     assert (
-        coord2.similarity_network(repeated)["weight"][0]
-        > coord2.similarity_network(once)["weight"][0]
+        coord2.similarity_network(repeated, min_entities=1)["weight"][0]
+        > coord2.similarity_network(once, min_entities=1)["weight"][0]
     )
 
 
@@ -223,7 +223,7 @@ def test_hashtag_sequence_is_a_sequence_not_a_set():
         "u2": "iebc|raila|ruto",
         "u3": "ruto|raila|iebc",
     }
-    edges = coord2.similarity_network(traces)
+    edges = coord2.similarity_network(traces, min_entities=1)
     assert set(zip(edges["source"], edges["target"], strict=True)) == {("u1", "u3")}
 
 
@@ -638,17 +638,30 @@ def test_unsupervised_metrics_score_centrality_directly():
 
 
 def test_five_traces_fuse_into_one_account_level_verdict():
-    posts = [_post("orig", "target", text="the original claim about the commission")]
+    """The ring acts on TWO objects per trace, not one.
+
+    A ring sharing a single object is indistinguishable from a viral tweet's
+    audience - see MIN_ENTITIES_PER_USER - so a fixture built that way would be
+    asserting behaviour the method deliberately no longer has.
+    """
+    # Two DIFFERENT target authors: fast_retweet's entity is the retweeted
+    # author, so two posts by one author is a single entity there and the
+    # activity floor would drop that trace.
+    posts = [
+        _post("orig", "target", text="the original claim about the commission"),
+        _post("orig2", "target2", text="a second claim from another account"),
+    ]
     for i in range(4):
-        posts.append(
-            _post(
-                f"rt{i}",
-                f"ring{i}",
-                at=BASE + timedelta(seconds=5),
-                repost_of="orig",
-                text="RT",
+        for j, parent in enumerate(("orig", "orig2")):
+            posts.append(
+                _post(
+                    f"rt{i}_{j}",
+                    f"ring{i}",
+                    at=BASE + timedelta(seconds=5 + j),
+                    repost_of=parent,
+                    text="RT",
+                )
             )
-        )
         posts.append(
             _post(
                 f"tag{i}",
@@ -657,6 +670,16 @@ def test_five_traces_fuse_into_one_account_level_verdict():
                 text="stop the steal now #iebc #ruto #raila",
                 hashtags=["iebc", "ruto", "raila"],
                 urls=["https://example.org/dossier"],
+            )
+        )
+        posts.append(
+            _post(
+                f"tag2{i}",
+                f"ring{i}",
+                at=BASE + timedelta(minutes=30 + i),
+                text="again the same line #iebc #raila #ruto now",
+                hashtags=["iebc", "raila", "ruto"],
+                urls=["https://example.org/second"],
             )
         )
     posts.append(_post("solo", "organic", text="watching the news tonight", hashtags=["news"]))
@@ -684,3 +707,49 @@ def test_five_traces_fuse_into_one_account_level_verdict():
     found = coord2.detect(networks, nodes=population).set_index("user_id")
     assert found.loc[[f"ring{i}" for i in range(4)], "predicted"].all()
     assert not found.loc["organic", "predicted"]
+
+
+def test_min_activity_drops_single_entity_users():
+    """A user with one action cannot be coordinated with anyone: their one-hot
+    TF-IDF vector is identical to every other single-actor on that entity, so
+    cosine is 1.0 and a viral object becomes a clique."""
+    traces = pd.DataFrame(
+        {
+            "user_id": ["a", "a", "b", "b", "c"],
+            "entity": ["x", "y", "x", "y", "x"],
+        }
+    )
+    kept = coord2.min_activity(traces, 2)
+    assert set(kept["user_id"]) == {"a", "b"}
+
+
+def test_min_activity_of_one_is_a_no_op():
+    traces = pd.DataFrame({"user_id": ["a", "b"], "entity": ["x", "x"]})
+    assert len(coord2.min_activity(traces, 1)) == 2
+
+
+def test_similarity_network_breaks_the_single_object_clique():
+    """Ten users sharing exactly one viral object form a complete graph at
+    min_entities=1 and vanish at the default floor."""
+    viral = pd.DataFrame(
+        {"user_id": [f"u{i}" for i in range(10)], "entity": ["viral"] * 10}
+    )
+    wide_open = coord2.similarity_network(viral, min_entities=1)
+    assert len(wide_open) == 45  # complete graph on 10 nodes
+
+    filtered = coord2.similarity_network(viral)
+    assert filtered.empty
+
+
+def test_min_activity_keeps_genuine_co_action():
+    """The floor must not remove real coordination: users sharing two objects
+    survive it."""
+    traces = pd.DataFrame(
+        {
+            "user_id": ["a", "a", "b", "b", "noise"],
+            "entity": ["x", "y", "x", "y", "z"],
+        }
+    )
+    edges = coord2.similarity_network(traces)
+    assert len(edges) == 1
+    assert {edges.iloc[0]["source"], edges.iloc[0]["target"]} == {"a", "b"}
