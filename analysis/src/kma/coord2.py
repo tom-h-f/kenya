@@ -81,7 +81,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -874,6 +874,10 @@ def node2vec(
     p: float = 1.0,
     q: float = 1.0,
     seed: int = 0,
+    device: str | None = None,
+    score_fn: Callable[[pd.DataFrame], float] | None = None,
+    eval_every: int = 20,
+    patience: int = 5,
 ) -> pd.DataFrame:
     """128-dimensional node embeddings: biased walks, then skip-gram with
     negative sampling trained in torch.
@@ -895,24 +899,40 @@ def node2vec(
     rng = np.random.default_rng(seed)
     centers, contexts = _skipgram_pairs(corpus, window, rng)
     torch.manual_seed(seed)
-    inp = torch.nn.Embedding(len(nodes), dim)
-    out = torch.nn.Embedding(len(nodes), dim)
+    # CUDA when it is there, because the epoch counts this needs to converge
+    # make a CPU pass the bottleneck on the larger graphs. `device=` overrides.
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    inp = torch.nn.Embedding(len(nodes), dim).to(dev)
+    out = torch.nn.Embedding(len(nodes), dim).to(dev)
     torch.nn.init.uniform_(inp.weight, -0.5 / dim, 0.5 / dim)
     torch.nn.init.zeros_(out.weight)
     if len(centers) == 0:
         return pd.DataFrame(
-            inp.weight.detach().numpy(), index=pd.Index(nodes, name="user_id")
+            inp.weight.detach().cpu().numpy(), index=pd.Index(nodes, name="user_id")
         )
 
     # word2vec's unigram^0.75 negative distribution: frequent nodes are sampled
     # as negatives more often, but sub-linearly in their frequency.
     counts = np.bincount(centers, minlength=len(nodes)).astype("float64") ** 0.75
-    noise = torch.tensor(counts / counts.sum(), dtype=torch.float)
+    noise = torch.tensor(counts / counts.sum(), dtype=torch.float, device=dev)
     optimiser = torch.optim.Adam(list(inp.parameters()) + list(out.parameters()), lr=lr)
-    centers_t = torch.tensor(centers, dtype=torch.long)
-    contexts_t = torch.tensor(contexts, dtype=torch.long)
+    centers_t = torch.tensor(centers, dtype=torch.long, device=dev)
+    contexts_t = torch.tensor(contexts, dtype=torch.long, device=dev)
 
-    for _ in range(epochs):
+    def _frame() -> pd.DataFrame:
+        return pd.DataFrame(
+            inp.weight.detach().cpu().numpy(), index=pd.Index(nodes, name="user_id")
+        )
+
+    # Early stopping on a caller-supplied score, mirroring the reference
+    # baseline's stop on validation Macro-F1. Without it the epoch count is a
+    # compute budget rather than a property of the method, and a comparison then
+    # measures how long we were willing to wait.
+    best_score = -np.inf
+    best_weights = None
+    stale = 0
+
+    for epoch in range(epochs):
         for start in range(0, len(centers_t), batch):
             c = inp(centers_t[start : start + batch])
             positive = out(contexts_t[start : start + batch])
@@ -927,7 +947,22 @@ def node2vec(
             loss.backward()
             optimiser.step()
 
-    return pd.DataFrame(inp.weight.detach().numpy(), index=pd.Index(nodes, name="user_id"))
+        if score_fn is None or (epoch + 1) % eval_every:
+            continue
+        score = score_fn(_frame())
+        if score > best_score:
+            best_score, stale = score, 0
+            best_weights = inp.weight.detach().clone()
+        else:
+            stale += 1
+            if stale >= patience:
+                break
+
+    if best_weights is not None:
+        return pd.DataFrame(
+            best_weights.cpu().numpy(), index=pd.Index(nodes, name="user_id")
+        )
+    return _frame()
 
 
 def classification_metrics(

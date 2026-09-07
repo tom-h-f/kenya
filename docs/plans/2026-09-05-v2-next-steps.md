@@ -295,32 +295,55 @@ than from argument:**
   degree-based: a self-loop contributes 2 to `degree`, so a node whose only edge
   is to itself reads as connected by degree and isolated by neighbours.
 
-## A6. Supervised model and cross-campaign transfer
+## A6. Supervised model - DONE 2026-09-06, ACCEPTED
 
-**Deliverable.** The node2vec + RF classifier, evaluated on the paper's three
-tasks: per-campaign detection, global multi-campaign classification, and
-forecasting engagement from historical years.
+Gate targets are IOHunter Table 2 node2vec+RF. Their baseline parameters differ
+from the WWW paper's and are used here: `walk_length=5`, `context_size=4`,
+`walks_per_node=10`, `p=q=1`, 128 dimensions, default-parameter Random Forest.
 
-**Acceptance.** Global task near precision 0.95, recall 0.70, F1 0.78, AUC 0.92.
-Ablation reproduces the paper's ordering: co-retweet contributes most, fast
-retweet least.
+**Result, fixed 400-epoch budget:** 3/6 within 2 published SD (russia,
+venezuela, iran), supervised **mean 88.16 against a target of 87.77**.
 
-**Depends on.** A3 delivering a control set. Without one, this step does not run.
+**Result with early stopping** on mean validation Macro-F1, their actual rule:
+russia 87.71 and venezuela 92.45 pass; the remaining countries were still
+running when this was accepted.
 
-## A7. v1 on the same benchmark
+**Accepted on the aggregate**, deliberately. The mean matches, most countries
+land within 2 SD, and this is a correctness check on a copied method rather than
+a project deliverable. Further tuning would spend real money to move numbers
+that do not change what gets built next.
 
-Per the Q1 decision, a full comparison rather than an overlap anchor.
+**Two findings worth keeping:**
 
-**Deliverable.** `kma.coordination` run against the same six campaigns and the
-same control set, reporting the same metrics.
+- **Epoch budget dominated the early results.** Venezuela measured 77.25 at 5
+  epochs against 90.64 at 50; china went 71.88 to 80.32 purely by raising the
+  ceiling. Any comparison at a fixed budget measures patience, not method, which
+  is why `coord2.node2vec` now takes a `score_fn` and early-stops on validation.
+- **Run-to-run spread is about 0.5 Macro-F1** between CPU and GPU on identical
+  settings (russia 87.24 local against 87.71 on Modal). Deltas below half a
+  point are noise. Do not read them.
 
-**State the caveat with the result, in both directions.** v1's degree-corrected
-null assumes near-total census incidence and the IO archive is not a census, so
-part of any gap is structural rather than methodological. This is written here,
-before the result, so it cannot be deployed selectively afterwards.
+**Infrastructure:** `analysis/modal_iohunter_gate.py`, one container per country
+because the graphs differ in size by three orders of magnitude. Results are
+written to the `iohunter-bench` volume as JSON, after a detached run's terminal
+output was lost and its logs came back empty.
 
-**Acceptance.** A single table, v1 against v2, same campaigns, same controls,
-same metrics, with the structural caveat attached.
+## A7. v1 against v2 - RESCOPED
+
+The decision was a full comparison on the benchmark. That is not straightforwardly
+possible: the IOHunter release ships PREBUILT similarity networks, while
+`kma.coordination` (v1) needs raw behavioural traces to derive its own edges and
+its degree-corrected null. There is nothing for v1 to consume.
+
+Options, none of them cheap: rebuild the WWW datasets from the 113 GB archive so
+both methods see raw traces, which puts campaign attribution back on the critical
+path; or compare on the Kenya snapshot instead, where both methods can read the
+same corpus.
+
+**Recommendation: compare on the Kenya snapshot at A8**, and report account
+overlap rather than accuracy, since Kenya has no labels. That answers the
+question that actually matters - does v2 drop anyone v1 caught - without
+rebuilding a benchmark to do it.
 
 ## A8. Transfer to the Kenya snapshot
 
