@@ -306,14 +306,41 @@ def filter_percentile(edges: pd.DataFrame, percentile: float | None) -> pd.DataF
     return edges[edges["weight"] >= threshold].reset_index(drop=True)
 
 
+# A user acting on a single entity cannot express coordination: two users whose
+# only action is the same object have IDENTICAL one-hot TF-IDF vectors, so their
+# cosine is 1.0 however hard IDF downweights that object - the normalisation
+# cancels it. Measured on the Kenya snapshot 2026-09-07: 54.8% of co_retweet
+# users had exactly one entity, one viral tweet drew 308 of them into a clique,
+# and eigenvector centrality collapsed onto it - the top 100 accounts shared a
+# single centrality value of 1/sqrt(308). At a floor of 2 the top 100 carried 90
+# distinct values and the graph consolidated from 1,828 components to 245.
+#
+# This is a DEVIATION from Luceri et al., forced by data rather than chosen. It
+# is also what v1's hub cap defended against, and what CooRTweet spells
+# min_repetition.
+MIN_ENTITIES_PER_USER = 2
+
+
+def min_activity(traces: pd.DataFrame, minimum: int = MIN_ENTITIES_PER_USER) -> pd.DataFrame:
+    """Drop users acting on fewer than `minimum` distinct entities."""
+    if traces.empty or minimum <= 1:
+        return traces
+    counts = traces.groupby("user_id")["entity"].nunique()
+    return traces[traces["user_id"].isin(counts[counts >= minimum].index)]
+
+
 def similarity_network(
     traces: pd.DataFrame,
     *,
     percentile: float | None = None,
     chunk: int = 2048,
+    min_entities: int = MIN_ENTITIES_PER_USER,
 ) -> pd.DataFrame:
     """One behavioural trace, from trace rows to a filtered similarity network."""
-    return filter_percentile(cosine_edges(bipartite_tfidf(traces), chunk=chunk), percentile)
+    kept = min_activity(traces, min_entities)
+    if kept.empty:
+        return pd.DataFrame({"source": [], "target": [], "weight": []})
+    return filter_percentile(cosine_edges(bipartite_tfidf(kept), chunk=chunk), percentile)
 
 
 # --------------------------------------------------------------------------

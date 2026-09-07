@@ -272,6 +272,54 @@ The published series restarts on v2 by decision; nothing carries over. Only
 composition-standardised or within-partition rates get published (see
 `OBJECTIVES.md` C1/A7).
 
+## 8a. Deviations from the paper, forced by data
+
+Three, all discovered by running the method rather than by reading it. Each is a
+departure from a faithful copy and each is recorded here so the copy stays
+honest about where it diverges.
+
+| # | Deviation | Why it was forced |
+|---|---|---|
+| 1 | **Centrality threshold is a swept percentile selected on validation**, not the paper's fixed `1e-2`. | The reference implementation does this too - the paper quotes 1e-2 only as a conservative operating point. An absolute cut cannot port between graphs, because eigenvector centrality is L2-normalised across nodes: typical values run ~0.06 on a 240-node campaign and ~0.001 on a million-author graph. |
+| 2 | **Isolated nodes are rewired** to five random non-isolated nodes before centrality. | Also in the reference implementation, and absent from the paper's prose. The check must be neighbour-based, not degree-based: a self-loop contributes 2 to `degree`, so a node whose only edge is to itself reads as connected by degree and isolated by neighbours. |
+| 3 | **Minimum-activity floor: users acting on fewer than 2 distinct entities are dropped from a trace** (`coord2.MIN_ENTITIES_PER_USER`). | Not in the paper or the reference at all. See below. |
+
+### Why the activity floor was unavoidable
+
+The paper's stated defence against popular entities is TF-IDF: they are
+down-weighted, not deleted. That holds for users with varied activity and fails
+completely for users with a single action. Two users whose only action is the
+same object have identical one-hot vectors, so their cosine is 1.0 whatever the
+IDF weight - the normalisation cancels it.
+
+Measured on snapshot `2026-09-05-promotion-off`, 2026-09-07:
+
+- **54.8%** of `co_retweet` users acted on exactly one entity.
+- One viral tweet (`2016031742109348277`) drew **308** of them into a clique,
+  212 of which had no other retweet in the corpus.
+- Eigenvector centrality collapsed onto it: the **top 100 accounts shared a
+  single centrality value**, 1/sqrt(308) = 0.056946.
+
+| floor | fused nodes | edges | components | largest | distinct values in top 100 |
+|---|---|---|---|---|---|
+| 1 | 28,661 | 583,348 | 1,828 | 18,299 | **1** |
+| 2 | 12,186 | 373,788 | 245 | 11,379 | **90** |
+| 3 | 8,630 | 291,407 | 180 | 8,122 | 100 |
+
+A floor of 2 makes the ranking usable and consolidates the graph; the top
+accounts are stable between floors 2 and 3, so it is finding structure rather
+than reshuffling noise. It costs 58% of accounts, all of which are incapable of
+expressing coordination under any method.
+
+**This is a partial vindication of v1.** Its hub cap defended against exactly
+this, with its own measured justification (420 of 422 censused objects were hubs
+carrying no coordination signal), and v2 discarded it on the paper's authority.
+CooRTweet spells the same idea `min_repetition`.
+
+**Consequence for the benchmark:** the IOHunter gate ships PREBUILT trace
+networks, so it never exercised this path and the gate's 5/6 pass says nothing
+about it. Trace construction remains the untested half of the copy.
+
 ## 9. Risks, stated plainly
 
 1. **Actor-type mismatch.** The IO archive is state-backed operations. Kenya's
