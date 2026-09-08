@@ -103,6 +103,19 @@ def build(snapshot: str, limit: int = 0, percentile: float = 96.0, chunk: int = 
     )
     print(f"edges: {len(edges)}", flush=True)
 
+    # Persist to R2 under the key the runner reads, so a pass is one command
+    # after this. The volume copy stays as a cheap local artifact.
+    from kma.coord2_run import textsim_key
+    from kma.db import BUCKET
+
+    r2_key = textsim_key(snapshot, float(cut))
+    con.register("_ts", edges)
+    try:
+        con.execute(f"COPY _ts TO 'r2://{BUCKET}/{r2_key}' (FORMAT parquet, COMPRESSION zstd)")
+    finally:
+        con.unregister("_ts")
+    print(f"wrote r2://{BUCKET}/{r2_key}", flush=True)
+
     import os
 
     os.makedirs("/data/textsim", exist_ok=True)
@@ -123,6 +136,7 @@ def build(snapshot: str, limit: int = 0, percentile: float = 96.0, chunk: int = 
         "edges": len(edges),
         "users": users,
         "path": path,
+        "r2_key": r2_key,
     }
 
 
