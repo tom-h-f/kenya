@@ -433,6 +433,158 @@ In rough order of expected value:
 three runs in fresh processes and in both orders, because the run-to-run noise
 band on these passes is ~20% and single-run comparisons prove nothing.
 
+### Track B handoff, 2026-09-08
+
+Built and tested offline. **No live-R2 replay has been run**, so the acceptance
+criterion in B1 is verified against the collector's own code on a fixture corpus
+and NOT against the Kenya corpus - see "what is not measured" below.
+
+`kma.replay`, 48 offline tests. Analysis suite 578 -> 626; collector suite
+unchanged at 246 (no collector code was touched). CLI: `kma-replay SNAPSHOT
+[--reproduce] [--passes N] [--band-max N]`.
+
+- **`Policy` protocol** - `candidates(state) -> list[FetchRequest]`, plus
+  `params()` so a result records everything that could change its selection.
+- **`ReplayState`** - the observable state at *t*, and the only corpus handles a
+  policy gets.
+- **`replay()`** - time-ordered driver with a per-step request budget and a
+  per-policy TTL ledger.
+- **`IncumbentCensus`** - the deployed retweeter census as the baseline.
+- **`score()` / `compare()`** - B2's metric, built on `coord2.similarity_network`
+  and `coord2.fuse`, not a reimplementation.
+- **`UnbandedCensus`** - B3 candidate 1.
+- **`reproduce()`** - the B1 acceptance check, with its six tolerance terms
+  enumerated in the docstring.
+
+**Leakage is prevented at two levels and audited at a third.** R2 keys carry
+their write time (`run=20260905T081903Z`), so the manifest alone dates every
+object and a state at *t* is pinned to exactly the paths that predate it - no
+data is read to establish it. `WHERE collected_at <= t` goes on top, because the
+collector flushes mid-pass and one object can straddle *t*. Object-level pruning
+alone over-admits; row-level clipping alone reads the whole corpus. Neither stops
+a policy naming a target it had no way to know about, so `replay(audit=True)`
+semi-joins every request against the visible id space - post ids plus the ids
+visible posts reference, because the hydration arm legitimately asks for
+referenced-but-unheld objects - and raises `Leakage` rather than scoring it.
+
+**The incumbent replay reproduces the live selector exactly, on a fixture.**
+`IncumbentCensus` is a PORT of `runner.hot_objects`'s retweeted arm: the
+analysis project takes no dependency on the collector, and the live function
+reads `now()` off the wall clock. Port divergence is the harness's real failure
+mode and asserting a port against itself would not find it, so
+`analysis/tests/fixtures/replay/generate_ground_truth.py` runs the ACTUAL
+`hot_objects` over a synthetic corpus and records what it picked; the test suite
+replays against those picks. Recall, precision and Jaccard are all 1.000 across
+three passes, and the ground truth rejects a deliberately leaking replay. Every
+predicate in `hot_objects` is relative (`now() - INTERVAL n DAY`), so the
+generator rebases the whole corpus by `now - t_k` to make the live selector
+select as of a virtual time - that trick is what makes an offline cross-
+implementation check possible at all.
+
+The fixture corpus is checked in as CSV and converted to hive-partitioned
+parquet at test time, because the repo gitignores `*.parquet` wholesale so that
+corpus extracts cannot be committed by accident. Do not add an exception to that
+rule for test data.
+
+**What is NOT measured, and it is the important half.** The reproduction number
+against the REAL corpus is unknown. A git worktree has no `.env`, and the only
+honest way to get it is `uv run kma-replay 2026-09-05-promotion-off --reproduce`
+from a credentialed checkout. **Run that before trusting any replay number.**
+Expect recall well below 1.0 for reasons that are structural, not bugs: merged
+passes append `hate_signal.hot_toxic_objects` and `census_runs/` records no
+baseline-only count; the live TTL is two mechanisms and only the R2 half
+survives in the corpus; rate-limited passes fetch a prefix of their selection;
+an object whose fetch returned nothing writes no engagement row at all. If
+recall comes back low, the fix is to scope the check to `pass_kind='baseline'`
+passes, not to loosen the tolerance.
+
+**Chosen candidate: band bounds, `UnbandedCensus`.** Not because it is most
+promising but because it is the only one of B3's four the frozen corpus can say
+anything about. Budget split and TTL both change which objects get censused into
+a corpus that has already recorded one answer; object ranking reorders a
+population the census has nearly worked through (742 selectable of 3,496
+in-band, 2026-08-02). The ceiling is different: it shipped at 16:19 on
+2026-08-01, so the corpus holds a pre-banding era in which hubs WERE censused -
+420 of 422 objects above 100 amplifiers - and that is where the incidence to
+score hub selection lives.
+
+**Fixture score, three runs per order in fresh processes:**
+
+| policy | edges | planned requests | edges/request | unscorable share |
+|---|---|---|---|---|
+| incumbent | 1,770 | 40 | 44.25 | 0.00 |
+| unbanded | 1,770 | 90 | 19.67 | 0.27 |
+
+**These numbers are about the fixture, not about Kenya.** The fixture's 60-account
+amplifier pool saturates into a complete graph, so both policies buy every
+available edge and the ratio is pure cost: the unbanded policy spends 2.25x the
+requests for the same edges. On a real corpus the hub incidence it buys is
+larger and the answer could go either way. What the fixture does establish is
+that the metric discriminates on cost and that 27% of the candidate's spend is
+unscorable, which is the incumbent bias arriving as a number rather than a
+caveat.
+
+**Noise floor: zero, by construction.** Six runs - three per order, fresh
+process each - agreed to the last digit on every field. Nothing in a replay
+samples, shuffles or times, so given a snapshot id the metric is deterministic
+and there is no floor below which a delta is noise. The plan's ~20% band is a
+property of real collection passes, not of replay. A test asserts the
+determinism so the claim cannot rot.
+
+**The cache trap fired anyway, on wall clock.** Whichever policy ran FIRST took
+0.465-0.497s and the second took 0.031-0.033s - a **14-16x apparent speedup from
+nothing but a warm cache**, on a 40 KB local fixture with no network involved at
+all. Both orders were run for exactly this reason. The rule is not about httpfs
+specifically; it is about any second variant in the same process.
+
+**Finding: the census cost model in `census-tuning.md` §2c is out by 5x.** That
+section prices `retweeters()` at 100 per page and a mid-band object at 1
+request. twscrape 0.20.1 sends `count: 20` (`twscrape/api.py`,
+`retweeters_raw`), so on the deployed code a 27-retweeter object costs 2 requests
+and a 300-retweeter fetch costs 15. This makes §2c's conclusion - banding is
+simultaneously cheaper per object and more useful - STRONGER, since a hub is ~15
+requests against a mid-band object's 1-2 rather than 3 against 1. But every
+per-request figure in that document is affected. `replay.RETWEETERS_PAGE` is a
+parameter so the arithmetic can be redone once the true page size is read off
+pi0's logs, which is the only place it is observable: X may return a different
+count than twscrape asks for.
+
+**Where Track B is weaker than this plan implies.** Three things, in order of
+how much they matter:
+
+1. **The B1 acceptance criterion is satisfiable only for the retweeter census
+   arm.** For everything writing to `posts/` - the conversation arm, hydration,
+   parent backfill, deep timelines - the corpus cannot distinguish a row a
+   policy WOULD have fetched from one it DID fetch, because there is no
+   per-object provenance for a post beyond its partition type. The retweeter
+   census writes to `engagements/`, whose account x object incidence is
+   near-total for the objects it covers, and that is the entire domain in which
+   a counterfactual is answerable. `kma.replay` therefore implements one arm,
+   deliberately. B3's candidate 2, budget split between the retweet census, the
+   conversation census and hate expansion, is not scoreable by this harness at
+   all: two of its three arms are unmeasurable.
+2. **B3's ordering by expected value does not survive the incumbent-bias
+   constraint.** The plan orders the four candidates by how much they might
+   improve collection. Replay can only rank them by how much of their spend the
+   corpus can score, and those orders are close to opposite: the more a
+   candidate differs from the incumbent, the more valuable it might be and the
+   less measurable it is. The band ceiling is the one place they coincide, and
+   only because of a five-week-old code change that happens to have left
+   hub-census incidence in the corpus.
+3. **`docs/plans/2026-09-08-collector-depth.md` is right that Track B comes after
+   depth, and for a sharper reason than it gives.** Both depth passes collect
+   data that does not exist, which replay cannot evaluate by definition. But the
+   converse also holds: once a bulk depth pass runs, the corpus changes shape
+   and every replay number taken before it is against a different population.
+   Any replay result must therefore carry its snapshot id - which is why `score`
+   refuses to emit a row without one.
+
+**Honest summary.** The harness works and it can be trusted for what it covers:
+one collection arm, one metric, one candidate, deterministic, leak-audited, and
+reproduction-checked against the collector's own selector. It is not a general
+instrument for scoring collection policies, and the B3 candidate list should be
+cut to the ones the frozen corpus can answer rather than kept as four.
+
 ---
 
 # Track C - production and operations

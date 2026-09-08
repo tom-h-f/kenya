@@ -1,0 +1,17 @@
+platform,platform_post_id,author_id,author_handle,text,created_at,url,source_query,lang,in_reply_to_id,is_repost,repost_of_id,like_count,reply_count,repost_count,quote_count,view_count,quoted_post_id,is_quote,conversation_id,in_reply_to_user_id,source_label,place_name,lat,lon,has_media,media_count,collected_at
+x,rt-o17-0,a006,,RT o17,2026-08-31 19:00:00+01,,fixture,en,,true,o17,0,29,88,0,0,,false,o17,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o17-1,a007,,RT o17,2026-08-31 19:00:00+01,,fixture,en,,true,o17,0,29,88,0,0,,false,o17,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o17-2,a008,,RT o17,2026-08-31 19:00:00+01,,fixture,en,,true,o17,0,29,88,0,0,,false,o17,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o17-3,a009,,RT o17,2026-08-31 19:00:00+01,,fixture,en,,true,o17,0,29,88,0,0,,false,o17,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o17-4,a010,,RT o17,2026-08-31 19:00:00+01,,fixture,en,,true,o17,0,29,88,0,0,,false,o17,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-0,a011,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-1,a012,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-2,a013,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-3,a014,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-4,a015,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-5,a016,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-6,a017,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-7,a018,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-8,a019,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-9,a020,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
+x,rt-o18-10,a021,,RT o18,2026-08-31 19:00:00+01,,fixture,en,,true,o18,0,136,410,0,0,,false,o18,,,,,,false,0,2026-09-01 05:30:00+01
