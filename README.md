@@ -7,7 +7,8 @@ land in Cloudflare R2 as partitioned Parquet; analysis is done with DuckDB.
 
 What the project is for, with a measurable outcome per objective:
 [docs/OBJECTIVES.md](docs/OBJECTIVES.md). What the v2 methodology found:
-[docs/analysis/v2-findings.md](docs/analysis/v2-findings.md). The v2 coordination methodology
+[docs/analysis/v2-findings.md](docs/analysis/v2-findings.md). What is left to
+finish it: [docs/plans/2026-09-08-finishing-the-revamp.md](docs/plans/2026-09-08-finishing-the-revamp.md). The v2 coordination methodology
 (adopting Luceri et al., WWW 2024, wholesale) and the bench that scores it:
 [docs/plans/2026-09-05-v2-methodology.md](docs/plans/2026-09-05-v2-methodology.md).
 
