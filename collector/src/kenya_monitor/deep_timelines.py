@@ -379,8 +379,15 @@ def deepened_expr(
         return "FALSE"
     try:
         con.sql(f"SELECT 1 FROM {deep_posts_view} LIMIT 1").fetchall()
-    except duckdb.Error:
-        return "FALSE"  # nothing deepened yet; nothing to exclude
+    except duckdb.Error as exc:
+        # Logged rather than swallowed. An absent partition is expected on a
+        # first run, but any other fault here disables the self-healing half of
+        # resumability and the pass would look healthy while re-picking work.
+        # The ledger still bounds the damage, which is why this degrades rather
+        # than raising - unlike `_score_targets`, where the fallback would
+        # silently substitute a different target set.
+        log.info("deep timelines: no deep_timeline partition to exclude (%s)", exc)
+        return "FALSE"
     return f"""EXISTS (
         SELECT 1 FROM {deep_posts_view} d
         WHERE d.author_id = {column}
@@ -405,13 +412,26 @@ def _score_targets(
 
     Tiny relation (500 rows per run), so a MAX over it costs nothing and does
     not need the staging discipline the corpus scans do.
+
+    `IOException` only, never `duckdb.Error`. The broad catch was here first and
+    it silently substituted the suspicion fallback for any fault at all - a
+    schema change, a corrupt object, a permissions failure - which is the worst
+    possible outcome, because the pass then reports a healthy run against a
+    target set nobody chose. An absent prefix is the one recoverable case.
+
+    `max(computed_at)` is cast to VARCHAR rather than fetched as a timestamp:
+    DuckDB converts a tz-aware timestamp through `pytz`, which is not a
+    dependency of this project, so pulling one into Python raises
+    `InvalidInputException` on a container that does not happen to have it.
     """
     try:
-        latest = con.sql(f"SELECT max(computed_at) FROM {scores_view}").fetchone()
-    except duckdb.Error:
+        n_scores, latest = con.sql(
+            f"SELECT count(*), CAST(max(computed_at) AS VARCHAR) FROM {scores_view}"
+        ).fetchone()
+    except duckdb.IOException:
         log.info("deep timelines: no persisted v2 scores; falling back to suspicion")
         return False
-    if latest is None or latest[0] is None:
+    if not n_scores or latest is None:
         return False
 
     kenya_filter = (
@@ -430,7 +450,7 @@ def _score_targets(
         """
     )
     if stats is not None:
-        stats["scores_computed_at"] = str(latest[0])
+        stats["scores_computed_at"] = str(latest)
         stats["min_kenya_share"] = min_kenya_share
     return bool(con.sql("SELECT count(*) FROM _dt_targets").fetchone()[0])
 
