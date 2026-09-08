@@ -48,10 +48,43 @@ engagement-bait accounts.
 Acceptance: a verdict per sampled account, blind to which method surfaced it,
 with agreement reported per method.
 
-**A3. Decide the unit of judgement.** v1 judged clusters, v2 predicts accounts,
-and the IO work concluded the right unit is probably the *campaign*. This has to
-be settled before A2's results mean anything, because a per-account verdict and a
-per-cluster verdict are not comparable.
+**A3. Unit of judgement - DECIDED 2026-09-08.**
+
+**Judge the campaign. Score the account.**
+
+The two are different questions and the confusion between them is what made this
+item look hard. The unit a reader can actually judge is the campaign; the unit a
+detector emits, and therefore the unit any v1-vs-v2 comparison must be scored on,
+is the account.
+
+The evidence is already in `coordination.campaigns`, and it is a measured
+failure rather than a preference. Adjudicating confirmed information operations
+on 2026-08-15, a reader called 4 of 6 correctly, and **both misses were the
+operation's pure engagement-bait clusters** - content like "#NBSKatchup Am
+following the first 100 people to Retweet", which is genuinely
+indistinguishable from the reciprocal pods in our own corpus. They are not
+judgeable on their own content, and no statistic recovers them either, because
+an operation runs bait assets deliberately alongside its political ones: cluster
+IO-0 carries Jumia giveaways AND #MuhooziOurNextPresident in one group.
+
+So a per-account verdict asked in isolation is unanswerable for a predictable
+and important subset of the accounts that matter most. What connects bait to
+political assets is who they amplify, which is exactly what `campaigns` groups
+on.
+
+**How this resolves the v1/v2 comparison.** Verdicts are rendered on campaigns,
+then inherited by member accounts for scoring, which makes v1's clusters and
+v2's accounts commensurable: both reduce to a set of accounts carrying an
+inherited verdict. `coordination.inherit_verdicts` already implements
+inheritance and does so **one-directionally**, which is the right constraint - a
+campaign judged coordinated lends that to its members, but a member judged
+organic does not clear its campaign.
+
+**What this means for A1 and A2.** The adjudication pass takes the unit as a
+parameter and defaults to campaign. A2 samples accounts from each method, groups
+them into campaigns, judges the campaigns blind, and reports agreement per
+method at the account level. Anything that asks a reader for a bare per-account
+verdict is asking a question the 2026-08-15 result says cannot be answered.
 
 ---
 
