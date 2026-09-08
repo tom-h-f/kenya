@@ -226,7 +226,29 @@ class XCollector(Collector):
         20 accounts carried 5 rows with `in_reply_to_id` - and a history with no
         replies carries no `co_reply` or reply-timing behaviour at all.
         """
+        # `limit` is a HARD cap on the target's OWN posts, enforced here rather
+        # than left to twscrape. Two measured reasons, from the 2026-09-08 pi0
+        # pass (20 accounts at depth 200):
+        #
+        # 1. twscrape's `_is_end` compares its running total AFTER appending a
+        #    whole page, and yields that whole page, so a limit overshoots by up
+        #    to a page. Targets came back with 155-286 own posts, median 216.
+        # 2. `user_tweets_and_replies` returns conversation context - the
+        #    ancestors of the target's replies, authored by OTHER accounts. Of
+        #    7,974 rows written, only 4,319 (54.2%) were by the 20 targets; the
+        #    rest came from 1,511 other authors. Counting those against `limit`
+        #    would silently shorten the history actually collected.
+        #
+        # Context posts are still yielded - they are real posts, already paid
+        # for, and they carry the reply structure `co_reply` needs. They just do
+        # not count towards the target's depth.
+        own = 0
         async for post in self._timeline(int(user_id), limit, include_replies, None):
+            is_own = str(getattr(post, "author_id", "")) == str(user_id)
+            if is_own:
+                if own >= limit:
+                    continue
+                own += 1
             yield post
 
     async def _timeline(
