@@ -709,3 +709,48 @@ def test_observed_fetches_window_is_half_open(corpus, ground_truth):
     got = replay.observed_fetches(con, manifest, first, second)
     assert got == set(ground_truth["selected"][0])
     assert replay.observed_fetches(con, manifest, first, first) == set()
+
+
+def test_seed_ledger_prefers_the_recorded_ttl_over_inference(tmp_path):
+    """`census_ttl/` is exact; inferring from engagement writes is not.
+
+    An object selected that returned no retweeters writes no engagement row, so
+    inference marks it un-censused and the policy re-selects it while the live
+    collector skipped it on TTL. With 69.4% of objects re-censused on a 12-hour
+    TTL (measured 2026-09-08), that error moves a large share of each pass.
+    """
+    import duckdb
+    import pandas as pd
+
+    from kma import replay
+
+    con = duckdb.connect()
+    ttl = tmp_path / "ttl.parquet"
+    eng = tmp_path / "eng.parquet"
+
+    # The ledger knows about an object that left NO engagement row.
+    con.execute(
+        "COPY (SELECT 'empty-obj' AS object_id, "
+        "'2026-09-08T10:00:00+00:00' AS censused_at) "
+        f"TO '{ttl}' (FORMAT parquet)"
+    )
+    con.execute(
+        "COPY (SELECT 'other-obj' AS platform_post_id, "
+        "TIMESTAMPTZ '2026-09-08 09:00:00+00' AS collected_at) "
+        f"TO '{eng}' (FORMAT parquet)"
+    )
+
+    manifest = pd.DataFrame(
+        [
+            {"prefix": "census_ttl", "path": str(ttl), "platform": "x",
+             "key": "census_ttl/platform=x/dt=2026-09-08/run=20260908T100000Z.parquet"},
+            {"prefix": "engagements", "path": str(eng), "platform": "x",
+             "key": "engagements/platform=x/dt=2026-09-08/run=20260908T090000Z.parquet"},
+        ]
+    )
+
+    t = pd.Timestamp("2026-09-08 12:00:00+00:00").to_pydatetime()
+    seeded = replay.seed_ledger(con, manifest, t)
+
+    assert "empty-obj" in seeded, "the recorded ledger must win over inference"
+    assert "other-obj" not in seeded, "inference must not be mixed in when the ledger exists"
