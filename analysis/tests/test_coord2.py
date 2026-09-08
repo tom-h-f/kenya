@@ -802,3 +802,36 @@ def test_text_rows_is_deterministically_ordered():
     second = coord2.text_rows(con, view)
     assert first["post_id"].tolist() == second["post_id"].tolist()
     assert first["post_id"].tolist() == sorted(first["post_id"])
+
+
+def test_text_floor_removes_one_post_accounts(tmp_path):
+    """The activity floor covers the bipartite traces only; text similarity
+    needed its own, or a single near-duplicate post readmits the accounts the
+    floor exists to exclude."""
+    import duckdb
+
+    from kma import coord2_run
+
+    posts = pd.DataFrame(
+        [_post("p1", "prolific", text="one genuine sentence here"),
+         _post("p2", "prolific", text="another genuine sentence here"),
+         _post("p3", "oneshot", text="a single solitary sentence here")]
+    )
+    con, view = _con(posts)
+    edges = pd.DataFrame({"source": ["prolific"], "target": ["oneshot"], "weight": [0.9]})
+    kept = coord2_run.apply_text_floor(con, edges, view)
+    assert kept.empty
+
+
+def test_text_floor_keeps_edges_between_active_accounts():
+    from kma import coord2_run
+
+    posts = pd.DataFrame(
+        [_post("p1", "a", text="one genuine sentence here"),
+         _post("p2", "a", text="second genuine sentence here"),
+         _post("p3", "b", text="third genuine sentence here"),
+         _post("p4", "b", text="fourth genuine sentence here")]
+    )
+    con, view = _con(posts)
+    edges = pd.DataFrame({"source": ["a"], "target": ["b"], "weight": [0.9]})
+    assert len(coord2_run.apply_text_floor(con, edges, view)) == 1

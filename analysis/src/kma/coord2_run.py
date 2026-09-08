@@ -91,6 +91,42 @@ def textsim_key(snapshot: str, threshold: float, platform: str = "x") -> str:
     )
 
 
+def apply_text_floor(
+    con: duckdb.DuckDBPyConnection,
+    edges: pd.DataFrame,
+    view: str,
+    minimum: int = coord2.MIN_ENTITIES_PER_USER,
+) -> pd.DataFrame:
+    """Drop text-similarity edges touching users with fewer than `minimum`
+    text-eligible posts.
+
+    `coord2.MIN_ENTITIES_PER_USER` is enforced inside `similarity_network`,
+    which covers only the four bipartite traces. Text similarity takes a
+    different path and had no equivalent, so a single near-duplicate post could
+    link a one-post account into a large clique - the same pathology the floor
+    exists to stop, re-entering by another door.
+
+    Measured on snapshot 2026-09-05-promotion-off: 81 of the top 500 accounts
+    had exactly one post, 110 had two or fewer, and that group averaged 0.223
+    Kenya share against 0.416 for the rest. They were both the least active and
+    the least relevant accounts in the ranking.
+    """
+    if edges.empty or minimum <= 1:
+        return edges
+    counts = con.sql(
+        f"""SELECT CAST(user_id AS VARCHAR) AS user_id, count(*) AS n
+            FROM ({view}) WHERE NOT coalesce(is_retweet, false) AND text IS NOT NULL
+            GROUP BY 1"""
+    ).df()
+    eligible = set(counts.loc[counts["n"] >= minimum, "user_id"])
+    kept = edges[edges["source"].isin(eligible) & edges["target"].isin(eligible)]
+    log.info(
+        "text floor: %d of %d edges kept (%d users below %d posts)",
+        len(kept), len(edges), len(counts) - len(eligible), minimum,
+    )
+    return kept.reset_index(drop=True)
+
+
 def load_textsim(
     con: duckdb.DuckDBPyConnection, snapshot: str, threshold: float
 ) -> pd.DataFrame:
@@ -135,7 +171,7 @@ def run(
     networks, sizes = build_networks(con, view)
 
     if text_threshold is not None:
-        edges = load_textsim(con, snapshot, text_threshold)
+        edges = apply_text_floor(con, load_textsim(con, snapshot, text_threshold), view)
         networks["text_similarity"] = edges
         sizes = pd.concat(
             [sizes, pd.DataFrame([{"trace": "text_similarity", "trace_rows": pd.NA,
