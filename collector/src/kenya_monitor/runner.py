@@ -934,6 +934,11 @@ async def collect_snowball(
     )
     _warn_if_band_is_drifting(stats)
     storage.write_census_run(stats, platform=collector.platform)
+    # The TTL ledger is the only per-object record of what was SELECTED, and it
+    # is a ~24h working set inside a Docker volume - unreconstructable once
+    # entries age out. Captured here, beside the counters, so a pass leaves both
+    # what it selected and how much of that it fetched.
+    storage.write_census_ttl(state, platform=collector.platform)
     return counts
 
 
