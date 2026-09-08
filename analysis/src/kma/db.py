@@ -94,6 +94,25 @@ TARGETED_TYPES = (
     # reason `census_timeline` is targeted. Coordination reads every type, so
     # `fast_retweet` and the co-retweet entities still gain their originals.
     "parent_backfill",
+    # Per-account histories fetched by `monitor deep-timelines`, at ~200 posts
+    # per account with no 14-day cutoff. Targeted, and NOT the baseline
+    # `timeline` type it would otherwise belong to: 75.9% of the corpus's
+    # 331,138 authors have exactly one post and the mean is 3.2, so one
+    # deep-timelined account contributes more rows than a typical baseline day
+    # contributes for its whole author population. In `type=timeline` a bulk
+    # pass would move the baseline composition much further than the 2026-08-06
+    # conversation widening did - the change that made the raw toxicity series
+    # unpublishable by moving the mix from 70.7% search / 12.1% replies to
+    # 14.3% / 72.6% while replies carry 3.2x the hate rate.
+    #
+    # Selection is conditioned on v2 centrality, so these are accounts chosen
+    # for looking coordinated, the same reason `census_timeline` is targeted -
+    # and it goes further here, because collecting an account's history raises
+    # its own future centrality. The partition keeps the rows out of every
+    # prevalence denominator; it does NOT fix that ranking artefact. Any v2
+    # re-run after a bulk pass must report whether deep-timelined accounts rose
+    # in rank, joining `deep_timelines/` on `user_id`.
+    "deep_timeline",
 )
 KNOWN_TYPES = BASELINE_TYPES + TARGETED_TYPES
 SCOPES = ("all", "baseline", "targeted")
