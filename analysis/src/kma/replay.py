@@ -291,7 +291,14 @@ def clean_pass_times(
         nearest = int(delta.values.argmin())
         if delta.iloc[nearest] > tolerance:
             continue
-        if float(metrics.iloc[nearest]["excess"]) <= 0:
+        excess = metrics.iloc[nearest]["excess"]
+        # NA rather than a number means the pass predates the column: new
+        # `census_runs` columns are unbindable, not NULL, until a pass writes
+        # them. An unverifiable pass is not a clean pass - excluding it keeps
+        # the filter conservative rather than optimistic.
+        if pd.isna(excess):
+            continue
+        if float(excess) <= 0:
             out.append(t)
     return out
 
