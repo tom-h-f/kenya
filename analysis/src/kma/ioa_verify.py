@@ -91,9 +91,23 @@ def connect() -> duckdb.DuckDBPyConnection:
 
 
 def source(path: str, *, limit: int | None = None) -> str:
-    """The archive CSV as a relation. `all_varchar` because the mirror carries
-    embedded header rows mid-file, which break type sniffing outright."""
-    read = f"read_csv('{path}', all_varchar=true, union_by_name=true, header=true)"
+    """The archive CSV as a relation.
+
+    `all_varchar` because the mirror carries embedded header rows mid-file,
+    which break type sniffing outright.
+
+    `ignore_errors` because this tool exists to be pointed at a SLICE of a
+    113.72 GB remote CSV, and any byte-range slice ends mid-row. It also has to
+    survive the real thing: tweet text legitimately contains embedded newlines
+    inside quotes - a Bengali-language row at line 4,472 of the head of
+    `ioa_tweets.csv` is one - so a strict read fails on well-formed archive data
+    as readily as on a truncated sample. `row_count` reports what was actually
+    parsed so a silently halved slice cannot pass for a whole one.
+    """
+    read = (
+        f"read_csv('{path}', all_varchar=true, union_by_name=true, "
+        "header=true, ignore_errors=true)"
+    )
     tail = f" LIMIT {int(limit)}" if limit else ""
     return f"(SELECT * FROM {read}{tail})"
 
