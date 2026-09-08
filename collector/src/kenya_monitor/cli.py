@@ -223,6 +223,102 @@ def snowball(
     typer.echo(f"snowball: {counts}")
 
 
+@app.command("hydrate-parents")
+def hydrate_parents_cmd(
+    limit: int = typer.Option(None, help="ids to hydrate this pass (default from env)"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="rank and print candidates; makes no network requests"
+    ),
+    status: bool = typer.Option(False, "--status", help="print ledger summary and exit"),
+    band_only: bool = typer.Option(
+        False,
+        "--band-only",
+        help="restrict selection to the census amplifier band (opt-in, not the default)",
+    ),
+) -> None:
+    """Backfill missing retweet parents, densest first.
+
+    What this buys is `fast_retweet` COVERAGE, not ids. The trace times a
+    retweet against its original's creation, so a retweet row only becomes a
+    candidate trace row once its parent is in the corpus: 161,146 of 364,287
+    retweet rows had a held parent on 2026-09-05, 44%, which is why the trace
+    yields 222 edges against co_retweet's 371,259. 167,220 parents are missing.
+
+    Ranked by distinct amplifier count DESCENDING and unbanded, because the
+    trace's entity is the retweeted AUTHOR: every retweet row whose parent
+    lands becomes a candidate trace row, so amplifier count is coverage per
+    request. v2 has no hub cap - TF-IDF handles popular entities - so the
+    census's reason to band does not apply. `--band-only` is available as an
+    opt-in and would skip the 10 densest objects in the backlog.
+
+    Bounded per invocation and resumable: the ledger in
+    state/parent_backfill.json records what was fetched and what came back
+    absent, and an absent object is never retried.
+
+    Rows land in `posts/type=parent_backfill`, a TARGETED partition, so they
+    stay out of every prevalence denominator while still feeding coordination.
+    """
+    from kenya_monitor import parent_backfill as pb
+    from kenya_monitor.config import PARENT_BACKFILL_LIMIT, SNOWBALL_BAND_MAX, SNOWBALL_BAND_MIN
+
+    entries = pb.load_state()
+    if status:
+        summary = pb.backfill_summary(entries)
+        typer.echo(
+            f"tracked: {summary['tracked']} (ok={summary['ok']}, "
+            f"not_found={summary['not_found']}, failed={summary['failed']})"
+        )
+        typer.echo(
+            f"retweet rows unlocked: {summary['rows_unlocked']} "
+            f"({summary['rows_per_request']} per request; decays towards 1.0)"
+        )
+        if summary["latest_fetch"]:
+            typer.echo(f"latest fetch: {summary['latest_fetch']}")
+        return
+
+    n = limit or PARENT_BACKFILL_LIMIT
+    if dry_run:
+        storage = _storage()
+        stats: dict = {}
+        candidates = pb.candidate_parents(
+            storage.con,
+            storage.posts_view(platform="x"),
+            limit=n,
+            blocked=pb.blocked_ids(entries),
+            band_only=band_only,
+            stats=stats,
+        )
+        typer.echo(
+            f"retweeted objects: {stats['retweeted_objects']}  "
+            f"held: {stats['held_parents']}  missing: {stats['missing_parents']}"
+        )
+        typer.echo(
+            f"fast_retweet coverage: {stats['held_rows']} of {stats['retweet_rows']} "
+            f"retweet rows have a held parent ({stats['coverage']:.1%}); "
+            f"{stats['missing_rows']} rows locked behind missing parents"
+        )
+        typer.echo(
+            f"missing in band [{stats['band_min']}..{stats['band_max']}]: "
+            f"{stats['missing_in_band']}   "
+            f"ledger blocks {stats['blocked_by_ledger']} id(s)\n"
+        )
+        for oid, amps in candidates:
+            in_band = SNOWBALL_BAND_MIN <= amps <= SNOWBALL_BAND_MAX
+            typer.echo(f"  {oid:24} amplifiers={amps:6}{'' if in_band else '  (out of band)'}")
+        unlocked = stats["selected_rows"]
+        after = (stats["held_rows"] + unlocked) / (stats["retweet_rows"] or 1)
+        typer.echo(
+            f"\n{len(candidates)} candidate(s) would unlock {unlocked} retweet row(s), "
+            f"taking coverage {stats['coverage']:.1%} -> {after:.1%}; nothing requested."
+        )
+        return
+
+    from kenya_monitor.scheduler import run_parent_backfill_once
+
+    counts = asyncio.run(run_parent_backfill_once(limit=n, band_only=band_only))
+    typer.echo(f"hydrate-parents: {counts}")
+
+
 @app.command("hate-seek")
 def hate_seek_cmd(
     dry_run: bool = typer.Option(

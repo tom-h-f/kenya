@@ -80,6 +80,20 @@ TARGETED_TYPES = (
     # banded objects, not a sample of the population. It does feed coordination
     # traces, which is the point - see `coordination.corroborate`.
     "census_timeline",
+    # Retweet parents backfilled by `monitor hydrate-parents`, selected by how
+    # many amplifiers we already hold. Targeted, and NOT the baseline
+    # `hydrated` type it would otherwise belong to: 167,220 of 228,272 distinct
+    # retweeted objects were missing, and writing that many rows into a
+    # baseline partition would shift the corpus composition further than the
+    # 2026-08-06 conversation widening did - the change that made the raw
+    # toxicity series unpublishable by moving the mix from 70.7% search / 12.1%
+    # replies to 14.3% / 72.6% while replies carry 3.2x the hate rate.
+    #
+    # Selection is conditioned on in-corpus amplifier count, so these are
+    # objects chosen for looking coordination-relevant, which is the same
+    # reason `census_timeline` is targeted. Coordination reads every type, so
+    # `fast_retweet` and the co-retweet entities still gain their originals.
+    "parent_backfill",
 )
 KNOWN_TYPES = BASELINE_TYPES + TARGETED_TYPES
 SCOPES = ("all", "baseline", "targeted")

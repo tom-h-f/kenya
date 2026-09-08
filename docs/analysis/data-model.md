@@ -55,8 +55,16 @@ all in `analysis/src/kma/db.py`.
 `type` for `posts/` encodes **collection provenance**, and is one of
 `search`, `timeline`, `replies`, `hydrated` (baseline) or `hate_search`,
 `hate_target_search`, `hate_timeline`, `hate_replies`, `hate_hydrated`,
-`cib_timeline` (targeted). See the collection docs for which method writes
-which. The registries are `db.BASELINE_TYPES` / `db.TARGETED_TYPES`.
+`cib_timeline`, `census_timeline`, `parent_backfill` (targeted). See the
+collection docs for which method writes which. The registries are
+`db.BASELINE_TYPES` / `db.TARGETED_TYPES`.
+
+Note the pair that looks redundant and is not: `hydrated` is the snowball
+census's small per-pass hydration of referenced originals, while
+`parent_backfill` is `monitor hydrate-parents` working through the 167,220
+missing retweet parents. The same operation, different scale and different
+selection, so they cannot share a partition - see the note on
+`parent_backfill` in `db.TARGETED_TYPES`.
 
 ### Prevalence must be baseline-scoped, on first-seen type
 

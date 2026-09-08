@@ -79,6 +79,39 @@ SNOWBALL_BAND_MAX = int(os.getenv("HUB_CAP_MAX", "100"))
 # buy nothing. Pre-banding the rate was 99.5%; post-banding it measures 6.4%.
 CENSUS_OVER_BAND_WARN = float(os.getenv("CENSUS_OVER_BAND_WARN", "0.15"))
 
+# Backfill of missing retweet parents (kenya_monitor.parent_backfill).
+#
+# Measured on snapshot 2026-09-05-promotion-off: 228,272 distinct retweeted
+# objects, 61,052 held, 167,220 missing. One `tweet_details` request per id with
+# no batch lookup on the GraphQL path, so the whole backlog is days of pool
+# budget and every pass has to be bounded.
+#
+# 500 per pass because the candidate query is a corpus-wide scan paid once per
+# invocation. The comparable census-pool scan measured 215-464s against live R2,
+# and 500 ids is the same order of work as SNOWBALL_TOP_RETWEETED's 250-object
+# pass (~40 minutes), so the scan stays a minority of the pass rather than its
+# dominant cost.
+PARENT_BACKFILL_LIMIT = int(os.getenv("PARENT_BACKFILL_LIMIT", "500"))
+# Ids per write, for the same reason as SNOWBALL_FLUSH_EVERY: a single
+# end-of-pass write means a restart or rate-limit abort discards every API call
+# made since it started, and pool budget is the expensive resource here.
+PARENT_BACKFILL_FLUSH_EVERY = int(os.getenv("PARENT_BACKFILL_FLUSH_EVERY", "50"))
+# Retries for ids whose REQUEST failed (rate limit, proxy, transport). An id
+# that came back absent is never retried - see parent_backfill.is_retryable.
+PARENT_BACKFILL_MAX_ATTEMPTS = int(os.getenv("PARENT_BACKFILL_MAX_ATTEMPTS", "3"))
+# 0 means the whole corpus, which is the default because the backlog is
+# historical: the point of the pass is to reach parents of retweets collected
+# weeks ago. Set it to bound the amplifier scan if pi0 cannot carry the full
+# one; the held-ids stage is never windowed either way.
+PARENT_BACKFILL_LOOKBACK_DAYS = int(os.getenv("PARENT_BACKFILL_LOOKBACK_DAYS", "0")) or None
+# How long a successful id stays in the ledger. Measured at 167,220 entries: a
+# 19 MB file and 260 MB peak RSS for the dict alone, inside a 1 GB container
+# that already gives DuckDB 600 MB. A fetched id has a post row, so the
+# candidate query's anti-join owns it once R2's listing catches up and the
+# ledger entry is only insurance for that window. Terminal failures are kept
+# forever regardless - nothing else records them.
+PARENT_BACKFILL_OK_RETAIN_HOURS = int(os.getenv("PARENT_BACKFILL_OK_RETAIN_HOURS", "168"))
+
 # Timelines for accounts the retweeter census discovered.
 #
 # The census finds accounts we know ONLY as retweeter ids - no posts at all.
@@ -231,6 +264,9 @@ CENSUS_TIMELINE_STATE_PATH = Path(
 )
 FOLLOW_CRAWL_STATE_PATH = Path(os.getenv("FOLLOW_CRAWL_STATE_PATH", STATE_DIR / "follow_crawl.json"))
 HATE_SEEK_STATE_PATH = Path(os.getenv("HATE_SEEK_STATE_PATH", STATE_DIR / "hate_seek.json"))
+PARENT_BACKFILL_STATE_PATH = Path(
+    os.getenv("PARENT_BACKFILL_STATE_PATH", STATE_DIR / "parent_backfill.json")
+)
 MINED_TERMS_PATH = Path(os.getenv("MINED_TERMS_PATH", STATE_DIR / "mined_terms.json"))
 HATE_EXPAND_STATE_PATH = Path(os.getenv("HATE_EXPAND_STATE_PATH", STATE_DIR / "hate_expand.json"))
 
