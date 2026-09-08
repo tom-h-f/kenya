@@ -191,6 +191,47 @@ CENSUS_RUN_SCHEMA = pa.schema(
 )
 
 
+# One row per ACCOUNT deepened, not per pass. The grain is deliberate: this
+# exists so a later v2 run can answer one question by a join rather than by
+# archaeology - did the accounts we deep-timelined rise in rank because they are
+# coordinated, or because we gave them more posts to match on?
+#
+# `type=deep_timeline` quarantines the rows from every prevalence denominator,
+# but it does nothing about that ranking artefact, because coordination reads
+# every type (which is the point of collecting them). The check needs the
+# treated set and its pre-treatment state, keyed on `user_id` so it joins
+# straight onto `coord2/kind=scores`.
+#
+# Its own prefix, as docs/plans/2026-09-08-collector-depth.md's Task 1 handoff
+# recommended after rejecting both census_runs/ (wrong schema) and
+# collection_runs/ (the rendered-query audit trail): different grain and schema
+# under one glob makes union_by_name reads ambiguous.
+DEEP_TIMELINE_RUN_SCHEMA = pa.schema(
+    [
+        ("run_id", pa.string()),
+        ("platform", pa.string()),
+        ("user_id", pa.string()),
+        # Why this account was chosen, as it was known BEFORE the fetch. Without
+        # the pre-treatment counts the artefact check has no covariate to
+        # condition on and can only compare treated against untreated accounts
+        # that were never comparable.
+        ("source", pa.string()),  # coord2_scores | suspicion
+        ("source_run", pa.string()),  # the scores object the target came from
+        ("rank_metric", pa.string()),  # centrality | suspicion
+        ("rank_value", pa.float64()),
+        ("stratum", pa.int64()),
+        ("held_posts_before", pa.int64()),
+        ("held_entities_before", pa.int64()),
+        # What the fetch bought.
+        ("depth", pa.int64()),
+        ("posts_written", pa.int64()),
+        ("status", pa.string()),
+        ("code_version", pa.string()),
+        ("collected_at", pa.timestamp("us", tz="UTC")),
+    ]
+)
+
+
 def run_id(now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     return now.strftime("%Y%m%dT%H%M%SZ")
@@ -385,6 +426,63 @@ class Storage:
         """Per-pass census counters (supply, selection, degree distribution)."""
         glob = self._uri(f"census_runs/platform={platform}/dt=*/run=*.parquet")
         return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+    def write_deep_timeline_run(
+        self, rows: Sequence[dict], platform: str = "x", now: datetime | None = None
+    ) -> str | None:
+        """One row per account deepened -> deep_timelines/ prefix.
+
+        The treated set for the feedback-artefact check (see
+        DEEP_TIMELINE_RUN_SCHEMA). Written alongside the posts, in the same
+        flush, so an aborted pass leaves a record of exactly the accounts whose
+        posts landed rather than a record of what it intended to fetch."""
+        if not rows:
+            return None
+        now = now or datetime.now(timezone.utc)
+        rid = run_id(now)
+        blank = {f.name: None for f in DEEP_TIMELINE_RUN_SCHEMA}
+        unknown = sorted({k for r in rows for k in r} - set(blank))
+        if unknown:
+            log.warning(
+                "deep_timelines: %d field(s) not in DEEP_TIMELINE_RUN_SCHEMA, dropped: %s",
+                len(unknown),
+                ", ".join(unknown),
+            )
+        table = pa.Table.from_pylist(
+            [
+                {
+                    **blank,
+                    **{k: v for k, v in r.items() if k in blank},
+                    "run_id": rid,
+                    "platform": platform,
+                    "code_version": os.getenv("GIT_SHA", ""),
+                    "collected_at": now,
+                }
+                for r in rows
+            ],
+            schema=DEEP_TIMELINE_RUN_SCHEMA,
+        )
+        key = f"deep_timelines/platform={platform}/dt={_dt_partition(now)}/run={rid}.parquet"
+        self._copy_table(table, key)
+        return key
+
+    def deep_timeline_runs_view(self, platform: str = "*") -> str:
+        """Which accounts were deepened, when, and what they held beforehand."""
+        glob = self._uri(f"deep_timelines/platform={platform}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+    def coord2_scores_view(self, platform: str = "x") -> str:
+        """Persisted v2 detector scores (written by the analysis side).
+
+        Read-only here, and read as DATA: the collector takes no dependency on
+        `kma`. `filename=true` carries the source object's key through, because
+        each run is a complete ranking of its own and provenance has to say
+        which one a target came from."""
+        glob = self._uri(f"coord2/platform={platform}/kind=scores/dt=*/run=*.parquet")
+        return (
+            f"read_parquet('{glob}', union_by_name=true, "
+            "hive_partitioning=true, filename=true)"
+        )
 
     def collection_runs_view(self, platform: str = "*") -> str:
         """Rendered-query audit trail for targeted collection passes."""

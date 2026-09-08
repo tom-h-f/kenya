@@ -182,6 +182,21 @@ class Collector(ABC):
         return
         yield  # pragma: no cover
 
+    async def deep_timeline(
+        self, user_id: str, limit: int, include_replies: bool = True
+    ) -> AsyncIterator[Post]:
+        """Yield one account's history by USER ID, with no age cutoff.
+
+        Separate from `timeline` rather than a flag on it, because the two
+        differ in what they are FOR. `timeline` samples an account inside the
+        same 14-day window as `search`, so its output belongs in a baseline
+        prevalence denominator; this yields whatever history the platform will
+        give, which does not. Platforms whose timeline endpoint cannot exceed
+        the search horizon inherit the empty default, and the pass skips them.
+        """
+        return
+        yield  # pragma: no cover
+
     async def follows(self, handle: str, limit: int) -> AsyncIterator[FollowEdge]:
         """Yield follower + following edges for one account."""
         return
