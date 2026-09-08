@@ -237,6 +237,107 @@ def census_pass_times(
     return starts
 
 
+def census_pass_metrics(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    """The collector's own record of what each census pass selected and fetched.
+
+    `census_runs/` has carried this since the census-metrics rollout, which is
+    the evidence that makes reproduction checkable at all: `selected_retweeted`,
+    `fetched_retweeted`, `skipped_ttl_retweeted` and `top_retweeted`, tagged with
+    `code_version`. It is written BY the collector at the time, not
+    reconstructed afterwards by the thing under test.
+    """
+    from kma import db
+
+    runs = db.census_runs(con).df()
+    keep = [
+        "collected_at", "code_version", "top_retweeted", "selected_retweeted",
+        "fetched_retweeted", "skipped_ttl_retweeted", "engagement_rows",
+    ]
+    out = runs[[c for c in keep if c in runs.columns]].copy()
+    # Positive excess means a second arm appended to the baseline selection.
+    out["excess"] = out["selected_retweeted"] - out["top_retweeted"]
+    return out.sort_values("collected_at").reset_index(drop=True)
+
+
+def clean_pass_times(
+    con: duckdb.DuckDBPyConnection,
+    times: Sequence[datetime],
+    *,
+    window_minutes: int = PASS_GAP_MINUTES,
+) -> list[datetime]:
+    """Keep only pass times where the BASELINE arm selected alone.
+
+    `IncumbentCensus` ports `runner.hot_objects`, the baseline arm. On a merged
+    pass the collector appends `hot_toxic_objects` and records no baseline-only
+    count, so a per-id comparison there scores a one-arm policy against two-arm
+    reality and cannot succeed however correct the port is.
+
+    Measured 2026-09-08: of 279 recorded passes, 62 selected within
+    `top_retweeted` and 217 exceeded it, by a mean of 111 and a maximum of 250.
+    The first reproduction run drew 9 passes and NONE were clean - live selection
+    ran 270..500 against the port's fixed 250, which is most of why recall came
+    back at 0.404.
+    """
+    metrics = census_pass_metrics(con)
+    if metrics.empty:
+        return list(times)
+    stamps = pd.to_datetime(metrics["collected_at"], utc=True)
+    tolerance = timedelta(minutes=window_minutes)
+
+    out = []
+    for t in times:
+        target = pd.Timestamp(t).tz_convert("UTC") if pd.Timestamp(t).tz else pd.Timestamp(t, tz="UTC")
+        delta = (stamps - target).abs()
+        nearest = int(delta.values.argmin())
+        if delta.iloc[nearest] > tolerance:
+            continue
+        if float(metrics.iloc[nearest]["excess"]) <= 0:
+            out.append(t)
+    return out
+
+
+def selection_agreement(
+    con: duckdb.DuckDBPyConnection,
+    per_pass: pd.DataFrame,
+    *,
+    window_minutes: int = PASS_GAP_MINUTES,
+) -> pd.DataFrame:
+    """Per-pass agreement between what replay selected and what the collector
+    recorded selecting and fetching.
+
+    A WEAKER claim than per-id matching and must be read as one: it establishes
+    that a policy selects like the incumbent in count and degree, not that it
+    selects the same objects. It is worth having because `fetched_retweeted` is
+    the only quantity that can leave a trace in the corpus - one pass recorded
+    500 selected, 202 fetched, 298 skipped on TTL - so it bounds what per-id
+    recall could ever be.
+    """
+    metrics = census_pass_metrics(con)
+    stamps = pd.to_datetime(metrics["collected_at"], utc=True)
+    tolerance = timedelta(minutes=window_minutes)
+
+    rows = []
+    for _, step in per_pass.iterrows():
+        target = pd.Timestamp(step["t"]).tz_convert("UTC")
+        delta = (stamps - target).abs()
+        nearest = int(delta.values.argmin())
+        if delta.iloc[nearest] > tolerance:
+            continue
+        m = metrics.iloc[nearest]
+        replayed = int(step["replayed"])
+        rows.append({
+            "t": step["t"],
+            "replay_selected": replayed,
+            "live_selected": int(m["selected_retweeted"]),
+            "live_fetched": int(m["fetched_retweeted"]),
+            "live_ttl_skipped": int(m["skipped_ttl_retweeted"]),
+            "excess": int(m["excess"]),
+            "selected_ratio": round(replayed / max(int(m["selected_retweeted"]), 1), 3),
+            "fetched_ratio": round(replayed / max(int(m["fetched_retweeted"]), 1), 3),
+        })
+    return pd.DataFrame(rows)
+
+
 def _paths_before(manifest: pd.DataFrame, prefix: str, t: datetime, **filters: str) -> list[str]:
     m = with_run_times(manifest)
     sel = m[m["prefix"] == prefix]
@@ -976,6 +1077,11 @@ def main() -> None:
         help="run the acceptance check only: incumbent replay against the census that ran",
     )
     ap.add_argument("--band-max", type=int, default=None, help="candidate band ceiling; omit for unbanded")
+    ap.add_argument(
+        "--clean-only",
+        action="store_true",
+        help="replay only passes where the baseline arm selected alone (see clean_pass_times)",
+    )
     args = ap.parse_args()
 
     con = connect()
@@ -983,12 +1089,29 @@ def main() -> None:
     times = census_pass_times(manifest)
     if not times:
         raise SystemExit(f"snapshot {args.snapshot!r} holds no engagements objects to replay")
+    if args.clean_only:
+        before = len(times)
+        times = clean_pass_times(con, times)
+        print(f"clean-pass filter: {len(times)} of {before} passes had the baseline arm select alone")
+        if not times:
+            raise SystemExit(
+                "no clean passes in this snapshot: every recorded pass appended a second arm, "
+                "so a one-arm port cannot be compared per id here"
+            )
     times = times[-args.passes :]
     print(f"replaying {len(times)} passes, {_iso(times[0])} .. {_iso(times[-1])}")
 
     if args.reproduce:
         rep = reproduce(con, manifest=manifest, times=times, snapshot=args.snapshot)
         print(rep.per_pass.to_string(index=False))
+        agree = selection_agreement(con, rep.per_pass)
+        if not agree.empty:
+            print("\nselection agreement against the collector's own record:")
+            print(agree.to_string(index=False))
+            print(
+                f"\nmedian replay/live selected {agree['selected_ratio'].median():.3f}, "
+                f"replay/live fetched {agree['fetched_ratio'].median():.3f}"
+            )
         print(
             f"\nsnapshot={rep.snapshot} policy={rep.policy} "
             f"recall={rep.recall:.3f} precision={rep.precision:.3f} jaccard={rep.jaccard:.3f}"
