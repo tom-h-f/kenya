@@ -447,9 +447,38 @@ holding 2-19 posts - accounts with 16 held posts contributing no trace entity at
 all. They are in the ranking purely through text similarity, which is not
 entity-based. Depth on these buys text-similarity density, not bipartite traces.
 
-**Discrepancy: `--depth 200` produced ~399 posts per account** (7,974 over 20).
-Depth is not acting as a hard per-account cap, so a bulk pass costs roughly
-double the budgeted requests. Resolve before scaling.
+**Depth overshoot: diagnosed and fixed 2026-09-08.** The headline "~399 posts
+per account" was my arithmetic error - 7,974 over 20 targets - and it conflated
+two different things.
+
+Measured against what was actually written:
+
+| | |
+|---|---|
+| rows written | 7,974 |
+| distinct authors | **1,531**, from 20 targets |
+| rows by the targets | 4,319 (54.2%) |
+| rows by other authors | 3,655 (45.8%) |
+| own posts per target | 155-286, **median 216** against a cap of 200 |
+
+Two causes. `user_tweets_and_replies` returns **conversation context** - the
+ancestors of the target's replies, authored by other accounts - and twscrape's
+`_is_end` compares its running total AFTER appending a whole page and yields
+that page, so any limit overshoots by up to one page.
+
+**My budget claim was wrong in the opposite direction.** Context-inflated pages
+reach the limit in FEWER requests, not more, so the pass was cheaper per account
+than budgeted rather than double.
+
+Fixed in `XCollector.deep_timeline`: `limit` is now a hard cap on the target's
+OWN posts, counted here rather than left to twscrape. Context posts are still
+yielded - they are real posts, already paid for, and they carry the reply
+structure `co_reply` needs - but they do not consume the cap.
+
+**A side effect worth watching:** those 1,511 extra authors arrive with one or
+two posts each, which mildly worsens the very one-post-account problem this task
+exists to fix. Free corpus enrichment, but not free of consequence for the
+activity floor.
 
 ## Baseline drift note
 

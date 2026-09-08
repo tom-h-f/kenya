@@ -998,3 +998,43 @@ def test_deep_timeline_defaults_to_replies_and_timeline_does_not(monkeypatch):
 
 async def _drain(gen) -> list[Post]:
     return [p async for p in gen]
+
+
+class _FakePost:
+    """Minimal stand-in for a collected post; only the fields the cap reads."""
+
+    def __init__(self, post_id: str, author_id: str) -> None:
+        self.platform_post_id = post_id
+        self.author_id = author_id
+
+
+def test_depth_caps_the_targets_own_posts_only(monkeypatch):
+    """`--depth` must bound the TARGET's history, not the page's row count.
+
+    Measured 2026-09-08 on pi0: `user_tweets_and_replies` returns conversation
+    ancestors authored by other accounts - 45.8% of 7,974 rows - and twscrape
+    yields whole pages, so targets came back with a median 216 own posts against
+    a cap of 200. Context rows must not consume the cap, and own rows must not
+    exceed it.
+    """
+    import asyncio
+
+    from kenya_monitor.collectors import x as xmod
+
+    async def fake_timeline(self, uid, limit, include_replies, cutoff):
+        # Two own posts per context post, far past the cap.
+        for i in range(50):
+            yield _FakePost(f"own{i}", str(uid))
+            yield _FakePost(f"ctx{i}", "999999")
+
+    monkeypatch.setattr(xmod.XCollector, "_timeline", fake_timeline, raising=True)
+    collector = xmod.XCollector.__new__(xmod.XCollector)
+
+    async def drain():
+        return [p async for p in collector.deep_timeline("42", limit=10)]
+
+    got = asyncio.run(drain())
+    own = [p for p in got if p.author_id == "42"]
+    ctx = [p for p in got if p.author_id != "42"]
+    assert len(own) == 10, "own posts must be capped at the requested depth"
+    assert len(ctx) == 50, "context posts are free and must not be dropped"
