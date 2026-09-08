@@ -88,6 +88,31 @@ def test_ethnonym_partition_is_targeted(con):
     assert "ethno_only" not in _ids(db.latest_posts(con, scope="baseline"))
 
 
+def test_parent_backfill_partition_is_targeted(con):
+    """The backfill writes 167,220 retweet parents. In the BASELINE `hydrated`
+    partition they would shift the corpus composition further than the
+    2026-08-06 conversation widening did, and that widening is what made the raw
+    toxicity series unpublishable. They must land in targeted, not vanish."""
+    con.execute(
+        "INSERT INTO _posts VALUES ('x', 'parent', 'parent_backfill', now(), 'WilliamsRuto')"
+    )
+    assert "parent_backfill" in db.TARGETED_TYPES
+    assert "parent_backfill" not in db.BASELINE_TYPES
+    assert "parent" not in _ids(db.latest_posts(con, scope="baseline"))
+    assert "parent" in _ids(db.latest_posts(con, scope="targeted"))
+
+
+def test_backfilled_parents_do_not_move_the_baseline_denominator(con):
+    """The acceptance criterion, as SQL: a backfill pass must leave
+    `latest_posts(scope="baseline")` row count unchanged."""
+    before = len(_ids(db.latest_posts(con, scope="baseline")))
+    con.executemany(
+        "INSERT INTO _posts VALUES ('x', ?, 'parent_backfill', now(), 'WilliamsRuto')",
+        [[f"p{i}"] for i in range(50)],
+    )
+    assert len(_ids(db.latest_posts(con, scope="baseline"))) == before
+
+
 def test_unknown_type_raises_rather_than_defaulting(con):
     con.execute("INSERT INTO _posts VALUES ('x', 'mystery', 'future_pass', now(), 'WilliamsRuto')")
     for scope in ("baseline", "targeted"):

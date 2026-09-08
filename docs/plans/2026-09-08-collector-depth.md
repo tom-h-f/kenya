@@ -112,6 +112,66 @@ reason (420 of 422 objects censused by raw popularity were hubs, and
 prevents refetching, `latest_posts(scope="baseline")` row count is unchanged, and
 `fast_retweet` edge count rises from its current 222 on a rebuild.
 
+### Task 1 handoff, 2026-09-08
+
+Built and tested offline; **no collection pass has been run and nothing is
+deployed.** `monitor hydrate-parents --limit N [--dry-run] [--status]`,
+`kenya_monitor.parent_backfill`, ledger at `state/parent_backfill.json`,
+`parent_backfill` added to `kma.db.TARGETED_TYPES`. Collector suite 184 -> 207;
+`analysis/tests/test_scope.py` 19 -> 21.
+
+`run_parent_backfill_once` is deliberately NOT in `run_scheduler`'s cycle. At
+one request per id the backlog would become the cycle's dominant consumer of
+pool budget and starve baseline collection.
+
+**Candidate query, measured.** Four staged statements over two projected
+columns, no window functions - the DISTINCT `(repost_of_id, author_id)` pair set
+makes latest-snapshot dedup unnecessary, because neither column can change for
+a given post id. The largest materialised relation is bounded by parent
+cardinality (228,272), not corpus rows (39,183,192), because the held-ids stage
+is a semi-join against the already-materialised parent ids. Measured on a local
+synthetic corpus of 38,737,818 rows reproducing the real 228,272 / 61,052 /
+167,220 split, at `threads=2`: completes with **peak RSS 157 MB and no spill at
+`memory_limit=600MB`**, and still completes at 40MB. That covers memory only -
+pi0's real cost is dominated by R2 reads, which cannot be measured from a
+worktree with no `.env`, so step 7 (a bounded pass on pi0) is still outstanding.
+
+**Two things about this task's premise that the plan got wrong.** Both were
+found by reading `kma.coord2` rather than by running anything.
+
+1. **Hydrating parents adds zero `co_retweet` edges.** `co_retweet_traces`
+   reads `retweet_post_id` off the RETWEET row; the parent post's own row has a
+   NULL `retweet_post_id` and contributes no trace. So "co-retweet entities
+   gain their originals" is a readability and dossier gain, not an edge gain,
+   and the band-first ranking - which is the co-retweet-shaped prioritisation -
+   optimises for a benefit that does not exist.
+2. **`fast_retweet`'s entity is the retweeted AUTHOR, not the retweeted post**
+   (`fast_retweet_traces`, entity `coalesce(rt.retweet_user_id, orig.user_id)`,
+   and `retweet_user_id` is always NULL because the collector never stored it).
+   Two users who fast-retweeted *different* posts by the same author form an
+   edge, so a parent with ONE amplifier still contributes. The trace needs the
+   parent only for `orig.created_at`. That means the trace the plan names first
+   is served by VOLUME of parents and is actively deprioritised by the band
+   ranking. The two stated goals pull in opposite directions.
+
+**In-band supply is small, and that is arithmetic, not an estimate.** 228,272
+objects share 364,287 retweet rows. If x objects hold 3 or more amplifiers then
+`3x + (228,272 - x) <= 364,287`, so **x <= 68,007** - at most 30% of the
+population before any skew. Under a power law consistent with both totals the
+synthetic corpus puts it at 6,777 in-band of 228,272 (3.0%), with 203,452
+objects (89%) holding exactly one amplifier. Since the snowball hydrate arm
+already ranks by engagement, the 61,052 held parents are density-biased, so the
+in-band share of the *missing* 167,220 is lower still. Expect the band-first
+head of the queue to be low thousands of ids - hours of pool budget, not days -
+after which `hydrate-parents` logs a warning and continues into 1-amplifier
+objects. **Run `--dry-run` against live R2 before committing budget: it prints
+`missing in band`, and that number decides whether this task is worth days.**
+
+**Not done, deliberately.** No per-pass provenance row. `census_runs/` does not
+fit the schema and `collection_runs/` is the rendered-search-query audit trail;
+adding a half-fitting row to either is worse than logs. If the bulk pass runs,
+give it its own prefix.
+
 ## Task 2: deep timelines
 
 **Goal.** Turn one-post accounts into accounts with trace vectors, for the

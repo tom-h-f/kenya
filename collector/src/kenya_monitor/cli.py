@@ -223,6 +223,80 @@ def snowball(
     typer.echo(f"snowball: {counts}")
 
 
+@app.command("hydrate-parents")
+def hydrate_parents_cmd(
+    limit: int = typer.Option(None, help="ids to hydrate this pass (default from env)"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="rank and print candidates; makes no network requests"
+    ),
+    status: bool = typer.Option(False, "--status", help="print ledger summary and exit"),
+    band_only: bool = typer.Option(
+        False, "--band-only", help="report in-band candidates only (dry run)"
+    ),
+) -> None:
+    """Backfill missing retweet parents, in-band first.
+
+    167,220 of 228,272 distinct retweeted objects have never been collected, so
+    `fast_retweet` yields 222 edges and co-retweet entities have no original to
+    read. Bounded per invocation and resumable: the ledger in
+    state/parent_backfill.json records what was fetched and what came back
+    absent, and an absent object is never retried.
+
+    Rows land in `posts/type=parent_backfill`, a TARGETED partition, so they
+    stay out of every prevalence denominator while still feeding coordination.
+    """
+    from kenya_monitor import parent_backfill as pb
+    from kenya_monitor.config import PARENT_BACKFILL_LIMIT, SNOWBALL_BAND_MAX, SNOWBALL_BAND_MIN
+
+    entries = pb.load_state()
+    if status:
+        summary = pb.backfill_summary(entries)
+        typer.echo(
+            f"tracked: {summary['tracked']} (ok={summary['ok']}, "
+            f"not_found={summary['not_found']}, failed={summary['failed']})"
+        )
+        typer.echo(f"in-band share of fetched: {summary['band_share']}")
+        if summary["latest_fetch"]:
+            typer.echo(f"latest fetch: {summary['latest_fetch']}")
+        return
+
+    n = limit or PARENT_BACKFILL_LIMIT
+    if dry_run:
+        storage = _storage()
+        stats: dict = {}
+        candidates = pb.candidate_parents(
+            storage.con,
+            storage.posts_view(platform="x"),
+            limit=n,
+            blocked=pb.blocked_ids(entries),
+            stats=stats,
+        )
+        if band_only:
+            candidates = [
+                c for c in candidates if SNOWBALL_BAND_MIN <= c[1] <= SNOWBALL_BAND_MAX
+            ]
+        typer.echo(
+            f"retweeted objects: {stats['retweeted_objects']}  "
+            f"held: {stats['held_parents']}  missing: {stats['missing_parents']}  "
+            f"missing in band [{stats['band_min']}..{stats['band_max']}]: "
+            f"{stats['missing_in_band']}"
+        )
+        typer.echo(f"ledger blocks {stats['blocked_by_ledger']} id(s)\n")
+        for oid, amps in candidates:
+            in_band = SNOWBALL_BAND_MIN <= amps <= SNOWBALL_BAND_MAX
+            typer.echo(f"  {oid:24} amplifiers={amps:6}{'' if in_band else '  (out of band)'}")
+        typer.echo(
+            f"\n{len(candidates)} candidate(s), "
+            f"{stats['selected_in_band']} in band; nothing requested."
+        )
+        return
+
+    from kenya_monitor.scheduler import run_parent_backfill_once
+
+    counts = asyncio.run(run_parent_backfill_once(limit=n))
+    typer.echo(f"hydrate-parents: {counts}")
+
+
 @app.command("hate-seek")
 def hate_seek_cmd(
     dry_run: bool = typer.Option(

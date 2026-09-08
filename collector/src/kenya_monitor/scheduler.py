@@ -382,6 +382,20 @@ async def run_census_timelines_once(
     return counts
 
 
+async def run_parent_backfill_once(**overrides) -> dict[str, int]:
+    """One bounded parent-backfill pass (see parent_backfill.backfill_parents).
+
+    Deliberately NOT in `run_scheduler`'s cycle. The backlog is 167,220 ids at
+    one request each, so a cycle step would quietly become the dominant consumer
+    of pool budget and starve the baseline collection the whole corpus rests on.
+    Run it explicitly, bounded, and watch what it costs before wiring it in."""
+    from kenya_monitor.parent_backfill import backfill_parents
+
+    storage = Storage(R2Config.from_env())
+    collector = await build_x_collector(load_accounts())
+    return await backfill_parents(collector, storage, **overrides)
+
+
 async def run_snowball_once(**overrides) -> dict[str, int]:
     """One snowball pass over hot objects (see runner.collect_snowball).
 
