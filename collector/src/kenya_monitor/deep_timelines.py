@@ -53,15 +53,42 @@ each stratum, strata ascending:
 | stratum | held posts | why it sits here |
 |---|---|---|
 | 0 | `< MIN_ENTITIES` (2) | below v2's floor: discarded from every bipartite trace today, and 75.9% of the corpus |
-| 1 | 2 .. `depth - 1` | clears the floor, still thin |
-| 2 | `>= depth` | saturated for this depth |
+| 1 | 2 .. `thin_posts - 1` (19) | clears the floor, no real history |
+| 2 | `thin_posts` .. `depth - 1` | has history, not saturated |
+| 3 | `>= depth` | saturated for this depth |
 
 Strata rather than a blended score - `centrality / log(1 + n_posts)` and its
 relatives weight two incommensurable quantities by a constant nobody can
-defend. Both boundaries come from something real: 2 is
-`kma.coord2.MIN_ENTITIES_PER_USER`, the floor in the code, and `depth` is the
-saturation point of this pass by construction. Inside a stratum the ranking is
-pure centrality, which is the only ordering here we actually believe.
+defend. Every boundary comes from something measured: 2 is
+`kma.coord2.MIN_ENTITIES_PER_USER`, the floor in the code; 20 is where this
+corpus's depth distribution breaks (8,047 of 331,138 authors hold 20 or more
+posts, the 97.6th percentile); `depth` is the saturation point of this pass by
+construction. Inside a stratum the ranking is pure centrality, which is the
+only ordering here we actually believe.
+
+**Stratum 0 is empty for the primary target set, and that is why stratum 1
+exists.** v2's activity floor is applied BEFORE centrality
+(`similarity_network` calls `min_activity`, then `detect` scores the fused
+graph), so an account holding one post has fewer than 2 entities in every trace
+and cannot appear in a persisted `kind=scores` run at all. Two consequences,
+both easy to get wrong:
+
+1. A pass targeting persisted v2 scores **cannot move the corpus-wide
+   floor-clearing count of 79,967**, because every one of its targets already
+   clears it. Measured on a synthetic corpus reproducing the real depth
+   distribution: 500 of 500 targets in stratum 1 or above, 0 below the floor.
+   What it buys those accounts is vector DENSITY - the ability to adjudicate a
+   ranking built on 2-to-19 observations - not floor crossings.
+2. Without the 20-post boundary the strata would collapse to a plain centrality
+   ranking on the real target set, which is exactly what they exist to prevent.
+   The same synthetic run put a 39-post account above a 2-post one under a
+   three-stratum rule.
+
+Moving the 79,967 figure needs the accounts v2 DISCARDED, which is a different
+target set with no centrality to rank it by. `runner.census_discovered_handles`
+is the precedent and the argument: selection there is `ORDER BY random()`
+precisely so that collection is exogenous to the outcome being measured. That is
+a separate pass, not a flag on this one.
 
 The two objectives agree, which is the argument for this order rather than the
 reverse. Coverage: only stratum 0 can move the floor-clearing count at all.
@@ -156,6 +183,7 @@ from kenya_monitor.config import (
     DEEP_TIMELINE_MAX_ATTEMPTS,
     DEEP_TIMELINE_REFRESH_DAYS,
     DEEP_TIMELINE_STATE_PATH,
+    DEEP_TIMELINE_THIN_POSTS,
 )
 from kenya_monitor.storage import Storage
 
@@ -504,6 +532,7 @@ def candidate_accounts(
     *,
     limit: int,
     depth: int = DEEP_TIMELINE_DEPTH,
+    thin_posts: int = DEEP_TIMELINE_THIN_POSTS,
     scores_view: str | None = None,
     authors_view: str | None = None,
     deep_posts_view: str | None = None,
@@ -525,23 +554,35 @@ def candidate_accounts(
       whole corpus, because the held-post count that decides an account's
       stratum is a claim about its whole history here - a windowed count calls
       a long-held account thin and deepens it again.
-    - **projected**: three columns off the corpus, never `SELECT *`. Carrying
-      `text` through a dedup measured 569s against 16.7s.
+    - **projected**: two columns per scan, never `SELECT *`. Carrying `text`
+      through a dedup measured 569s against 16.7s.
     - **spillable**: hash aggregates and hash joins only. No window function
-      and no `count(DISTINCT ...)`: the stage-1 DISTINCT collapses re-collected
-      snapshots, so per-author counts are plain `count(*)` over it.
-      `platform_post_id` -> (`author_id`, `repost_of_id`) is immutable for a
-      given post id, which is what makes that dedup equivalent to a
-      latest-snapshot window without the sort.
-    - **staged**: each aggregate is materialised before the next reads it, and
-      the widest relation is dropped as soon as nothing needs it. A query whose
-      every stage fits can still OOM when DuckDB runs the stages concurrently
-      and their peaks add - measured on pi0 2026-09-02, three stages of 569s,
-      261s and 1,248s each fitting alone and the fused form still OOMing.
+      and no `count(DISTINCT ...)`: an inner DISTINCT collapses re-collected
+      snapshots and the outer aggregate counts them, which is
+      `suspicion._beh_sql`'s shape. `platform_post_id` ->
+      (`author_id`, `repost_of_id`) is immutable for a given post id, which is
+      what makes that dedup equivalent to a latest-snapshot window without the
+      sort. Nothing post-level is materialised, because a DuckDB in-memory temp
+      table counts against `memory_limit` and CANNOT spill - see the measured
+      table beside the two activity stages below.
+    - **staged**: each aggregate is materialised before the next reads it. A
+      query whose every stage fits can still OOM when DuckDB runs the stages
+      concurrently and their peaks add - measured on pi0 2026-09-02, three
+      stages of 569s, 261s and 1,248s each fitting alone and the fused form
+      still OOMing.
 
-    The widest relation is bounded by distinct posts (1,045,318 on the
-    2026-09-05 snapshot) rather than corpus rows (39,183,192), and every stage
-    after it by distinct authors (331,138).
+    No materialised relation is larger than distinct authors (331,138 on the
+    2026-09-05 snapshot); nothing scales with corpus rows (39,183,192) or with
+    distinct posts (1,045,318). Measured end to end on a synthetic glob of
+    39,387,988 rows reproducing that shape, threads=2: peak RSS 274 MB at
+    `memory_limit=600MB` and 280 MB at 300MB, and it still completes at 100MB
+    by spilling. (Ignore RSS in the spilling runs - `ru_maxrss` counts
+    file-backed spill pages, so it rises to 418 MB while the DuckDB budget is
+    150MB.)
+
+    That covers memory only. pi0's real cost is dominated by R2 reads, which
+    cannot be measured from a worktree with no `.env`, so a bounded pass on pi0
+    is still outstanding.
     """
     source = SOURCE_SCORES
     if not (scores_view and _score_targets(
@@ -559,37 +600,48 @@ def candidate_accounts(
     dt_prune = (
         f"AND dt >= current_date - INTERVAL {int(lookback_days)} DAY" if lookback_days else ""
     )
+    # Two scans of the glob, each collapsing its own DISTINCT straight into its
+    # aggregate, rather than one scan materialising the post-level relation and
+    # both aggregates reading it. Measured on a synthetic 39,387,988-row glob
+    # reproducing the real 331,138 / 251,171 / 1,036,526 shape, threads=2:
+    #
+    #   shape      600MB      300MB      150MB      80MB
+    #   one scan   299 MB     279 MB     OOM        OOM
+    #   two scan   235 MB     238 MB     ok (spill) OOM
+    #
+    # The one-scan form is the cheaper R2 read and the worse failure mode. A
+    # DuckDB in-memory temp table counts against `memory_limit` and CANNOT
+    # spill, so materialising 1,036,526 rows of three strings is a hard floor on
+    # the pass's peak - and pi0 gives DuckDB 600 MB inside a 1 GB container that
+    # also runs the collector. Pipelining the DISTINCT into the aggregate leaves
+    # only the 331,138-row and 151,493-row outputs resident.
+    #
+    # The second scan is the same trade `parent_backfill._pb_held` takes, for
+    # the same reason: within one connection the httpfs buffer usually still
+    # holds what the first stage read.
     con.execute(
         f"""
-        CREATE OR REPLACE TEMP TABLE _dt_posts AS
-        SELECT DISTINCT platform_post_id, author_id, repost_of_id
-        FROM {posts_view}
-        WHERE author_id IS NOT NULL {dt_prune}
-        """
-    )
-    con.execute(
-        """
         CREATE OR REPLACE TEMP TABLE _dt_activity AS
-        SELECT author_id, count(*)::BIGINT AS held_posts
-        FROM _dt_posts GROUP BY author_id
+        SELECT author_id, count(*)::BIGINT AS held_posts FROM (
+            SELECT DISTINCT platform_post_id, author_id
+            FROM {posts_view}
+            WHERE author_id IS NOT NULL {dt_prune}
+        ) GROUP BY author_id
         """
     )
     # Distinct co-retweet entities, which is what v2's floor actually counts.
     # Reported beside the post count rather than used for the strata - see the
     # module docstring's note on the gap between the two.
     con.execute(
-        """
+        f"""
         CREATE OR REPLACE TEMP TABLE _dt_entities AS
         SELECT author_id, count(*)::BIGINT AS held_entities FROM (
             SELECT DISTINCT author_id, repost_of_id
-            FROM _dt_posts WHERE repost_of_id IS NOT NULL
+            FROM {posts_view}
+            WHERE author_id IS NOT NULL AND repost_of_id IS NOT NULL {dt_prune}
         ) GROUP BY author_id
         """
     )
-    # The post-level relation is the widest thing this query builds and nothing
-    # reads it again. Holding it while the joins below run is what makes the
-    # stage peaks add rather than alternate.
-    con.execute("DROP TABLE _dt_posts")
 
     # LEFT JOIN, not inner: a target may hold nothing at all. Census-discovered
     # accounts are known only as retweeter ids (168,356 such accounts against
@@ -606,8 +658,9 @@ def candidate_accounts(
                coalesce(a.held_posts, 0) AS held_posts,
                coalesce(e.held_entities, 0) AS held_entities,
                CASE WHEN coalesce(a.held_posts, 0) < {int(MIN_ENTITIES)} THEN 0
-                    WHEN coalesce(a.held_posts, 0) < {int(depth)} THEN 1
-                    ELSE 2 END AS stratum
+                    WHEN coalesce(a.held_posts, 0) < {int(thin_posts)} THEN 1
+                    WHEN coalesce(a.held_posts, 0) < {int(depth)} THEN 2
+                    ELSE 3 END AS stratum
         FROM _dt_targets t
         LEFT JOIN _dt_activity a ON a.author_id = t.user_id
         LEFT JOIN _dt_entities e ON e.author_id = t.user_id
@@ -662,7 +715,8 @@ def candidate_accounts(
     if stats is not None:
         stats["selected"] = len(out)
         stats["selected_below_floor"] = sum(1 for t in out if t.stratum == 0)
-        stats["selected_saturated"] = sum(1 for t in out if t.stratum == 2)
+        stats["selected_thin"] = sum(1 for t in out if t.stratum == 1)
+        stats["selected_saturated"] = sum(1 for t in out if t.stratum == 3)
         stats["selected_posts_held"] = sum(t.held_posts for t in out)
         stats["blocked_by_ledger"] = len(blocked)
         stats["depth"] = int(depth)
@@ -678,8 +732,10 @@ def _collect_stats(
     Both denominators, because they differ by three orders of magnitude and
     quoting the wrong one misdescribes the whole command: 79,967 of 331,138
     authors clear the floor corpus-wide, and one bounded pass moves that by at
-    most `--limit`. What a pass can actually move is the floor-clearing share of
-    the accounts v2 ranked, and that is the figure to read.
+    most `--limit`. What a pass can move is the DEPTH of the accounts v2 ranked,
+    and `targets_thin` is the figure to read - `targets_below_floor` is expected
+    to be 0 whenever the target set came from persisted v2 scores, because the
+    activity floor is applied before centrality.
     """
     authors, clearing = con.sql(
         f"""SELECT count(*), count(*) FILTER (held_posts >= {int(MIN_ENTITIES)})
@@ -688,11 +744,12 @@ def _collect_stats(
     entity_clearing = con.sql(
         f"SELECT count(*) FROM _dt_entities WHERE held_entities >= {int(MIN_ENTITIES)}"
     ).fetchone()[0]
-    targets, below, saturated, entity_below = con.sql(
+    targets, below, thin, saturated, entity_below = con.sql(
         f"""
         SELECT count(*),
                count(*) FILTER (stratum = 0),
-               count(*) FILTER (stratum = 2),
+               count(*) FILTER (stratum = 1),
+               count(*) FILTER (stratum = 3),
                count(*) FILTER (held_entities < {int(MIN_ENTITIES)})
         FROM _dt_candidates
         """
@@ -707,6 +764,7 @@ def _collect_stats(
             "targets": int(targets),
             "targets_below_floor": int(below),
             "targets_clearing_floor": int(targets) - int(below),
+            "targets_thin": int(thin),
             "targets_saturated": int(saturated),
             "targets_below_entity_floor": int(entity_below),
         }
@@ -714,28 +772,27 @@ def _collect_stats(
 
 
 def _log_coverage(targets: Sequence[DeepTarget], stats: dict) -> None:
-    """Announce the pass in coverage, not in accounts."""
+    """Announce the pass in coverage, not in accounts.
+
+    Coverage here is a depth claim, not a floor-crossing one: what a pass over
+    v2's own ranking buys is history for accounts currently ranked on very few
+    observations, and the median held-post count of the selection is the honest
+    summary of that."""
     if not targets:
         return
+    held = sorted(t.held_posts for t in targets)
     below = sum(1 for t in targets if t.stratum == 0)
-    clearing = stats.get("targets_clearing_floor")
-    total = stats.get("targets")
-    gain = ""
-    if clearing is not None and total:
-        gain = (
-            f", target-set floor coverage {clearing / total:.1%} -> "
-            f"{(clearing + below) / total:.1%} if every fetch returns "
-            f"{MIN_ENTITIES}+ posts"
-        )
     log.info(
-        "deep timelines: %d account(s), %d below the %d-post floor, "
-        "strata %s, ~%d request(s)%s",
+        "deep timelines: %d account(s) holding %d..%d posts (median %d), "
+        "%d below the %d-post floor, strata %s, ~%d request(s)",
         len(targets),
+        held[0],
+        held[-1],
+        held[len(held) // 2],
         below,
         MIN_ENTITIES,
         sorted({t.stratum for t in targets}),
         stats.get("requests_estimate", 0),
-        gain,
     )
 
 

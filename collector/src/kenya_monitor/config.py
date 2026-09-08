@@ -181,6 +181,17 @@ DEEP_TIMELINE_LOOKBACK_DAYS = int(os.getenv("DEEP_TIMELINE_LOOKBACK_DAYS", "0"))
 # (`coord2_run.run(top=500)`), so the fallback offers the same triage budget
 # rather than an unbounded one.
 DEEP_TIMELINE_FALLBACK_TARGETS = int(os.getenv("DEEP_TIMELINE_FALLBACK_TARGETS", "500"))
+# Boundary between the "thin" and "has real history" targeting strata.
+#
+# 20 because that is where this corpus's own depth distribution breaks: 8,047 of
+# 331,138 authors hold 20 or more posts, so the boundary sits at the 97.6th
+# percentile of author depth. It exists because the more obvious boundary does
+# not discriminate. v2's activity floor is applied BEFORE centrality, so every
+# account in a persisted `kind=scores` run already holds 2+ posts and the
+# below-the-floor stratum is empty by construction for that target set - without
+# this boundary the strata collapse to a plain centrality ranking, which is the
+# thing they exist to avoid.
+DEEP_TIMELINE_THIN_POSTS = int(os.getenv("DEEP_TIMELINE_THIN_POSTS", "20"))
 
 # DuckDB sizes its budget from the host, not the container cgroup, so on pi0 it
 # plans against ~4GB while `mem_limit: 1g` kills it long before that. Bounded so

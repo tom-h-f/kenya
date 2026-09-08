@@ -366,7 +366,11 @@ def deep_timelines_cmd(
     artefact and not a finding.
     """
     from kenya_monitor import deep_timelines as dtl
-    from kenya_monitor.config import DEEP_TIMELINE_DEPTH, DEEP_TIMELINE_LIMIT
+    from kenya_monitor.config import (
+        DEEP_TIMELINE_DEPTH,
+        DEEP_TIMELINE_LIMIT,
+        DEEP_TIMELINE_THIN_POSTS,
+    )
 
     entries = dtl.load_state()
     if status:
@@ -413,18 +417,24 @@ def deep_timelines_cmd(
                 else ""
             )
         )
-        # Target-set coverage FIRST. It is the figure a bounded pass can move;
-        # the corpus-wide one moves by at most --limit and quoting it as the
-        # outcome misdescribes the command.
+        # Target-set depth FIRST. It is what a bounded pass can move; the
+        # corpus-wide floor count moves by at most --limit, and by 0 whenever
+        # the targets came from v2 scores, because the activity floor is applied
+        # before centrality so every ranked account already clears it.
         typer.echo(
-            f"target-set floor coverage: {stats['targets_clearing_floor']} of "
-            f"{stats['targets']} hold {dtl.MIN_ENTITIES}+ posts "
-            f"({stats['targets_clearing_floor'] / max(stats['targets'], 1):.1%}); "
-            f"{stats['targets_below_floor']} below it, "
-            f"{stats['targets_below_entity_floor']} below it on distinct "
-            "co-retweet entities, "
-            f"{stats['targets_saturated']} already at depth {d}"
+            f"target-set depth: {stats['targets_below_floor']} below the "
+            f"{dtl.MIN_ENTITIES}-post floor, {stats['targets_thin']} thin "
+            f"(under {DEEP_TIMELINE_THIN_POSTS} posts), "
+            f"{stats['targets_saturated']} already at depth {d}; "
+            f"{stats['targets_below_entity_floor']} of {stats['targets']} are "
+            "below the floor on distinct co-retweet entities"
         )
+        if stats["source"] == dtl.SOURCE_SCORES and not stats["targets_below_floor"]:
+            typer.echo(
+                "  note: 0 targets below the floor is EXPECTED from v2 scores - "
+                "the floor runs before centrality, so this pass buys vector "
+                "density for ranked accounts, not floor crossings"
+            )
         typer.echo(
             f"corpus-wide: {stats['authors_clearing_floor']} of {stats['authors']} "
             f"authors clear the {dtl.MIN_ENTITIES}-post floor "
@@ -439,16 +449,22 @@ def deep_timelines_cmd(
                 f"held={t.held_posts:5} entities={t.held_entities:5} "
                 f"{t.rank_metric}={t.rank_value:.6f}"
             )
+        if not targets:
+            typer.echo("\nnothing selected; nothing requested.")
+            return
+        held = sorted(t.held_posts for t in targets)
         below = stats["selected_below_floor"]
-        cleared = stats["targets_clearing_floor"] + below
         typer.echo(
-            f"\n{len(targets)} account(s) at depth {d} = ~"
-            f"{stats['requests_estimate']} request(s). If every fetch returns "
-            f"{dtl.MIN_ENTITIES}+ posts, target-set floor coverage goes "
-            f"{stats['targets_clearing_floor'] / max(stats['targets'], 1):.1%} -> "
-            f"{cleared / max(stats['targets'], 1):.1%} and the corpus-wide "
-            f"{stats['authors_clearing_floor']} becomes "
-            f"{stats['authors_clearing_floor'] + below}. Nothing requested."
+            f"\n{len(targets)} of {stats['targets']} account(s) at depth {d} = ~"
+            f"{stats['requests_estimate']} request(s). They hold {held[0]}..{held[-1]} "
+            f"posts today, median {held[len(held) // 2]}, and would hold up to "
+            f"{d} each afterwards."
+        )
+        typer.echo(
+            f"{below} of them would cross the {dtl.MIN_ENTITIES}-post floor, "
+            f"taking the corpus-wide {stats['authors_clearing_floor']} to "
+            f"{stats['authors_clearing_floor'] + below} of {stats['authors']}. "
+            "Nothing requested."
         )
         return
 

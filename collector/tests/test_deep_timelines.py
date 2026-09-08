@@ -132,7 +132,8 @@ def test_strata_put_the_thinnest_accounts_first():
     fetched posts make it scorable; an account holding 200 can at best double
     its history."""
     posts = (
-        _authored("thin", 1)
+        _authored("unscorable", 1)
+        + _authored("thin", 5)
         + _authored("mid", 50)
         + _authored("fat", 400)
     )
@@ -141,15 +142,16 @@ def test_strata_put_the_thinnest_accounts_first():
         [
             # Centrality deliberately INVERTED against need: the fat account is
             # the highest-ranked target, and must still come last.
-            {"user_id": "thin", "centrality": 0.01},
+            {"user_id": "unscorable", "centrality": 0.01},
+            {"user_id": "thin", "centrality": 0.30},
             {"user_id": "mid", "centrality": 0.50},
             {"user_id": "fat", "centrality": 0.99},
         ],
     )
     got = _select(con, depth=200)
 
-    assert [t.user_id for t in got] == ["thin", "mid", "fat"]
-    assert [t.stratum for t in got] == [0, 1, 2]
+    assert [t.user_id for t in got] == ["unscorable", "thin", "mid", "fat"]
+    assert [t.stratum for t in got] == [0, 1, 2, 3]
 
 
 def test_centrality_orders_within_a_stratum():
@@ -173,12 +175,41 @@ def test_centrality_orders_within_a_stratum():
 
 
 def test_the_saturation_boundary_moves_with_depth():
-    """Stratum 2 is defined by `depth`, not by a fixed number: an account is
-    saturated relative to the pass being run, not in the abstract."""
+    """The top stratum is defined by `depth`, not by a fixed number: an account
+    is saturated relative to the pass being run, not in the abstract."""
     con = _con(_authored("a", 30), [{"user_id": "a", "centrality": 0.5}])
 
-    assert _select(con, depth=200)[0].stratum == 1
-    assert _select(con, depth=20)[0].stratum == 2
+    assert _select(con, depth=200)[0].stratum == 2
+    assert _select(con, depth=20)[0].stratum == 3
+
+
+def test_the_thin_boundary_is_what_makes_thinness_fire_on_the_real_target_set():
+    """The defect a synthetic dry-run over the measured depth distribution
+    exposed. v2's activity floor runs BEFORE centrality, so every account in a
+    persisted `kind=scores` run already holds 2+ posts and stratum 0 is empty by
+    construction. Under a three-stratum rule (floor, then depth) the whole
+    target set landed in one stratum and the ranking collapsed to plain
+    centrality - the exact thing the strata exist to prevent. The 20-post
+    boundary is where this corpus's own depth distribution breaks: 8,047 of
+    331,138 authors hold 20 or more posts."""
+    posts = _authored("thin", 3) + _authored("deep", 60)
+    con = _con(
+        posts,
+        [
+            # The deep account outranks the thin one, as it typically will.
+            {"user_id": "thin", "centrality": 0.10},
+            {"user_id": "deep", "centrality": 0.90},
+        ],
+    )
+    got = _select(con, depth=200)
+
+    assert [t.user_id for t in got] == ["thin", "deep"]
+    assert [t.stratum for t in got] == [1, 2]
+    # Nothing is below the floor, which is the real-data case.
+    assert [t.stratum for t in got].count(0) == 0
+    # With no thin boundary the order would invert.
+    inverted = _select(con, depth=200, thin_posts=MIN_ENTITIES)
+    assert [t.user_id for t in inverted] == ["deep", "thin"]
 
 
 def test_limit_bounds_the_pass_to_the_head_of_the_ranking():
@@ -352,8 +383,13 @@ def test_stats_report_both_denominators():
     assert stats["targets"] == 2
     assert stats["targets_below_floor"] == 1
     assert stats["targets_clearing_floor"] == 1
+    # The figure to read when the targets came from v2 scores, where
+    # targets_below_floor is 0 by construction.
+    assert stats["targets_thin"] == 1
+    assert stats["targets_saturated"] == 0
     assert stats["selected"] == 2
     assert stats["selected_below_floor"] == 1
+    assert stats["selected_thin"] == 1
     # Pool budget is the binding constraint, so the pass is costed in requests
     # rather than accounts: ~10 pages per account at 20 posts a page.
     assert stats["requests_estimate"] == 20
@@ -370,13 +406,17 @@ def test_window_prunes_the_activity_scan():
     assert whole == {"a": 3, "b": 3}
 
 
-def test_each_aggregate_is_staged_and_the_widest_one_is_released():
-    """Staged, not one query. A query whose every stage fits can still OOM when
-    DuckDB runs the stages concurrently and their peaks add - measured on pi0
-    2026-09-02, three stages of 569s, 261s and 1,248s each fitting alone while
-    the fused form OOMed. `_dt_posts` is the widest relation here (one row per
-    distinct post, 1,045,318 on the snapshot, against 331,138 authors) and
-    nothing reads it after the two aggregates."""
+def test_nothing_post_level_is_materialised():
+    """Staged, but nothing staged at post grain. A DuckDB in-memory temp table
+    counts against `memory_limit` and CANNOT spill, so materialising one row per
+    distinct post (1,045,318 on the snapshot) is a hard floor on the pass's
+    peak. Measured on a synthetic 39,387,988-row glob at threads=2: the
+    materialising shape peaks at 299 MB and OOMs at a 150MB limit, this one
+    peaks at 235 MB and survives 150MB by spilling. Both stages collapse their
+    DISTINCT into the aggregate instead, which is `suspicion._beh_sql`'s shape.
+
+    Every remaining temp table is bounded by distinct AUTHORS (331,138), or by
+    the target set (500)."""
     con = _con(_authored("a", 2, reposts=["X", "Y"]), [{"user_id": "a"}])
     _select(con)
 
@@ -386,8 +426,13 @@ def test_each_aggregate_is_staged_and_the_widest_one_is_released():
             "SELECT table_name FROM duckdb_tables() WHERE table_name LIKE '_dt_%'"
         ).fetchall()
     }
-    assert {"_dt_targets", "_dt_activity", "_dt_entities", "_dt_candidates"} <= staged
-    assert "_dt_posts" not in staged
+    assert staged == {"_dt_targets", "_dt_activity", "_dt_entities", "_dt_candidates"}
+    counts = {
+        name: con.sql(f"SELECT count(*) FROM {name}").fetchone()[0] for name in staged
+    }
+    # One row per author, never per post: the fixture holds 2 posts by 1 author.
+    assert counts["_dt_activity"] == 1
+    assert counts["_dt_entities"] == 1
 
 
 # --- the two resumability mechanisms ----------------------------------------
