@@ -1,0 +1,151 @@
+{
+  "generated_at": "2026-09-08T14:01:03.066845+00:00",
+  "generator": "analysis/tests/fixtures/replay/generate_ground_truth.py",
+  "selector": "kenya_monitor.runner.hot_objects (retweeted arm)",
+  "reference": "2026-09-01T00:00:00+00:00",
+  "pass_times": [
+    "2026-09-01T00:00:00+00:00",
+    "2026-09-01T03:00:00+00:00",
+    "2026-09-01T06:00:00+00:00"
+  ],
+  "params": {
+    "lookback_days": 2,
+    "top_retweeted": 5,
+    "top_conversations": 5,
+    "hydrate_limit": 5,
+    "band_min": 3,
+    "band_max": 100,
+    "refresh_hours": 12,
+    "retweeters_limit": 300
+  },
+  "objects": [
+    {
+      "id": "o01",
+      "degree": 1,
+      "rows": 1,
+      "batch": 0
+    },
+    {
+      "id": "o02",
+      "degree": 2,
+      "rows": 2,
+      "batch": 0
+    },
+    {
+      "id": "o03",
+      "degree": 3,
+      "rows": 3,
+      "batch": 0
+    },
+    {
+      "id": "o04",
+      "degree": 12,
+      "rows": 4,
+      "batch": 0
+    },
+    {
+      "id": "o05",
+      "degree": 27,
+      "rows": 6,
+      "batch": 0
+    },
+    {
+      "id": "o06",
+      "degree": 44,
+      "rows": 5,
+      "batch": 0
+    },
+    {
+      "id": "o07",
+      "degree": 63,
+      "rows": 7,
+      "batch": 0
+    },
+    {
+      "id": "o08",
+      "degree": 81,
+      "rows": 3,
+      "batch": 0
+    },
+    {
+      "id": "o09",
+      "degree": 99,
+      "rows": 2,
+      "batch": 0
+    },
+    {
+      "id": "o10",
+      "degree": 100,
+      "rows": 2,
+      "batch": 0
+    },
+    {
+      "id": "o11",
+      "degree": 242,
+      "rows": 9,
+      "batch": 0
+    },
+    {
+      "id": "o12",
+      "degree": 900,
+      "rows": 14,
+      "batch": 0
+    },
+    {
+      "id": "o13",
+      "degree": 55,
+      "rows": 4,
+      "batch": 1
+    },
+    {
+      "id": "o14",
+      "degree": 70,
+      "rows": 6,
+      "batch": 1
+    },
+    {
+      "id": "o15",
+      "degree": 150,
+      "rows": 8,
+      "batch": 1
+    },
+    {
+      "id": "o16",
+      "degree": 30,
+      "rows": 3,
+      "batch": 1
+    },
+    {
+      "id": "o17",
+      "degree": 88,
+      "rows": 5,
+      "batch": 2
+    },
+    {
+      "id": "o18",
+      "degree": 410,
+      "rows": 11,
+      "batch": 2
+    }
+  ],
+  "selected": [
+    [
+      "o10",
+      "o09",
+      "o08",
+      "o07",
+      "o06"
+    ],
+    [
+      "o14",
+      "o13",
+      "o16",
+      "o05",
+      "o04"
+    ],
+    [
+      "o17",
+      "o03"
+    ]
+  ]
+}

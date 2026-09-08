@@ -46,6 +46,7 @@ kma-iohunter-gate = "kma.iohunter_gate:main"
 kma-coord2-run = "kma.coord2_run:main"
 kma-measure-eval = "kma.measure_eval:main"
 kma-ioa-verify = "kma.ioa_verify:main"
+kma-replay = "kma.replay:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
