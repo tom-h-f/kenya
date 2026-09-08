@@ -106,7 +106,12 @@ def build(snapshot: str, limit: int = 0, percentile: float = 96.0, chunk: int = 
     import os
 
     os.makedirs("/data/textsim", exist_ok=True)
-    path = f"/data/textsim/{snapshot}.parquet"
+    # Threshold and row bound belong in the KEY. Without them a 20k-row smoke
+    # overwrites a full corpus run at the same path and the two are then
+    # distinguishable only by file timestamp, which is how one of these was
+    # briefly mistaken for the other.
+    scope = "full" if not limit else f"limit{limit}"
+    path = f"/data/textsim/{snapshot}__t{cut:.2f}__{scope}.parquet"
     edges.to_parquet(path)
     vol.commit()
 
