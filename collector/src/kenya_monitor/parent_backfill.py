@@ -1,11 +1,38 @@
 """Resumable, prioritised backfill of missing retweet parents.
 
 Measured on snapshot `2026-09-05-promotion-off`: 228,272 distinct retweeted
-objects, of which 61,052 are held and **167,220 are missing**. `fast_retweet`
-needs the original's author and timestamp to place a retweet relative to it, so
-with five sixths of the parents absent that trace produced 222 edges against
-co_retweet's 371,259 and is effectively dead. Co-retweet entities are also
-missing their originals, so nothing downstream can read what was amplified.
+objects, of which 61,052 are held and **167,220 are missing**.
+
+The quantity this pass moves is `fast_retweet` COVERAGE, not ids fetched.
+`fast_retweet_traces` times a retweet against `orig.created_at`, so a retweet
+row only becomes a candidate trace row once its parent is in the corpus:
+**161,146 of 364,287 retweet rows have a held parent, 44%**. That is why the
+trace yields 222 edges against co_retweet's 371,259. Report a pass as the
+coverage it buys - `retweet_rows_unlocked` in the returned counters - because
+ids fetched is not the quantity anyone cares about.
+
+Ranked by **distinct amplifier count DESCENDING, unbanded**. The trace's entity
+is the retweeted AUTHOR (`coalesce(rt.retweet_user_id, orig.user_id)`, and
+`retweet_user_id` is always NULL because the collector never stored it), so
+every retweet row whose parent we hold becomes a candidate trace row regardless
+of how many amplifiers that parent has. The quantity to maximise per request is
+therefore retweet rows unlocked, which IS the amplifier count.
+
+Deliberately NOT banded, unlike the census. The census bands because
+`coordination.validated_edges` discards hubs - 420 of 422 objects censused by
+raw popularity were hubs. v2 has no hub cap: TF-IDF down-weighting handles
+popular entities, and that is the one place the paper's mechanism works as
+advertised. So the reason to band does not apply, and descending-unbanded
+naturally orders the 10 hubs first, then the 5,545 in-band objects, then the
+two-amplifier objects, then the long tail of 151,215 single-amplifier ones
+(90.4% of the backlog) - which is the right order for this objective. Banding
+here would have skipped the 10 densest objects in the whole backlog.
+`--band-only` remains available as an explicit opt-in, never the default.
+
+**Hydration adds zero `co_retweet` edges.** `co_retweet_traces` reads
+`retweet_post_id` off the retweet row; a hydrated parent's own row has a NULL
+`retweet_post_id` and contributes no trace. The co-retweet gain is
+readability - dossiers can show what was amplified - not edges.
 
 Rows land in `posts/type=parent_backfill`, a TARGETED type, NOT the BASELINE
 `hydrated` one. 167,220 rows into a baseline partition would shift the corpus
@@ -16,9 +43,21 @@ hate rate. Targeted types are excluded from every prevalence denominator by
 `kma.db.latest_posts(scope="baseline")`; coordination reads every type, so v2
 still sees this data, which is the entire point of collecting it.
 
+**Feedback isolation is only half solved by the partition.** A hydrated parent
+is a post BY its author, so backfilled-parent authors gain activity and can
+newly clear v2's 2-entity minimum-activity floor - the floor that exists
+because two users whose only action is the same object have identical one-hot
+vectors and a cosine of 1.0 whatever the IDF weight. Selection here is ranked
+by in-corpus amplifier count, so the authors who gain most are the ones our
+corpus already amplifies most. `type=parent_backfill` keeps these rows out of
+every prevalence denominator, but it does nothing about that ranking artefact:
+**any v2 re-run after a bulk pass must report whether backfilled-parent authors
+rose in rank**, because that would be the artefact and not a finding. Same trap
+as deep timelines, reached from the other direction.
+
 Prioritised, never drained. One `tweet_details` request per id - there is no
 batch lookup on the GraphQL path - so the whole backlog is days of pool budget
-and the order it is spent in decides whether any of it produces an edge.
+and the order it is spent in decides how much coverage it buys.
 """
 
 from __future__ import annotations
@@ -168,7 +207,16 @@ def prune_state(
     return kept
 
 
-def backfill_summary(entries: dict[str, BackfillEntry]) -> dict[str, int | str | None]:
+def backfill_summary(entries: dict[str, BackfillEntry]) -> dict[str, int | float | str | None]:
+    """What the ledger has bought so far, in coverage terms.
+
+    `rows_unlocked` is the sum of amplifiers over successfully fetched parents,
+    i.e. the retweet rows that became candidate `fast_retweet` trace rows.
+    `rows_per_request` is the derivative worth watching: the ranking is
+    densest-first, so this decays towards 1.0 and there is little point
+    continuing once it gets there. Retention prunes `ok` entries after
+    PARENT_BACKFILL_OK_RETAIN_HOURS, so both are a WINDOW on recent passes and
+    not a lifetime total."""
     if not entries:
         return {
             "tracked": 0,
@@ -176,22 +224,20 @@ def backfill_summary(entries: dict[str, BackfillEntry]) -> dict[str, int | str |
             "not_found": 0,
             "failed": 0,
             "latest_fetch": None,
-            "band_share": 0.0,
+            "rows_unlocked": 0,
+            "rows_per_request": 0.0,
         }
     statuses = [e.status for e in entries.values()]
     ok = [e for e in entries.values() if e.status == STATUS_OK]
-    in_band = [
-        e for e in ok if SNOWBALL_BAND_MIN <= e.amplifiers <= SNOWBALL_BAND_MAX
-    ]
+    unlocked = sum(e.amplifiers for e in ok)
     return {
         "tracked": len(entries),
         "ok": len(ok),
         "not_found": sum(s == STATUS_NOT_FOUND for s in statuses),
         "failed": sum(s == STATUS_FAILED for s in statuses),
         "latest_fetch": max(e.fetched_at for e in entries.values()),
-        # The check on the whole point of the prioritisation: if this is low,
-        # the budget went on objects that cannot produce a coordination edge.
-        "band_share": round(len(in_band) / len(ok), 3) if ok else 0.0,
+        "rows_unlocked": unlocked,
+        "rows_per_request": round(unlocked / len(ok), 2) if ok else 0.0,
     }
 
 
@@ -202,20 +248,28 @@ def candidate_parents(
     limit: int,
     blocked: Sequence[str] = (),
     lookback_days: int | None = PARENT_BACKFILL_LOOKBACK_DAYS,
+    band_only: bool = False,
     band_min: int = SNOWBALL_BAND_MIN,
     band_max: int = SNOWBALL_BAND_MAX,
     stats: dict | None = None,
 ) -> list[tuple[str, int]]:
     """Missing retweet parents with their distinct-amplifier counts, ranked.
 
-    Returns `[(object_id, amplifiers), ...]`, in-band objects first.
+    Returns `[(object_id, amplifiers), ...]`, densest first.
+
+    Ranked by amplifier count DESCENDING and UNBANDED. Each amplifier is one
+    retweet row that becomes a candidate `fast_retweet` trace row once the
+    parent lands, so amplifier count IS coverage bought per request. See the
+    module docstring for why the census's band does not carry over: v2 has no
+    hub cap, so the 10 densest objects in the backlog are the best requests
+    available rather than the worst. `band_only` restores the banded selection
+    as an explicit opt-in.
 
     Amplifiers are counted as DISTINCT retweeter accounts in our own corpus, not
-    from `repost_count`. The census bands on `repost_count` because it is
-    selecting objects to go and fetch retweeters FOR; here the quantity that
-    decides whether hydrating an object can ever produce a co-retweet pair is
-    how many amplifiers we already hold, and the two diverge badly - a platform
-    counter of 40 on an object we saw twice buys nothing.
+    from `repost_count`. `repost_count` is the platform's counter and includes
+    retweets we never collected, which unlock nothing; the two diverge badly, so
+    a counter of 5,000 on an object we saw twice would rank at the head while
+    buying two rows.
 
     This runs on pi0 inside a 600 MB DuckDB limit in a 1 GB container, so it
     obeys the four collector-query rules (docs/OBJECTIVES.md C8):
@@ -297,19 +351,36 @@ def candidate_parents(
     )
 
     if stats is not None:
-        stats["retweeted_objects"] = con.sql(
-            "SELECT count(*) FROM _pb_amps"
-        ).fetchone()[0]
-        stats["held_parents"] = con.sql(
-            "SELECT count(*) FROM _pb_held"
-        ).fetchone()[0]
-        stats["missing_parents"] = con.sql(
-            "SELECT count(*) FROM _pb_missing"
-        ).fetchone()[0]
-        stats["missing_in_band"] = con.sql(
-            f"SELECT count(*) FROM _pb_missing "
-            f"WHERE amplifiers BETWEEN {int(band_min)} AND {int(band_max)}"
-        ).fetchone()[0]
+        # Object counts AND row counts. `sum(amplifiers)` is the population of
+        # retweet rows a parent would unlock, which is the `fast_retweet`
+        # coverage denominator - 161,146 of 364,287 rows had a held parent on
+        # 2026-09-05, 44%. Objects fetched is not the quantity anyone cares
+        # about, so both are recorded and the coverage share is derived here
+        # rather than left to whoever reads the log.
+        objects, rows_total = con.sql(
+            "SELECT count(*), coalesce(sum(amplifiers), 0) FROM _pb_amps"
+        ).fetchone()
+        missing_objects, missing_rows, in_band = con.sql(
+            f"""
+            SELECT count(*), coalesce(sum(amplifiers), 0),
+                   count(*) FILTER (
+                       amplifiers BETWEEN {int(band_min)} AND {int(band_max)}
+                   )
+            FROM _pb_missing
+            """
+        ).fetchone()
+        stats["retweeted_objects"] = int(objects)
+        stats["retweet_rows"] = int(rows_total)
+        stats["held_parents"] = int(objects) - int(missing_objects)
+        stats["held_rows"] = int(rows_total) - int(missing_rows)
+        stats["missing_parents"] = int(missing_objects)
+        stats["missing_rows"] = int(missing_rows)
+        stats["missing_in_band"] = int(in_band)
+        stats["coverage"] = (
+            round((int(rows_total) - int(missing_rows)) / int(rows_total), 4)
+            if rows_total
+            else 0.0
+        )
         stats["band_min"] = int(band_min)
         stats["band_max"] = int(band_max)
 
@@ -321,36 +392,25 @@ def candidate_parents(
         "_pb_blocked",
         pa.table({"oid": pa.array([str(b) for b in blocked], type=pa.string())}),
     )
+    band_filter = (
+        f"AND m.amplifiers BETWEEN {int(band_min)} AND {int(band_max)}"
+        if band_only
+        else ""
+    )
     try:
         rows = con.sql(
             f"""
-            WITH ranked AS (
-                SELECT m.oid, m.amplifiers,
-                       CASE
-                           WHEN m.amplifiers BETWEEN {int(band_min)} AND {int(band_max)} THEN 0
-                           WHEN m.amplifiers < {int(band_min)} THEN 1
-                           ELSE 2
-                       END AS band_rank
-                FROM _pb_missing m
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM _pb_blocked b WHERE b.oid = m.oid
-                )
-            )
-            SELECT oid, amplifiers FROM ranked
-            -- In-band first, then densest-first within the band. An object with
-            -- one amplifier yields no pair at all, and a hub is deleted by
-            -- `coordination.validated_edges` - 420 of 422 objects censused by
-            -- raw popularity were hubs, which is the measured reason the census
-            -- is banded at all. Hydrating in id order would spend the whole
-            -- budget on objects that cannot produce an edge.
-            --
-            -- Below the band ranks ahead of above it, and the tail orders
-            -- towards the band from both sides: a 2-amplifier object is one
-            -- retweeter short of being usable, whereas an object above the cap
-            -- is discarded however much is spent on it.
-            ORDER BY band_rank,
-                     CASE WHEN band_rank = 2 THEN amplifiers ELSE -amplifiers END,
-                     oid
+            SELECT m.oid, m.amplifiers
+            FROM _pb_missing m
+            WHERE NOT EXISTS (
+                SELECT 1 FROM _pb_blocked b WHERE b.oid = m.oid
+            ) {band_filter}
+            -- Densest first, unbanded. One amplifier is one retweet row that
+            -- becomes a candidate `fast_retweet` trace row once the parent
+            -- lands, so this maximises coverage bought per request. `oid`
+            -- breaks ties so the ranking is deterministic and a resumed pass
+            -- continues where the ledger left off rather than reshuffling.
+            ORDER BY m.amplifiers DESC, m.oid
             LIMIT {int(limit)}
             """
         ).fetchall()
@@ -362,34 +422,34 @@ def candidate_parents(
         stats["selected_in_band"] = sum(
             1 for _, amp in rows if band_min <= amp <= band_max
         )
+        stats["selected_rows"] = sum(int(amp) for _, amp in rows)
+        stats["band_only"] = bool(band_only)
         stats["blocked_by_ledger"] = len(blocked)
     return [(str(oid), int(amp)) for oid, amp in rows]
 
 
-def _warn_if_out_of_band(
-    candidates: Sequence[tuple[str, int]], band_min: int, band_max: int
-) -> None:
-    """Say so when the pass has run past the in-band supply.
+def _log_coverage(candidates: Sequence[tuple[str, int]], stats: dict) -> None:
+    """Announce the pass in coverage, not in ids.
 
-    The band is a RANK here, not a filter, so a pass larger than the in-band
-    population silently continues into objects with one or two amplifiers.
-    Those cannot produce a co-retweet pair, and the arithmetic says that state
-    arrives early: 228,272 objects share 364,287 retweet rows, so if x objects
-    hold 3 or more amplifiers then 3x + (228,272 - x) <= 364,287 and x <= 68,007
-    - at most 30% of the population, and far less under any realistic skew.
-    An operator who does not see this will read a long green pass as progress."""
+    `fast_retweet` coverage was 161,146 of 364,287 retweet rows with a held
+    parent on 2026-09-05, 44%. What a pass buys is the retweet rows its
+    candidates unlock, and because the ranking is densest-first that number
+    falls steeply with each pass: 90.4% of the backlog is single-amplifier
+    objects, so late passes unlock roughly one row per request. Logging ids
+    fetched hides exactly that decay."""
     if not candidates:
         return
-    out = [amp for _, amp in candidates if not band_min <= amp <= band_max]
-    if not out:
-        return
-    log.warning(
-        "parent backfill: %d of %d selected ids are outside the [%d..%d] band "
-        "(%d below, %d above) - in-band supply is exhausted, and below-band "
-        "objects cannot produce a co-retweet pair",
-        len(out), len(candidates), band_min, band_max,
-        sum(1 for a in out if a < band_min),
-        sum(1 for a in out if a > band_max),
+    unlocked = sum(amp for _, amp in candidates)
+    total = stats.get("retweet_rows") or 0
+    held = stats.get("held_rows") or 0
+    gain = f", coverage {held / total:.1%} -> {(held + unlocked) / total:.1%}" if total else ""
+    log.info(
+        "parent backfill: %d ids unlock %d retweet row(s), %d..%d amplifiers%s",
+        len(candidates),
+        unlocked,
+        candidates[-1][1],
+        candidates[0][1],
+        gain,
     )
 
 
@@ -400,6 +460,7 @@ async def backfill_parents(
     limit: int = PARENT_BACKFILL_LIMIT,
     state_path: Path = PARENT_BACKFILL_STATE_PATH,
     lookback_days: int | None = PARENT_BACKFILL_LOOKBACK_DAYS,
+    band_only: bool = False,
     band_min: int = SNOWBALL_BAND_MIN,
     band_max: int = SNOWBALL_BAND_MAX,
     flush_every: int = PARENT_BACKFILL_FLUSH_EVERY,
@@ -407,7 +468,11 @@ async def backfill_parents(
     candidates: list[tuple[str, int]] | None = None,
     stats: dict | None = None,
 ) -> dict[str, int]:
-    """One bounded pass: hydrate up to `limit` missing parents.
+    """One bounded pass: hydrate up to `limit` missing parents, densest first.
+
+    `band_only` restricts selection to `[band_min, band_max]`. Opt-in only: the
+    census's reason to band does not apply here (see the module docstring), and
+    banding by default would skip the 10 densest objects in the whole backlog.
 
     `candidates` supplies a pre-ranked list instead of running the selection
     query - used by the tests and by `--dry-run`, which must reach the same
@@ -421,12 +486,13 @@ async def backfill_parents(
             limit=limit,
             blocked=blocked_ids(entries, max_attempts),
             lookback_days=lookback_days,
+            band_only=band_only,
             band_min=band_min,
             band_max=band_max,
             stats=stats,
         )
     candidates = candidates[: max(0, int(limit))]
-    _warn_if_out_of_band(candidates, band_min, band_max)
+    _log_coverage(candidates, stats)
 
     counts = {
         "selected": len(candidates),
@@ -434,6 +500,9 @@ async def backfill_parents(
         "not_found": 0,
         "failed": 0,
         "authors": 0,
+        # The quantity of record. Counted on what came BACK, not on what was
+        # selected: an absent parent unlocks nothing.
+        "retweet_rows_unlocked": 0,
     }
     if not candidates:
         log.info("parent backfill: no candidates")
@@ -461,6 +530,7 @@ async def backfill_parents(
             entries[oid] = BackfillEntry(
                 fetched_at=now_iso, status=STATUS_OK, attempts=1, amplifiers=amps[oid]
             )
+            counts["retweet_rows_unlocked"] += amps[oid]
         save_state(entries, state_path)
         batch, pending = [], []
 

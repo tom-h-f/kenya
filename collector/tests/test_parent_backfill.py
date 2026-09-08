@@ -78,10 +78,11 @@ def _retweets(parent: str, authors: list[str], **kw) -> list[dict]:
 # --- candidate selection -----------------------------------------------------
 
 
-def test_band_prioritisation_puts_pairable_objects_first():
-    """The whole reason this is not a scan in id order. An object with one
-    amplifier yields no pair, and a hub is deleted by `validated_edges` - 420 of
-    422 objects censused by raw popularity were hubs."""
+def test_ranking_is_densest_first_and_unbanded():
+    """Amplifier count is coverage per request: each amplifier is one retweet
+    row that becomes a candidate `fast_retweet` trace row once the parent lands.
+    The trace's entity is the retweeted AUTHOR, so even a single-amplifier
+    parent contributes, and v2 has no hub cap to discard the dense ones."""
     rows = (
         _retweets("LONE", ["a1"])
         + _retweets("PAIR", ["b1", "b2", "b3"])
@@ -89,14 +90,33 @@ def test_band_prioritisation_puts_pairable_objects_first():
         + _retweets("HUB", [f"d{i}" for i in range(140)])
     )
     con, view = _con_with_posts(rows)
-    got = candidate_parents(con, view, limit=10)
+    stats: dict = {}
+    got = candidate_parents(con, view, limit=10, stats=stats)
 
-    # In-band first, densest-first inside it. Then the tail, ordered towards the
-    # band from both sides: LONE needs two more amplifiers to become usable,
-    # while HUB is discarded by the hub cap however much is spent on it.
-    assert [oid for oid, _ in got] == ["DENSE", "PAIR", "LONE", "HUB"]
+    assert [oid for oid, _ in got] == ["HUB", "DENSE", "PAIR", "LONE"]
     assert dict(got)["DENSE"] == 40
-    assert [oid for oid, amp in got if 3 <= amp <= 100] == ["DENSE", "PAIR"]
+    # The hub is the single best request available, not the worst. Banding here
+    # would have skipped it - measured on live R2 there are exactly 10 such
+    # objects in the 167,220-id backlog.
+    assert got[0] == ("HUB", 140)
+    assert stats["selected_rows"] == 184
+
+
+def test_band_only_is_an_opt_in_that_drops_the_densest_objects():
+    """Kept because it is built, never the default: the census bands because
+    `validated_edges` discards hubs, and v2 has no hub cap, so applying it here
+    forfeits the highest-coverage requests in the backlog."""
+    rows = (
+        _retweets("LONE", ["a1"])
+        + _retweets("PAIR", ["b1", "b2", "b3"])
+        + _retweets("HUB", [f"d{i}" for i in range(140)])
+    )
+    con, view = _con_with_posts(rows)
+
+    assert [oid for oid, _ in candidate_parents(con, view, limit=10)][0] == "HUB"
+    banded = candidate_parents(con, view, limit=10, band_only=True)
+    assert [oid for oid, _ in banded] == ["PAIR"]
+    assert "HUB" not in dict(banded), "the densest object is forfeited by --band-only"
 
 
 def test_limit_bounds_the_pass_to_the_top_of_the_ranking():
@@ -280,18 +300,23 @@ def test_pruning_keeps_failures_and_drops_stale_successes():
     assert set(kept) == {"new_ok", "old_absent", "old_failed"}
 
 
-def test_summary_reports_the_in_band_share_of_spent_requests():
+def test_summary_reports_coverage_bought_not_ids_fetched():
+    """`rows_per_request` is the number that decides whether to keep going: the
+    ranking is densest-first over a backlog that is 90.4% single-amplifier
+    objects, so it decays towards 1.0."""
     entries = {
         "a": BackfillEntry(fetched_at=NOW.isoformat(), status="ok", amplifiers=40),
         "b": BackfillEntry(fetched_at=NOW.isoformat(), status="ok", amplifiers=1),
-        "c": BackfillEntry(fetched_at=NOW.isoformat(), status="not_found"),
+        # An absent parent unlocks nothing, so it must not enter the average.
+        "c": BackfillEntry(fetched_at=NOW.isoformat(), status="not_found", amplifiers=99),
     }
     summary = backfill_summary(entries)
     assert summary["tracked"] == 3
     assert summary["ok"] == 2
     assert summary["not_found"] == 1
-    assert summary["band_share"] == 0.5
-    assert backfill_summary({})["tracked"] == 0
+    assert summary["rows_unlocked"] == 41
+    assert summary["rows_per_request"] == 20.5
+    assert backfill_summary({})["rows_unlocked"] == 0
 
 
 # --- the pass ----------------------------------------------------------------
@@ -439,6 +464,9 @@ def test_absent_and_failed_are_recorded_differently(tmp_path):
         "not_found": 1,
         "failed": 1,
         "authors": 1,
+        # Only A came back, so only A's 40 amplifiers are unlocked. The absent
+        # and failed ids selected 50 more rows between them and unlocked none.
+        "retweet_rows_unlocked": 40,
     }
     entries = load_state(path)
     assert entries["DEAD"].status == "not_found"
@@ -495,34 +523,33 @@ def test_partial_progress_survives_an_abort_mid_pass(tmp_path):
     assert set(load_state(path)) == {"A", "B"}
 
 
-def test_running_past_the_in_band_supply_warns(tmp_path, caplog):
-    """The band is a rank, not a filter, so a pass bigger than the in-band
-    population continues into objects that cannot produce a co-retweet pair.
-    That has to be visible or a long green pass reads as progress."""
-    with caplog.at_level("WARNING", logger="kenya_monitor"):
-        _run(
-            backfill_parents(
-                _StubCollector(),
-                _StubStorage(),
-                limit=3,
-                state_path=tmp_path / "s.json",
-                candidates=[("A", 40), ("B", 1), ("C", 900)],
-            )
+def test_the_pass_is_announced_in_coverage_not_in_ids(tmp_path):
+    """`fast_retweet` coverage was 161,146 of 364,287 retweet rows on
+    2026-09-05. A pass reported as "500 ids" hides both what it bought and the
+    decay: densest-first over a 90.4% single-amplifier backlog means late
+    passes unlock roughly one row per request."""
+    rows = (
+        _retweets("BIG", [f"a{i}" for i in range(30)])
+        + _retweets("SMALL", ["b1"])
+        + _retweets("HELD", ["c1", "c2"])
+    )
+    rows.append({"platform_post_id": "HELD", "author_id": "origin"})
+    con, _ = _con_with_posts(rows)
+    stats: dict = {}
+    counts = _run(
+        backfill_parents(
+            _StubCollector(),
+            _StubStorage(con),
+            limit=2,
+            state_path=tmp_path / "s.json",
+            stats=stats,
         )
-    assert "in-band supply is exhausted" in caplog.text
-
-    caplog.clear()
-    with caplog.at_level("WARNING", logger="kenya_monitor"):
-        _run(
-            backfill_parents(
-                _StubCollector(),
-                _StubStorage(),
-                limit=1,
-                state_path=tmp_path / "s2.json",
-                candidates=[("A", 40)],
-            )
-        )
-    assert "in-band supply is exhausted" not in caplog.text
+    )
+    assert stats["retweet_rows"] == 33
+    assert stats["held_rows"] == 2
+    assert stats["coverage"] == round(2 / 33, 4)
+    assert stats["selected_rows"] == 31
+    assert counts["retweet_rows_unlocked"] == 31
 
 
 def test_an_empty_candidate_set_is_not_an_error(tmp_path):
@@ -543,6 +570,7 @@ def test_pass_selects_through_the_query_when_given_no_candidates(tmp_path):
         _retweets("DENSE", [f"a{i}" for i in range(40)])
         + _retweets("PAIR", ["b1", "b2", "b3"])
         + _retweets("LONE", ["c1"])
+        + _retweets("HUB", [f"d{i}" for i in range(130)])
     )
     con, _ = _con_with_posts(rows)
     storage = _StubStorage(con)
@@ -557,9 +585,10 @@ def test_pass_selects_through_the_query_when_given_no_candidates(tmp_path):
             stats=stats,
         )
     )
-    assert collector.requested == ["DENSE", "PAIR"]
+    assert collector.requested == ["HUB", "DENSE"]
     assert counts["hydrated"] == 2
+    assert counts["retweet_rows_unlocked"] == 170
     assert storage.writes == [(TARGET_TYPE, 2)]
-    assert stats["missing_parents"] == 3
+    assert stats["missing_parents"] == 4
     assert stats["missing_in_band"] == 2
-    assert stats["selected_in_band"] == 2
+    assert stats["band_only"] is False
