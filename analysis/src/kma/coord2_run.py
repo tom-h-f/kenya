@@ -24,10 +24,13 @@ import logging
 from dataclasses import dataclass
 
 import duckdb
+import numpy as np
 import pandas as pd
 
+from datetime import datetime, timezone
+
 from kma import bench, coord2
-from kma.db import connect
+from kma.db import BUCKET, connect
 
 log = logging.getLogger(__name__)
 
@@ -120,3 +123,81 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def persist(
+    con: duckdb.DuckDBPyConnection,
+    scores: pd.DataFrame,
+    *,
+    snapshot: str,
+    trace_sizes: pd.DataFrame,
+    text_threshold: float | None = None,
+    platform: str = "x",
+) -> str:
+    """Write one v2 pass under its own R2 prefix.
+
+    A SEPARATE prefix from `coordination/`, deliberately. v1 writes clusters and
+    v2 writes accounts; sharing a prefix would let a reader union two different
+    units of prediction and get a number that means nothing. The two methods
+    surfaced near-disjoint populations (22 of 500 overlap, measured 2026-09-08),
+    so the distinction is not academic.
+
+    Every parameter that decides the output travels with it: the snapshot id,
+    the per-trace edge counts, and the text-similarity threshold, which is OUR
+    choice rather than the paper's and determines most of the ranking.
+    """
+    now = datetime.now(timezone.utc)
+    buf = scores.copy()
+    buf["snapshot"] = snapshot
+    buf["computed_at"] = now
+    buf["text_threshold"] = text_threshold
+    buf["min_entities"] = coord2.MIN_ENTITIES_PER_USER
+    for _, row in trace_sizes.iterrows():
+        buf[f"edges_{row['trace']}"] = int(row["edges"])
+
+    key = (
+        f"coord2/platform={platform}/kind=scores"
+        f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
+    )
+    con.register("_coord2_buf", buf)
+    try:
+        con.execute(
+            f"COPY _coord2_buf TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)"
+        )
+    finally:
+        con.unregister("_coord2_buf")
+    log.info("wrote %s (%d accounts)", key, len(buf))
+    return key
+
+
+def attach_relevance(
+    con: duckdb.DuckDBPyConnection, scores: pd.DataFrame, view: str
+) -> pd.DataFrame:
+    """Kenya share per surfaced account, from `kma.measure`'s domain bucket.
+
+    Detection says accounts act together; it cannot say whether they act
+    together about Kenya. v1's strongest evidence tier was only 8.3%
+    Kenya-referencing, which is what discredited it, so no v2 output should be
+    read without this column beside it.
+    """
+    from kma import measure
+
+    ids = scores["user_id"].astype(str).tolist()
+    con.register("_ids", pd.DataFrame({"user_id": ids}))
+    posts = con.sql(
+        f"SELECT p.user_id, p.text FROM ({view}) p JOIN _ids i ON CAST(p.user_id AS VARCHAR) = i.user_id"
+    ).df()
+    con.unregister("_ids")
+    if posts.empty:
+        return scores.assign(kenya_share=np.nan, n_posts=0)
+
+    posts["bucket"] = [measure.domain_bucket(t) for t in posts["text"]]
+    agg = posts.groupby("user_id").agg(
+        n_posts=("bucket", "size"),
+        kenya_share=("bucket", lambda b: float((b == "kenya").mean())),
+    )
+    agg.index = agg.index.astype(str)
+    return scores.assign(
+        n_posts=scores["user_id"].astype(str).map(agg["n_posts"]).fillna(0).astype(int),
+        kenya_share=scores["user_id"].astype(str).map(agg["kenya_share"]),
+    )
