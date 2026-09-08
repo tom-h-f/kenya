@@ -212,10 +212,14 @@ bulk pass runs, give it its own prefix.
 **Goal.** Turn one-post accounts into accounts with trace vectors, for the
 accounts v2 actually surfaced.
 
-**Target set.** The ~12,000 accounts in the fused graph, ranked by v2 centrality
-from `coord2/kind=scores`, not all 331,138 authors. Depth bounded per account
-(start at 200 posts, roughly 10 pages) rather than the ~3,200 maximum, because
-the marginal value of page 40 is far below that of page 1 on another account.
+**Target set.** ~~The ~12,000 accounts in the fused graph, ranked by v2
+centrality from `coord2/kind=scores`~~ **Corrected 2026-09-08: that is 500
+accounts, not 12,000.** `coord2_run.run` takes `.head(top)` before `persist`, so
+a persisted run is the top 500 by centrality and the fused population is not
+written anywhere. Reaching 12,000 needs a v2 re-run at `--top 12000`. Depth
+bounded per account (start at 200 posts, roughly 10 pages) rather than the
+~3,200 maximum, because the marginal value of page 40 is far below that of page
+1 on another account.
 
 **Todo list**
 
@@ -231,8 +235,11 @@ the marginal value of page 40 is far below that of page 1 on another account.
 7. Re-run the v2 pass afterwards and report the change in: accounts clearing the
    activity floor, fused component structure, and top-500 Kenya share.
 
-**Acceptance.** Accounts clearing the 2-entity floor rises from 79,967, and the
-v2 re-run reports its deltas against this plan's baseline figures.
+**Acceptance.** ~~Accounts clearing the 2-entity floor rises from 79,967~~
+**Superseded 2026-09-08 - unreachable from this target set, see finding 1 in the
+handoff below.** Restated: the median held-post count of the accounts v2 ranked
+rises from 3 towards `depth`, and the v2 re-run reports its deltas against this
+plan's baseline figures INCLUDING whether deep-timelined accounts rose in rank.
 
 **The feedback-isolation trap.** Deep-timelining accounts *because v2 surfaced
 them* inflates their own future centrality - more posts means more chances to
@@ -240,6 +247,137 @@ match. v1 already had this problem and solved it two ways: quarantined partition
 and ranking count-based components within observation-volume strata. `type=deep_timeline`
 handles provenance, but **any v2 re-run after this must report whether the newly
 deep accounts rose in rank**, because that would be the artefact and not a finding.
+
+### Task 2 handoff, 2026-09-08
+
+Built and tested offline; **no collection pass has been run and nothing is
+deployed.** `monitor deep-timelines --limit N --depth D [--dry-run] [--status]
+[--min-kenya-share X]`, `kenya_monitor.deep_timelines`, ledger at
+`state/deep_timeline.json`, `deep_timeline` added to `kma.db.TARGETED_TYPES`.
+Collector suite 208 -> 246; `analysis/tests/test_scope.py` 21 -> 23.
+
+`run_deep_timelines_once` is deliberately NOT in `run_scheduler`'s cycle. Each
+account is ~10 paginated requests, so it would become the cycle's dominant
+consumer of pool budget - and this pass conditions collection on v2's own
+output, so it must be an explicit, dated, bounded act rather than something the
+corpus accumulates while nobody watches which accounts it favours.
+
+**Three things in the plan were wrong. The first invalidates this task's stated
+acceptance criterion.**
+
+1. **A pass targeting persisted v2 scores cannot move the 79,967 figure at
+   all.** v2's activity floor runs BEFORE centrality (`similarity_network`
+   calls `min_activity`, then `detect` scores the fused graph), so an account
+   with one post has fewer than 2 entities in every trace and can never appear
+   in a `kind=scores` run. Every target already clears the floor. The 251,171
+   one-post authors are precisely the accounts v2 cannot rank, so they are
+   never in the target set. What this pass buys is vector DENSITY for accounts
+   currently ranked on 2-to-19 observations - the ability to adjudicate the
+   ranking - and the acceptance criterion has to be restated in those terms.
+   Moving 79,967 needs the accounts v2 DISCARDED, which have no centrality to
+   rank them by; `runner.census_discovered_handles` is the precedent and its
+   `ORDER BY random()` is the argument. That is a separate pass, not a flag.
+2. **`collectors.x.timeline` drops everything older than 14 days**
+   (`MAX_AGE_DAYS`, applied per post), so "reuse `timeline`" would have quietly
+   voided the whole task: a depth-200 pass would have spent ~10 requests per
+   account and kept only what a keyword search could already reach. Added
+   `deep_timeline(user_id, limit, include_replies=True)` beside it, sharing one
+   private implementation, with no cutoff. It is also addressed by NUMERIC ID
+   rather than handle, which saves the `user_by_login` request (~9% of the
+   per-account budget) and removes a false terminal outcome for every renamed
+   account. `timeline`'s behaviour is unchanged.
+3. **The target set is 500 accounts, not ~12,000** - see the correction above.
+   That makes the whole persisted target set affordable in one pass: 500 x ~10
+   = ~5,000 requests, against the plan's 120,000 estimate for 12,000 accounts.
+
+**Targeting rule.** Strata on held post count, centrality DESCENDING within
+each stratum, strata ascending: `<2` (below v2's floor), `2..19` (thin),
+`20..depth-1`, `>=depth` (saturated). Cost is near-constant per account and
+benefit is not, so rank by what depth buys. Both objectives agree on the order:
+a high-centrality account with two posts is ranked high BECAUSE of the entities
+the floor distrusts, so it is at once the least trustworthy row and the cheapest
+to settle. Strata rather than a blended `centrality / log(1 + n_posts)`, which
+weights two incommensurable quantities by an indefensible constant, and every
+boundary is measured - 2 is `coord2.MIN_ENTITIES_PER_USER`, 20 is where this
+corpus's depth distribution breaks (8,047 of 331,138 authors, the 97.6th
+percentile), `depth` is the pass's own saturation point.
+
+The 20-post boundary is not decoration. Without it, and given finding 1, the
+whole target set falls in one stratum and the ranking collapses to plain
+centrality - the synthetic dry-run put a 39-post account above a 2-post one.
+
+**Known imprecision:** strata count POSTS, v2's floor counts distinct ENTITIES
+per trace. Five retweets of one object are five posts and one co_retweet entity.
+Posts are used because they are what `depth` directly increases, they are
+trace-agnostic, and they are what the plan's 79,967 counts (331,138 - 251,171).
+Entity counts are measured and reported beside them everywhere.
+
+**Dry-run head, synthetic corpus** (39,387,988 rows over 1,036,526 distinct
+posts, reproducing the real 331,138 / 251,171 / 79,967 author-depth
+distribution; the target-set depth mix is a fixture assumption, not a
+measurement). Corpus-wide the selector reproduces **79,967 of 331,138 clearing
+the 2-post floor (24.1%)**, and 42,316 clearing a 2-entity co-retweet floor. At
+`--limit 50 --depth 200` it selects 50 accounts holding **2..18 posts, median
+3**, all in stratum 1, ~500 requests; 0 of them cross the post floor, so the
+corpus-wide 79,967 does not move - which is finding 1, visible in the output
+rather than buried. On the fixture 455 of 500 targets are thin and 258 of 500
+sit below a 2-entity co-retweet floor. **Run `--dry-run` against live R2 before
+committing budget.**
+
+**Candidate query, measured.** Four staged statements, two projected columns per
+scan, no window function, no `count(DISTINCT ...)`. Nothing post-level is
+materialised: a DuckDB in-memory temp table counts against `memory_limit` and
+CANNOT spill, so a 1,036,526-row DISTINCT staged as a temp table peaked at 299
+MB and OOMed under a 150MB cap. Collapsing each DISTINCT into its aggregate
+(`suspicion._beh_sql`'s shape) costs a second glob scan - the same trade
+`parent_backfill._pb_held` takes - and peaks at **274 MB at
+`memory_limit=600MB`, threads=2**, completing down to 100MB by spilling. No
+materialised relation exceeds distinct authors (331,138). Memory only: pi0's
+real cost is R2 reads, unmeasurable from a worktree with no `.env`, so step 6 (a
+bounded pass on pi0) is still outstanding.
+
+**Feedback trap.** Recorded in the module docstring, `kma.db.TARGETED_TYPES` and
+the CLI help, not only here. Beyond the quarantined partition, every deepened
+account is written to a new **`deep_timelines/`** prefix, one row per account,
+carrying `user_id`, `source`, `source_run` (which scores object it came from),
+`rank_metric`, `rank_value`, `stratum`, `held_posts_before`,
+`held_entities_before`, `depth`, `posts_written`, `status`. Keyed on `user_id`,
+so the check is a join onto `coord2/platform=x/kind=scores` rather than
+archaeology, and the pre-treatment counts are the covariate to condition on.
+Its own prefix, as Task 1's handoff recommended after rejecting `census_runs/`
+and `collection_runs/`. **Any v2 re-run after a bulk pass must report whether
+deep-timelined accounts rose in rank.**
+
+**Resumability is two mechanisms**, because neither suffices. `deepened_expr`
+excludes accounts with `type=deep_timeline` posts inside the TTL, in the
+candidate SQL before the LIMIT, so it self-heals if the ledger is lost
+(`census.censused_expr`'s reasoning). The ledger covers what R2 cannot learn:
+an account that returned nothing writes no post row. Note there is NO
+self-draining anti-join here, unlike the parent backfill - an account always
+has posts, so depth is a TTL question and the ledger is load bearing.
+`no_posts` is terminal (a by-id fetch cannot tell suspended from protected from
+empty, and none of them change on this timescale); `failed` retries after the
+TTL, bounded, following `follow_crawl.is_due`.
+
+**Also fixed while building:** `_score_targets` originally caught
+`duckdb.Error`, which silently substituted the suspicion fallback for ANY fault
+- including `InvalidInputException` from converting a tz-aware timestamp without
+`pytz`, which is not a dependency of this project. Narrowed to `IOException`
+(absent prefix, the one recoverable case) and the timestamp is cast to VARCHAR
+in SQL rather than fetched.
+
+**Shared-code changes, all additive except one refactor.** `storage.py`,
+`collectors/base.py` and `suspicion.py` gained code only; the sole deletion in
+the whole diff is three lines of `x.timeline` moved verbatim into the private
+`_timeline` helper. `suspicion._score_sql` gained a projected
+`platform_user_id AS user_id` column so the fallback keys on ids like the
+primary path; its only other consumer joins on `handle` and projects named
+columns, so nothing else sees it.
+
+**Not done, deliberately.** No bulk pass, no pi0 deployment, no v2 re-run. Step
+7's deltas (floor-clearing count, fused component structure, top-500 Kenya
+share) cannot be reported before a pass runs, and per finding 1 the
+floor-clearing delta will be 0 from this target set.
 
 ---
 

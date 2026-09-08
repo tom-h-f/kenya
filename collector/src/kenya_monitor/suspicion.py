@@ -140,6 +140,13 @@ def _score_sql(prof_table: str = _PROF, beh_table: str = _BEH) -> str:
     return f"""
     SELECT
         p.r.handle AS handle,
+        -- Carried so a caller can rank by suspicion and still address accounts
+        -- by id. `deep_timelines` needs that: its primary target set comes from
+        -- v2 scores keyed on `user_id`, and its fallback ranking comes from
+        -- here, so a handle-only fallback would key the ledger and the
+        -- deepened-accounts record on a different column than the join that
+        -- has to check them for the feedback artefact.
+        p.platform_user_id AS user_id,
         greatest(date_diff('day', p.r.created_at, now()), 0) AS account_age_days,
         p.r.followers_count * 1.0 / greatest(p.r.following_count, 1) AS followers_following_ratio,
         p.r.tweet_count * 1.0 / greatest(date_diff('day', p.r.created_at, now()), 1) AS tweet_rate,

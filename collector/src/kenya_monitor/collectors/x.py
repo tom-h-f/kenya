@@ -195,14 +195,50 @@ class XCollector(Collector):
         user = await self.api.user_by_login(account)
         if user is None:
             return
-        cutoff = _cutoff()
+        async for post in self._timeline(user.id, limit, include_replies, _cutoff()):
+            yield post
+
+    async def deep_timeline(
+        self, user_id: str, limit: int, include_replies: bool = True
+    ) -> AsyncIterator[Post]:
+        """Per-account history, past the 14-day horizon and without a login.
+
+        Two deliberate differences from `timeline`, both load bearing:
+
+        **No age cutoff.** `timeline` drops anything older than MAX_AGE_DAYS so
+        the baseline `timeline` partition stays comparable with `search`, which
+        cannot reach past 14 days at all. Applied here it would defeat the
+        entire point: the endpoint reaches ~3,200 posts per account, and on a
+        corpus averaging 3.2 posts per author almost all of the history worth
+        fetching is older than the window. A depth-200 pass under the cutoff
+        would spend 10 requests per account and write the handful of posts a
+        14-day keyword search could already have found.
+
+        **Addressed by numeric id, not handle.** The v2 scores this pass targets
+        carry `user_id`, so `user_by_login` would mean resolving id -> handle
+        from the corpus and back again: one extra request per account (~9% of
+        the ~10-request budget) and a false terminal outcome for every account
+        that has since been renamed. `user_tweets_and_replies` takes the id
+        directly.
+
+        Replies are ON by default here, the reverse of `timeline`. Plain
+        `user_tweets` omits them entirely - measured 2026-08-03, 760 posts from
+        20 accounts carried 5 rows with `in_reply_to_id` - and a history with no
+        replies carries no `co_reply` or reply-timing behaviour at all.
+        """
+        async for post in self._timeline(int(user_id), limit, include_replies, None):
+            yield post
+
+    async def _timeline(
+        self, uid: int, limit: int, include_replies: bool, cutoff: datetime | None
+    ) -> AsyncIterator[Post]:
         # `user_tweets` omits replies entirely. Measured 2026-08-03 on the first
         # census-timeline pass: 760 posts from 20 accounts carried 5 rows with
         # `in_reply_to_id`, so the pass produced almost no co_reply traces - the
         # one thing it exists to produce.
         fetch = self.api.user_tweets_and_replies if include_replies else self.api.user_tweets
-        async for tw in fetch(user.id, limit=limit):
-            if tw.date.astimezone(timezone.utc) >= cutoff:
+        async for tw in fetch(uid, limit=limit):
+            if cutoff is None or tw.date.astimezone(timezone.utc) >= cutoff:
                 yield self._to_post(tw)
 
     async def retweeters(self, post_id: str, limit: int) -> AsyncIterator[Engagement]:

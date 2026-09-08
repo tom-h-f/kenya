@@ -113,6 +113,32 @@ def test_backfilled_parents_do_not_move_the_baseline_denominator(con):
     assert len(_ids(db.latest_posts(con, scope="baseline"))) == before
 
 
+def test_deep_timeline_partition_is_targeted(con):
+    """`timeline` is a BASELINE type. Per-account histories at ~200 posts each,
+    on a corpus averaging 3.2 posts per author, would move the baseline
+    composition further than the 2026-08-06 conversation widening did - and that
+    widening is what made the raw toxicity series unpublishable."""
+    con.execute(
+        "INSERT INTO _posts VALUES ('x', 'deep', 'deep_timeline', now(), 'WilliamsRuto')"
+    )
+    assert "deep_timeline" in db.TARGETED_TYPES
+    assert "deep_timeline" not in db.BASELINE_TYPES
+    assert "deep" not in _ids(db.latest_posts(con, scope="baseline"))
+    assert "deep" in _ids(db.latest_posts(con, scope="targeted"))
+
+
+def test_deep_timelines_do_not_move_the_baseline_denominator(con):
+    """The acceptance criterion for Task 2, as SQL. 200 rows is ONE deepened
+    account at the default depth, which is why the partition has to hold."""
+    before = len(_ids(db.latest_posts(con, scope="baseline")))
+    con.executemany(
+        "INSERT INTO _posts VALUES ('x', ?, 'deep_timeline', now(), 'WilliamsRuto')",
+        [[f"d{i}"] for i in range(200)],
+    )
+    assert len(_ids(db.latest_posts(con, scope="baseline"))) == before
+    assert len(_ids(db.latest_posts(con, scope="targeted"))) == 202
+
+
 def test_unknown_type_raises_rather_than_defaulting(con):
     con.execute("INSERT INTO _posts VALUES ('x', 'mystery', 'future_pass', now(), 'WilliamsRuto')")
     for scope in ("baseline", "targeted"):

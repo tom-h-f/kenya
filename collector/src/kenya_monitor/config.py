@@ -138,6 +138,61 @@ CENSUS_TIMELINE_RETRY_DAYS = int(os.getenv("CENSUS_TIMELINE_RETRY_DAYS", "30"))
 CENSUS_TIMELINE_POOL_SIZE = int(os.getenv("CENSUS_TIMELINE_POOL_SIZE", "500"))
 CENSUS_TIMELINE_POOL_HOURS = int(os.getenv("CENSUS_TIMELINE_POOL_HOURS", "12"))
 
+# Deep timelines for the accounts v2 surfaced (kenya_monitor.deep_timelines).
+#
+# Measured on snapshot 2026-09-05-promotion-off: 331,138 authors, 251,171
+# (75.9%) with exactly one post, mean 3.2 posts per author, 79,967 clearing
+# v2's 2-post/2-entity activity floor and only 8,047 with 20 or more posts.
+# The corpus is wide and one post deep, which is the single fact behind most of
+# v2's problems on it.
+#
+# 200 posts per account, NOT the ~3,200 the timeline endpoint can reach. At
+# ~20 posts per page that is ~10 requests, and the marginal value of page 40 on
+# one account is far below page 1 on another while the pool is the binding
+# constraint. It is also the saturation boundary of the targeting strata: an
+# account already holding 200 posts can at best double its history from a pass
+# of this depth, so it ranks last.
+DEEP_TIMELINE_DEPTH = int(os.getenv("DEEP_TIMELINE_DEPTH", "200"))
+# Accounts per pass. Bounded on REQUESTS rather than accounts, to stay the same
+# order of pool spend as PARENT_BACKFILL_LIMIT's 500 one-request ids: 50
+# accounts x ~10 pages is ~500 requests.
+DEEP_TIMELINE_LIMIT = int(os.getenv("DEEP_TIMELINE_LIMIT", "50"))
+# Accounts per write. Lower than PARENT_BACKFILL_FLUSH_EVERY's 50 because the
+# unit is ~10 requests rather than 1: 5 accounts is ~50 requests of pool budget
+# at risk from a rate-limit abort, and ~1,000 post rows per parquet.
+DEEP_TIMELINE_FLUSH_EVERY = int(os.getenv("DEEP_TIMELINE_FLUSH_EVERY", "5"))
+# Retries for accounts whose REQUEST failed (rate limit, proxy, transport). An
+# account that resolved but returned no posts is never retried - see
+# deep_timelines.is_due.
+DEEP_TIMELINE_MAX_ATTEMPTS = int(os.getenv("DEEP_TIMELINE_MAX_ATTEMPTS", "3"))
+# How long before a deepened account is due again. 30 days, matching
+# FOLLOW_CRAWL_REFRESH_DAYS and CENSUS_TIMELINE_RETRY_DAYS, because a refresh at
+# a fixed depth only adds whatever the account posted since the last pass: at a
+# shorter TTL most of the 200 posts fetched are ones already held, and 30 days
+# is over twice the 14-day horizon baseline search can reach anyway.
+DEEP_TIMELINE_REFRESH_DAYS = int(os.getenv("DEEP_TIMELINE_REFRESH_DAYS", "30"))
+# 0 means the whole corpus, and it is the default for the same reason as
+# PARENT_BACKFILL_LOOKBACK_DAYS: the held-post counts that decide the targeting
+# strata are a statement about the account's whole history in our corpus, and a
+# windowed count calls a long-held account thin and deepens it again.
+DEEP_TIMELINE_LOOKBACK_DAYS = int(os.getenv("DEEP_TIMELINE_LOOKBACK_DAYS", "0")) or None
+# Target-pool size for the suspicion FALLBACK ranking, used only before a v2
+# pass has ever been persisted. 500 matches the size of a persisted v2 run
+# (`coord2_run.run(top=500)`), so the fallback offers the same triage budget
+# rather than an unbounded one.
+DEEP_TIMELINE_FALLBACK_TARGETS = int(os.getenv("DEEP_TIMELINE_FALLBACK_TARGETS", "500"))
+# Boundary between the "thin" and "has real history" targeting strata.
+#
+# 20 because that is where this corpus's own depth distribution breaks: 8,047 of
+# 331,138 authors hold 20 or more posts, so the boundary sits at the 97.6th
+# percentile of author depth. It exists because the more obvious boundary does
+# not discriminate. v2's activity floor is applied BEFORE centrality, so every
+# account in a persisted `kind=scores` run already holds 2+ posts and the
+# below-the-floor stratum is empty by construction for that target set - without
+# this boundary the strata collapse to a plain centrality ranking, which is the
+# thing they exist to avoid.
+DEEP_TIMELINE_THIN_POSTS = int(os.getenv("DEEP_TIMELINE_THIN_POSTS", "20"))
+
 # DuckDB sizes its budget from the host, not the container cgroup, so on pi0 it
 # plans against ~4GB while `mem_limit: 1g` kills it long before that. Bounded so
 # a large scan spills to disk instead of taking the collector down.
@@ -266,6 +321,9 @@ FOLLOW_CRAWL_STATE_PATH = Path(os.getenv("FOLLOW_CRAWL_STATE_PATH", STATE_DIR / 
 HATE_SEEK_STATE_PATH = Path(os.getenv("HATE_SEEK_STATE_PATH", STATE_DIR / "hate_seek.json"))
 PARENT_BACKFILL_STATE_PATH = Path(
     os.getenv("PARENT_BACKFILL_STATE_PATH", STATE_DIR / "parent_backfill.json")
+)
+DEEP_TIMELINE_STATE_PATH = Path(
+    os.getenv("DEEP_TIMELINE_STATE_PATH", STATE_DIR / "deep_timeline.json")
 )
 MINED_TERMS_PATH = Path(os.getenv("MINED_TERMS_PATH", STATE_DIR / "mined_terms.json"))
 HATE_EXPAND_STATE_PATH = Path(os.getenv("HATE_EXPAND_STATE_PATH", STATE_DIR / "hate_expand.json"))
