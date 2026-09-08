@@ -792,3 +792,102 @@ this project as an httpfs quirk. It fired here on a 40 KB local fixture with no
 network at all: whichever policy ran first took ~0.48s, the second ~0.03s, a
 14-16x apparent speedup from cache alone. The rule is about process-level
 caching generally, not httpfs.
+
+
+---
+
+# Resolving the Track B failure: four approaches evaluated
+
+Written 2026-09-08 after the reproduction check failed at recall 0.404. The
+question is how to make Track B trustworthy without quietly lowering the bar it
+just failed.
+
+## The discovery that changes the options
+
+**The collector already records its own selection, per pass, and has since the
+census-metrics rollout.** `census_runs/` carries `selected_retweeted`,
+`fetched_retweeted`, `skipped_ttl_retweeted`, `selected_deg_min`,
+`selected_deg_max`, `due_retweeted`, `candidates_in_band`,
+`candidates_uncensused` and `engagement_rows`, tagged with `code_version`.
+
+The last three passes recorded `selected_retweeted` of **271, 279 and 411**.
+
+That is the reproduction failure in one line: **`IncumbentCensus` selects a hard
+250 every pass, and the live arm does not.** Replay was not mis-scoring a policy;
+it was replaying the wrong policy. Some of the 0.404 is a port bug, not a
+limitation of the corpus.
+
+`state/snowball.json` on pi0 is a second, per-id source: 1,735 objects at 232 KB,
+mapping object id to last-censused timestamp. An object selected but returning no
+retweeters appears there and not in `engagements/`, which is precisely the
+ambiguity that made per-id reproduction impossible.
+
+## The four approaches
+
+| | approach | integrity | cost | what it fixes |
+|---|---|---|---|---|
+| A | Per-pass distributional reproduction against `census_runs` | **High** - evidence recorded by the system under test, at the time, unprompted | Low | The selection-count and degree-band mismatch, retrospectively |
+| B | Snapshot `snowball.json` into R2 each pass | High | Low | Per-id reproduction, but only for passes after the change |
+| C | Narrow the claim to relative cost on covered objects | Acceptable if stated | None | Nothing; it bounds what may be claimed |
+| D | Re-specify the criterion without new evidence | **Reject** | None | Nothing. This is goalpost-moving |
+
+### A. Distributional reproduction (recommended, do first)
+
+Replace per-id set matching with per-pass agreement against the recorded series:
+does replay select the same *number* of objects, within the same *degree range*,
+as the live pass recorded? Falsifiable, and it already fails visibly - 250
+against 411 is not a rounding difference.
+
+Legitimate rather than convenient, on three grounds: the evidence predates the
+question, it was written by the collector rather than reconstructed by the thing
+being tested, and it can still fail. It is a **weaker claim than per-id
+matching** and must be labelled as such - it establishes that a policy selects
+like the incumbent, not that it selects the same objects.
+
+Fix the port first. `selected_retweeted` between 271 and 411 against a hard 250
+means `IncumbentCensus` does not implement the deployed selector, and no
+reproduction number means anything until that is settled.
+
+### B. Snapshot the TTL ledger (recommended, do second)
+
+`snowball.json` is per-object selection truth. Copying it to R2 at the end of
+each pass, keyed by run, makes future replay per-id exact and resolves the
+selected-but-empty ambiguity outright.
+
+Two limits, both real. It holds only the LATEST timestamp per object, so
+retrospective reconstruction is bounded to the most recent census of each of
+1,735 objects - not a history. And it currently lives in a Docker volume on pi0,
+outside the snapshot and unversioned, so it is one `docker volume rm` from gone.
+
+Worth doing for that second reason alone, independent of Track B.
+
+### C. Narrow the claim (do regardless)
+
+Whatever A and B yield, the harness should state what it cannot do. Ranking
+policies by requests per unit of yield on the objects the corpus covers survives
+a recall of 0.404. Absolute yield claims do not. The B3 band-bounds comparison
+was already only a relative-cost claim, so it stands.
+
+### D. Re-specifying without evidence - rejected
+
+The tempting move is to declare per-id reproduction unachievable and adopt
+whatever the harness currently passes. That would convert a failed test into a
+passing one by editing the test, and the original criterion exists for a good
+reason: a harness that cannot reproduce what happened cannot be trusted to score
+what did not.
+
+**The failure stays on the record either way.** If A lifts agreement, the entry
+reads "failed at per-id recall 0.404, passes distributional agreement after the
+port was fixed" - not "passes".
+
+## Order
+
+1. Fix `IncumbentCensus` to match the deployed selector; re-run `--reproduce`.
+   Until this is done the 0.404 is uninterpretable.
+2. Implement A against `census_runs`, reporting per-pass agreement.
+3. Implement B, so future passes are per-id reproducible.
+4. Keep C on every emitted result.
+
+Note the ordering constraint from the depth work: once a bulk depth pass runs the
+corpus changes shape and every earlier replay number describes a different
+population. `score` already refuses to emit a row without a snapshot id.
