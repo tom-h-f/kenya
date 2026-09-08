@@ -78,30 +78,79 @@ def build_networks(
     return networks, pd.DataFrame(sizes)
 
 
+def textsim_key(snapshot: str, threshold: float, platform: str = "x") -> str:
+    """Where a text-similarity trace for this snapshot and cut lives in R2.
+
+    Threshold is in the key because it decides most of the ranking: at 0.85 the
+    trace carries 409,084 edges, at 0.70 it would carry millions. Two runs at
+    different cuts are different traces, not versions of one.
+    """
+    return (
+        f"coord2/platform={platform}/kind=textsim"
+        f"/snapshot={snapshot}/threshold={threshold:.2f}/edges.parquet"
+    )
+
+
+def load_textsim(
+    con: duckdb.DuckDBPyConnection, snapshot: str, threshold: float
+) -> pd.DataFrame:
+    """Read the persisted text-similarity trace, or say exactly how to make it."""
+    key = textsim_key(snapshot, threshold)
+    try:
+        edges = con.sql(f"SELECT * FROM read_parquet('r2://{BUCKET}/{key}')").df()
+    except duckdb.Error as exc:
+        raise RuntimeError(
+            f"no text-similarity trace at {key}. It is a GPU pass, so it is built "
+            f"separately and once per (snapshot, threshold):\n"
+            f"    cd analysis && uv run --with modal modal run modal_textsim.py "
+            f"--snapshot {snapshot} --threshold {threshold}\n"
+            f"Then re-run this. Use --no-text to run without it, but note the "
+            f"trace is over half the fused edges."
+        ) from exc
+    return edges.assign(source=edges["source"].astype(str), target=edges["target"].astype(str))
+
+
 def run(
     snapshot: str,
     *,
-    days: int | None = 14,
+    days: int | None = None,
     top: int = 500,
+    text_threshold: float | None = 0.85,
     con: duckdb.DuckDBPyConnection | None = None,
 ) -> RunResult:
-    """One v2 pass over a pinned snapshot."""
+    """One v2 pass over a pinned snapshot: traces, fusion, centrality, relevance.
+
+    `days=None` uses the whole snapshot, which is the default because the
+    method needs it: a 3-day window fragmented into 207 components whose largest
+    was 40 nodes, and centrality had nothing to rank.
+    """
     con = con or connect()
     manifest = bench.load(snapshot, con=con)
     source = bench.pinned_source(manifest, "posts")
 
     view = coord2.posts_view(source)
     if days:
-        # Bound the window before anything expensive touches it. The corpus is
-        # ~2.5M post rows and every trace is a self-join over it.
         view = f"SELECT * FROM ({view}) WHERE created_at >= now() - INTERVAL {int(days)} DAY"
 
     networks, sizes = build_networks(con, view)
+
+    if text_threshold is not None:
+        edges = load_textsim(con, snapshot, text_threshold)
+        networks["text_similarity"] = edges
+        sizes = pd.concat(
+            [sizes, pd.DataFrame([{"trace": "text_similarity", "trace_rows": pd.NA,
+                                   "users": len(set(edges["source"]) | set(edges["target"])),
+                                   "edges": len(edges)}])],
+            ignore_index=True,
+        )
+        log.info("text_similarity: %d edges at threshold %.2f", len(edges), text_threshold)
+
     if not networks:
         raise RuntimeError("no similarity networks were built; nothing to detect on")
 
     scores = coord2.detect(networks, threshold=0.0)
     scores = scores.sort_values("centrality", ascending=False).head(top).reset_index(drop=True)
+    scores = attach_relevance(con, scores, view)
     return RunResult(networks=networks, scores=scores, trace_sizes=sizes)
 
 
@@ -111,14 +160,29 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     ap = argparse.ArgumentParser(description="Run the v2 detector over a pinned snapshot.")
     ap.add_argument("--snapshot", required=True)
-    ap.add_argument("--days", type=int, default=14, help="0 for the whole snapshot")
+    ap.add_argument("--days", type=int, default=0, help="0 for the whole snapshot")
     ap.add_argument("--top", type=int, default=500, help="triage budget, not a verdict")
+    ap.add_argument("--text-threshold", type=float, default=0.85)
+    ap.add_argument("--no-text", action="store_true", help="skip the text-similarity trace")
+    ap.add_argument("--persist", action="store_true", help="write the run to R2")
     args = ap.parse_args()
 
-    result = run(args.snapshot, days=args.days or None, top=args.top)
+    threshold = None if args.no_text else args.text_threshold
+    result = run(args.snapshot, days=args.days or None, top=args.top, text_threshold=threshold)
+
     print(result.trace_sizes.to_string(index=False))
     print()
+    share = result.scores["kenya_share"]
+    print(f"kenya_share: mean {share.mean():.3f} median {share.median():.3f} "
+          f"| >=15%: {int((share >= 0.15).sum())}/{len(share)}")
+    print()
     print(result.scores.head(25).to_string(index=False))
+
+    if args.persist:
+        con = connect()
+        print("\npersisted:", persist(con, result.scores, snapshot=args.snapshot,
+                                      trace_sizes=result.trace_sizes,
+                                      text_threshold=threshold))
 
 
 if __name__ == "__main__":
