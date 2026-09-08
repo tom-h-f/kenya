@@ -386,3 +386,74 @@ floor-clearing delta will be 0 from this target set.
 1. Task 1, parent hydration - smaller, and unblocks a dead trace.
 2. Task 2, deep timelines - the larger structural win.
 3. Track B replay harness.
+
+
+---
+
+# Step 7: measured on pi0, 2026-09-08
+
+Both bounded passes ran on pi0 in one-off containers (`docker run --rm --memory 1g`),
+never `docker exec` into the running collector, which shares its 1 GB cgroup.
+Live collection was not restarted: neither command is in the scheduler cycle.
+
+## Parent hydration
+
+| | |
+|---|---|
+| selected / hydrated / not_found / failed | 200 / 199 / 1 / 0 |
+| authors written | 141 |
+| retweet rows unlocked | **9,124** |
+| fast_retweet coverage | 43.2% -> 45.5% |
+| runtime | ~27 min (candidate query ~21, fetches ~6) |
+
+**The candidate query costs ~21 minutes on pi0 against live R2.** That is the
+number no worktree or laptop run could produce, and it dominates a bounded pass.
+Amortise it: a pass of 200 spends 78% of its wall clock on selection.
+
+**Amplifier range reached 20..242**, so real hubs do exist among the missing
+parents. The original band-first ranking would have excluded the single most
+valuable ids; the unbanded descending ranking reaches them first. At ~45.6 rows
+unlocked per request, roughly **3,700 fetches take coverage past 60%** - that,
+not 167,220, is the number worth planning against.
+
+`not_found` fired once on real data, exercising the terminal-status path that
+stops a deleted parent from re-occupying the queue head forever.
+
+## Deep timelines
+
+| | |
+|---|---|
+| selected / deepened / no_posts / failed | 20 / 20 / 0 / 0 |
+| posts written | **7,974** |
+| authors written | 1,531 |
+| floor_cleared | **0** |
+
+**The `no_posts` risk did not materialise** (0 of 20). Reading a timeline by
+numeric id cannot distinguish suspended, protected and genuinely empty accounts,
+and all three are recorded terminal, so a high rate would mean accounts written
+off permanently on soft failures. Sample is small; re-check on any larger pass.
+
+**`floor_cleared` is 0, exactly as predicted, and the acceptance criterion in
+this plan was wrong.** The activity floor runs BEFORE centrality, so a one-post
+account can never appear in `coord2/kind=scores` and can never be a target: every
+target already clears the floor. Dry-run over 50 targets: they hold 2..19 posts,
+median 6, all in stratum 1, and 0 would cross. What the pass buys is vector
+density for accounts ranked on 2-to-19 observations. Moving the corpus-wide floor
+count needs the accounts v2 DISCARDED, which have no centrality to rank them by -
+a separate random-sampling pass.
+
+**Unexpected, worth chasing:** most dry-run targets showed `entities=0` while
+holding 2-19 posts - accounts with 16 held posts contributing no trace entity at
+all. They are in the ranking purely through text similarity, which is not
+entity-based. Depth on these buys text-similarity density, not bipartite traces.
+
+**Discrepancy: `--depth 200` produced ~399 posts per account** (7,974 over 20).
+Depth is not acting as a hard per-account cap, so a bulk pass costs roughly
+double the budgeted requests. Resolve before scaling.
+
+## Baseline drift note
+
+The floor-clearing figure moved from 79,967 of 331,138 to 88,134 of 364,151
+between planning and this pass - partly hydration's new authors, partly
+collection continuing. Any before/after comparison must pin a `bench` snapshot;
+an unpinned read cannot support one.
