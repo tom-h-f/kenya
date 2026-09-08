@@ -396,6 +396,24 @@ async def run_parent_backfill_once(**overrides) -> dict[str, int]:
     return await backfill_parents(collector, storage, **overrides)
 
 
+async def run_deep_timelines_once(**overrides) -> dict[str, int]:
+    """One bounded deep-timeline pass (see deep_timelines.collect_deep_timelines).
+
+    Deliberately NOT in `run_scheduler`'s cycle, for the same reason as
+    `run_parent_backfill_once` and one more. The budget reason: each account is
+    ~10 paginated requests, so a cycle step would quietly become the dominant
+    consumer of pool budget and starve the baseline collection the whole corpus
+    rests on. The methodological reason: this pass conditions collection on v2's
+    own output, so it must be an explicit, dated, bounded act that a later
+    analysis can point at - not something the corpus accumulates continuously
+    while nobody is watching which accounts it favours."""
+    from kenya_monitor.deep_timelines import collect_deep_timelines
+
+    storage = Storage(R2Config.from_env())
+    collector = await build_x_collector(load_accounts())
+    return await collect_deep_timelines(collector, storage, **overrides)
+
+
 async def run_snowball_once(**overrides) -> dict[str, int]:
     """One snowball pass over hot objects (see runner.collect_snowball).
 

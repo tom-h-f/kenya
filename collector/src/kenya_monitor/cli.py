@@ -319,6 +319,147 @@ def hydrate_parents_cmd(
     typer.echo(f"hydrate-parents: {counts}")
 
 
+@app.command("deep-timelines")
+def deep_timelines_cmd(
+    limit: int = typer.Option(None, help="accounts to deepen this pass (default from env)"),
+    depth: int = typer.Option(None, help="posts per account (default from env)"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="rank and print candidates; makes no network requests"
+    ),
+    status: bool = typer.Option(False, "--status", help="print ledger summary and exit"),
+    min_kenya_share: float = typer.Option(
+        None,
+        "--min-kenya-share",
+        help="drop targets below this Kenya share (opt-in, not the default)",
+    ),
+) -> None:
+    """Deepen the timelines of the accounts v2 surfaced.
+
+    What this buys is per-account behavioural HISTORY, which is the constraint
+    on v2 here: 251,171 of 331,138 authors have exactly one post, the mean is
+    3.2, and only 79,967 clear the 2-entity activity floor. The timeline
+    endpoint reaches ~3,200 posts per account, far past the 14-day search
+    horizon, so this is the one thing collection can do that search cannot.
+
+    Targets come from the latest persisted v2 run (`coord2/kind=scores`),
+    ranked thinnest-first within held-volume strata and by centrality inside
+    each stratum: an account holding one post gains far more from 200 fetched
+    posts than one already holding 500, and it is also the account whose
+    current ranking is least trustworthy. Falls back to the suspicion ranking
+    if no v2 pass has been persisted.
+
+    Bounded per invocation and resumable: the ledger in
+    state/deep_timeline.json records what was fetched and what came back
+    empty, an empty account is never retried, and a deepened one is not due
+    again for DEEP_TIMELINE_REFRESH_DAYS - so a second pass extends coverage
+    rather than repeating it.
+
+    Rows land in `posts/type=deep_timeline`, a TARGETED partition, so they stay
+    out of every prevalence denominator while still feeding coordination.
+
+    CAUTION, and it is not optional. Deepening accounts BECAUSE v2 surfaced
+    them raises their own future centrality: more posts, more entities, more
+    chances to match. Every deepened account is recorded to `deep_timelines/`
+    with its pre-treatment post and entity counts, keyed on `user_id`, so a v2
+    re-run can join on it - and any v2 re-run after a bulk pass MUST report
+    whether deep-timelined accounts rose in rank, because that would be the
+    artefact and not a finding.
+    """
+    from kenya_monitor import deep_timelines as dtl
+    from kenya_monitor.config import DEEP_TIMELINE_DEPTH, DEEP_TIMELINE_LIMIT
+
+    entries = dtl.load_state()
+    if status:
+        summary = dtl.timeline_summary(entries)
+        typer.echo(
+            f"tracked: {summary['tracked']} (ok={summary['ok']}, "
+            f"no_posts={summary['no_posts']}, failed={summary['failed']}); "
+            f"{summary['due_now']} due now"
+        )
+        typer.echo(
+            f"accounts moved over the {dtl.MIN_ENTITIES}-post floor: "
+            f"{summary['floor_cleared']} of {summary['ok']} deepened"
+        )
+        typer.echo(
+            f"posts collected: {summary['posts']} "
+            f"({summary['posts_per_account']} per account)"
+        )
+        if summary["latest_fetch"]:
+            typer.echo(f"latest fetch: {summary['latest_fetch']}")
+        return
+
+    n = limit or DEEP_TIMELINE_LIMIT
+    d = depth or DEEP_TIMELINE_DEPTH
+    if dry_run:
+        storage = _storage()
+        stats: dict = {}
+        targets = dtl.candidate_accounts(
+            storage.con,
+            storage.posts_view(platform="x"),
+            limit=n,
+            depth=d,
+            scores_view=storage.coord2_scores_view(platform="x"),
+            authors_view=storage.authors_view(platform="x"),
+            deep_posts_view=storage.posts_view(platform="x", target_type=dtl.TARGET_TYPE),
+            blocked=dtl.not_due_ids(entries),
+            min_kenya_share=min_kenya_share,
+            stats=stats,
+        )
+        typer.echo(
+            f"targets: {stats['targets']} from {stats['source']}"
+            + (
+                f" (run computed_at {stats['scores_computed_at']})"
+                if stats.get("scores_computed_at")
+                else ""
+            )
+        )
+        # Target-set coverage FIRST. It is the figure a bounded pass can move;
+        # the corpus-wide one moves by at most --limit and quoting it as the
+        # outcome misdescribes the command.
+        typer.echo(
+            f"target-set floor coverage: {stats['targets_clearing_floor']} of "
+            f"{stats['targets']} hold {dtl.MIN_ENTITIES}+ posts "
+            f"({stats['targets_clearing_floor'] / max(stats['targets'], 1):.1%}); "
+            f"{stats['targets_below_floor']} below it, "
+            f"{stats['targets_below_entity_floor']} below it on distinct "
+            "co-retweet entities, "
+            f"{stats['targets_saturated']} already at depth {d}"
+        )
+        typer.echo(
+            f"corpus-wide: {stats['authors_clearing_floor']} of {stats['authors']} "
+            f"authors clear the {dtl.MIN_ENTITIES}-post floor "
+            f"({stats['authors_clearing_floor'] / max(stats['authors'], 1):.1%}); "
+            f"{stats['authors_clearing_entity_floor']} clear it on distinct "
+            "co-retweet entities"
+        )
+        typer.echo(f"ledger blocks {stats['blocked_by_ledger']} account(s)\n")
+        for t in targets:
+            typer.echo(
+                f"  {t.user_id:22} stratum={t.stratum} "
+                f"held={t.held_posts:5} entities={t.held_entities:5} "
+                f"{t.rank_metric}={t.rank_value:.6f}"
+            )
+        below = stats["selected_below_floor"]
+        cleared = stats["targets_clearing_floor"] + below
+        typer.echo(
+            f"\n{len(targets)} account(s) at depth {d} = ~"
+            f"{stats['requests_estimate']} request(s). If every fetch returns "
+            f"{dtl.MIN_ENTITIES}+ posts, target-set floor coverage goes "
+            f"{stats['targets_clearing_floor'] / max(stats['targets'], 1):.1%} -> "
+            f"{cleared / max(stats['targets'], 1):.1%} and the corpus-wide "
+            f"{stats['authors_clearing_floor']} becomes "
+            f"{stats['authors_clearing_floor'] + below}. Nothing requested."
+        )
+        return
+
+    from kenya_monitor.scheduler import run_deep_timelines_once
+
+    counts = asyncio.run(
+        run_deep_timelines_once(limit=n, depth=d, min_kenya_share=min_kenya_share)
+    )
+    typer.echo(f"deep-timelines: {counts}")
+
+
 @app.command("hate-seek")
 def hate_seek_cmd(
     dry_run: bool = typer.Option(
