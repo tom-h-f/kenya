@@ -659,19 +659,58 @@ def seed_ledger(
     *,
     platform: str | None = "x",
 ) -> dict[str, datetime]:
-    """Last-censused time per object, from corpus history before `t`.
+    """Last-censused time per object as of `t`, preferring the recorded ledger.
 
     A replay window that does not start at the corpus's first day inherits a
-    census history, and starting with an empty ledger would let the policy
-    re-fetch work already done - inflating its request count and its yield
-    together.
+    census history, and starting empty would let the policy re-fetch work
+    already done - inflating its request count and its yield together.
+
+    TWO SOURCES, and which one is available decides whether per-id reproduction
+    can succeed at all.
+
+    `census_ttl/` is the collector's own TTL ledger, one row per object with the
+    time it was censused. It is exact. It has only been captured since
+    2026-09-08, so it is absent from earlier snapshots.
+
+    `engagements/` is the fallback: infer "censused" from "wrote engagement
+    rows". That inference is wrong in one specific and common way - an object
+    selected that returned no retweeters writes no engagement row, so it looks
+    un-censused and the policy re-selects it while the live collector skipped it
+    on TTL. Measured 2026-09-08: **69.4% of objects are re-censused, mean span
+    47.6 hours** against a 12-hour TTL, so the ledger is doing heavy work and
+    errors in it move a large share of the 250 objects selected per pass. This
+    is the main suspect for per-id reproduction sitting at 0.683 rather than
+    near 1.0.
     """
+    # `censused_at` is stored as text, so the clip casts rather than comparing a
+    # varchar to a timestamp; `collected_at` does not exist on this prefix.
+    ttl = clipped_source(
+        manifest,
+        "census_ttl",
+        t,
+        column="CAST(censused_at AS TIMESTAMPTZ)",
+        **({"platform": platform} if platform else {}),
+    )
+    if ttl is not None:
+        rows = con.sql(
+            f"""SELECT object_id, max(CAST(censused_at AS TIMESTAMPTZ)) AS censused_at
+                FROM {ttl} GROUP BY 1"""
+        ).fetchall()
+        if rows:
+            log.info("seed_ledger: %d objects from the recorded census_ttl ledger", len(rows))
+            return {str(oid): ts for oid, ts in rows if oid is not None}
+
     src = clipped_source(manifest, "engagements", t, **({"platform": platform} if platform else {}))
     if src is None:
         return {}
     rows = con.sql(
         f"SELECT platform_post_id, max(collected_at) FROM {src} GROUP BY 1"
     ).fetchall()
+    log.info(
+        "seed_ledger: %d objects INFERRED from engagement writes - no census_ttl "
+        "for this window, so censused-but-empty objects are invisible",
+        len(rows),
+    )
     return {str(oid): ts for oid, ts in rows if oid is not None}
 
 

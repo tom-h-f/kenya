@@ -44,6 +44,10 @@ PREFIXES = (
     "topics",
     "coordination",
     "census_runs",
+    # The census TTL ledger: per-object selection truth, and the only source
+    # that distinguishes "not selected" from "selected and empty". Captured
+    # since 2026-09-08; a snapshot without it cannot support per-id replay.
+    "census_ttl",
     "collection_runs",
     "stories",
 )
