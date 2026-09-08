@@ -92,15 +92,27 @@ The denominator was never 8,453. It was **368**, and effective useful coverage w
 
 ### 2c. The economics invert once measured
 
-`retweeters()` pages at 100, so cost scales with degree:
+`retweeters()` pages, so cost scales with degree:
 
 | object | requests | accounts | usable for coordination |
 |---|---|---|---|
-| hub (>100) | ~3 | ~300 | **0** |
-| mid-band (3-100) | 1 | ~27 | **all 27** |
+| hub (>100) | ~15 | ~300 | **0** |
+| mid-band (3-100) | ~2 | ~27 | **all 27** |
 
 Banding is simultaneously **cheaper per object** and **strictly more useful**.
 There is no trade-off being made.
+
+**Corrected 2026-09-08: the page size is 20, not 100.** This section originally
+priced a hub at ~3 requests and a mid-band object at 1, on the assumption that
+`retweeters()` pages at 100. twscrape 0.20.1 sends `count: 20`
+(`twscrape/api.py`, `retweeters_raw`), so every per-request figure here was out
+by 5x. Independently corroborated by the Track B replay: ~1,100 requests for 250
+objects is 4.4 per object, impossible at a 100 page size.
+
+The conclusion is unchanged and in fact stronger - a hub costs ~15 requests to
+produce zero usable pairs. But the true page size is only observable in pi0's
+logs, since X may return a different count than twscrape asks for, so treat
+these as bounds rather than exact.
 
 ### 2d. Two blockers behind the toxic path
 
