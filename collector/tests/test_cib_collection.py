@@ -419,7 +419,12 @@ class _FakeStorage:
         self.engagement_writes: list[int] = []
         self.post_writes: list[tuple[str, int]] = []
         self.census_runs: list[dict] = []
+        self.census_ttl: list[dict] = []
         self.con = None
+
+    def write_census_ttl(self, state, platform="x", now=None):
+        self.census_ttl.append(dict(state))
+        return "census_ttl/key" if state else None
 
     def write_census_run(self, stats, platform="x", now=None):
         self.census_runs.append(dict(stats))

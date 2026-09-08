@@ -123,3 +123,31 @@ def test_census_run_schema_keeps_the_supply_denominator():
     names = {f.name for f in CENSUS_RUN_SCHEMA}
     assert {"candidates_in_band", "candidates_uncensused",
             "skipped_ttl_retweeted", "due_retweeted"} <= names
+
+
+def test_write_census_ttl_writes_one_row_per_object(tmp_path):
+    """The TTL ledger is the only per-object record of census SELECTION.
+
+    Without it, an object selected that returned no retweeters writes no
+    `engagements/` row and is indistinguishable from an object never selected -
+    the ambiguity that held Track B per-id reproduction to 0.404 recall.
+    """
+    out = tmp_path / "ttl.parquet"
+    store = _LocalStorage(out)
+    key = store.write_census_ttl(
+        {"1111": "2026-09-08T10:00:00+00:00", "2222": "2026-09-08T11:00:00+00:00"},
+        platform="x",
+    )
+    assert key is not None and "census_ttl/platform=x" in key
+
+    con = duckdb.connect()
+    rel = con.sql(f"SELECT * FROM '{out}'")
+    rows = [dict(zip(rel.columns, r)) for r in rel.fetchall()]
+    assert len(rows) == 2
+    assert {r["object_id"] for r in rows} == {"1111", "2222"}
+    assert all(r["captured_at"] for r in rows)
+
+
+def test_write_census_ttl_skips_an_empty_ledger(tmp_path):
+    store = _LocalStorage(tmp_path / "ttl.parquet")
+    assert store.write_census_ttl({}, platform="x") is None

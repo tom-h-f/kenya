@@ -141,6 +141,14 @@ COLLECTION_RUN_SCHEMA = pa.schema(
 # Separate prefix from collection_runs/ for the same reason incitement/ is
 # separate from labels/: different grain and schema under one glob makes
 # union_by_name reads ambiguous.
+CENSUS_TTL_SCHEMA = pa.schema(
+    [
+        ("object_id", pa.string()),
+        ("censused_at", pa.string()),
+        ("captured_at", pa.string()),
+    ]
+)
+
 CENSUS_RUN_SCHEMA = pa.schema(
     [
         ("run_id", pa.string()),
@@ -378,6 +386,37 @@ class Storage:
         ]
         table = pa.Table.from_pylist(buf, schema=COLLECTION_RUN_SCHEMA)
         key = f"collection_runs/platform={platform}/dt={_dt_partition(now)}/run={rid}.parquet"
+        self._copy_table(table, key)
+        return key
+
+    def write_census_ttl(
+        self, state: dict[str, str], platform: str = "x", now: datetime | None = None
+    ) -> str | None:
+        """The snowball TTL ledger -> census_ttl/ prefix, one row per object.
+
+        Two reasons, and the second is the load-bearing one.
+
+        It is the ONLY per-object record of what the census selected. An object
+        selected but returning no retweeters writes no `engagements/` row, so
+        from the corpus alone "not selected" and "selected and empty" are
+        indistinguishable - the ambiguity that held Track B's per-id
+        reproduction to 0.404 recall. This ledger resolves it.
+
+        And it is a working set, not a history. Measured 2026-09-08: 3,589
+        objects spanning under 24 hours, because entries age out past
+        SNOWBALL_REFRESH_HOURS. It exists only inside a Docker volume on pi0,
+        so anything not captured while it is live is gone - the ledger cannot
+        be reconstructed later from anything.
+        """
+        if not state:
+            return None
+        now = now or datetime.now(timezone.utc)
+        rows = [
+            {"object_id": str(oid), "censused_at": stamp, "captured_at": now.isoformat()}
+            for oid, stamp in state.items()
+        ]
+        table = pa.Table.from_pylist(rows, schema=CENSUS_TTL_SCHEMA)
+        key = f"census_ttl/platform={platform}/dt={_dt_partition(now)}/run={run_id(now)}.parquet"
         self._copy_table(table, key)
         return key
 
