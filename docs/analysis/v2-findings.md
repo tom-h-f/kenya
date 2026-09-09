@@ -196,3 +196,71 @@ and this project has been burned before by treating LLM labels as truth.
   account histories. Deep timelines reach ~3,200 tweets per account, well past
   the 14-day search horizon, so this is the one collection change that could move
   our data toward the shape the method was built for.
+
+
+---
+
+## 8. A2: the v1/v2 disagreement, adjudicated
+
+Run 2026-09-09. 14 dossiers, 7 per method, shuffled and read **blind** - the
+reader did not know which method produced which case until after every verdict
+was recorded.
+
+| method | cases | political | strongly coordinated-political |
+|---|---|---|---|
+| v1 | 7 | 1 (14%) | 1 (14%) |
+| **v2** | 7 | **6 (86%)** | **4 (57%)** |
+
+**v1's output reads as engagement farming.** Its largest clusters co-retweet
+generic good-morning bait across many different authors (53 and 99 accounts),
+global football (168), Hindi-language and camping content (89), and motivational
+quotes (30). One of seven was political.
+
+**v2's output reads as Kenyan political coordination.** Pro-Sifuna campaign
+amplification carrying `#SifunaWaKenya` and "SISI NDIO SIFUNA" (27 and 18
+accounts), anti-Ruto activity with `#KasongoHatesKenyans`, `#wantam` and
+`#rutomustgo`, amplifying `skmusyoka`, `rigathi` and `citizentvkenya`. Two of the
+seven were thin on evidence (4 accounts each) but still on-topic.
+
+This confirms by reading content what the lexicon gate suggested by matching
+keywords - v2's top 500 at 40.4% Kenya share against v1's corroborated tier at
+8.3% - and it is the first evidence for either method that does not depend on
+`kma.measure`.
+
+### Three caveats, and the first is serious
+
+**The sample is not like-for-like.** v1's cases were its seven LARGEST clusters;
+v2's were groups of 4-40 members, which deliberately excluded its two largest
+blobs of 255 and 145. Engagement pods are precisely the large ones, so this
+choice flatters v2. A matched-size comparison is the obvious next experiment and
+has not been run.
+
+**n = 7 per method.** Enough to see a 14% against 86% gap, not enough to put an
+interval on it.
+
+**These are model verdicts, not human ones** - the same provenance caveat as the
+A9 labels. Recorded rather than presented as ground truth.
+
+### What it settles anyway
+
+The disagreement itself is no longer a mystery. v1 and v2 overlap on 22 of 500
+accounts because **they are detecting different phenomena**: v1's
+significance-tested co-retweet/co-reply channels find reciprocal engagement pods,
+which are the most abundant coordination on the platform, and v2's fused
+similarity network with centrality finds accounts pushing the same political
+material. Neither is malfunctioning.
+
+For this project's purpose - manipulation of the Kenyan election conversation -
+that makes v2 the right instrument, with the sampling caveat above kept attached
+to the claim.
+
+### One structural finding about v2's output
+
+The top 500 is **one connected component with density 0.491** - half of all
+possible pairs among them are edges. It does not decompose at the deployed Leiden
+resolution (0.05 gives one group of 500) and shatters entirely above 2.0. Only at
+0.5 does it split usefully, into 11 groups sized 255, 145, 28, 19, 16, 8, 7, 6.
+
+So v2's Kenya output is not 500 findings; it is one dense mass plus a handful of
+separable groups. Anything reported per-account from it is reporting on a
+population that is largely one object.
