@@ -835,3 +835,26 @@ def test_text_floor_keeps_edges_between_active_accounts():
     con, view = _con(posts)
     edges = pd.DataFrame({"source": ["a"], "target": ["b"], "weight": [0.9]})
     assert len(coord2_run.apply_text_floor(con, edges, view)) == 1
+
+
+def test_ioa_view_reads_a_truncated_slice(tmp_path):
+    """The archive adapter must survive a byte-range slice of a 113 GB CSV.
+
+    Every slice ends mid-row, and the full file legitimately carries newlines
+    inside quoted tweet text, so a strict read raises before a single trace is
+    built. Found 2026-09-09 running the adapter on real archive rows for the
+    first time.
+    """
+    import duckdb
+
+    path = tmp_path / "slice.csv"
+    path.write_text(
+        "tweetid,userid,tweet_time,is_retweet,retweet_tweetid,retweet_userid,"
+        "tweet_text,hashtags,urls\n"
+        '1,u1,2026-01-01 00:00:00,false,,,"a normal post","[a]","[http://x/1]"\n'
+        '2,u2,2026-01-01 00:01:00,false,,,"another post","[a]","[http://x/1]"\n'
+        '3,u3,2026-01-01 00:02:00,false,,,"truncated mid-quo\n'
+    )
+    con = duckdb.connect()
+    view = coord2.ioa_view(str(path))
+    assert con.sql(f"SELECT count(*) FROM ({view})").fetchone()[0] >= 2

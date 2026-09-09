@@ -195,7 +195,14 @@ def ioa_view(path: str, *, read: str | None = None) -> str:
     mirror anonymises accounts under 5,000 followers, and whether their ids are
     stable pseudonyms decides whether any similarity network can be built at all.
     """
-    src = read or f"read_csv('{path}', union_by_name=true, all_varchar=true)"
+    # `ignore_errors` for the same reason `kma.ioa_verify.source` needs it: this
+    # reads a SLICE of a 113.72 GB remote CSV, and every byte-range slice ends
+    # mid-row. The full file needs it too - tweet text legitimately contains
+    # newlines inside quotes, so a strict read fails on well-formed archive data.
+    # Without it the adapter raises before a single trace is built.
+    src = read or (
+        f"read_csv('{path}', union_by_name=true, all_varchar=true, ignore_errors=true)"
+    )
     return f"""
         SELECT userid AS user_id,
                tweetid AS post_id,
