@@ -80,4 +80,51 @@ here too.
 
 ## A2 size-matched re-run
 
-Pending - appended when the adjudication completes.
+Run 2026-09-11. The 2026-09-09 comparison read v1's seven largest clusters
+against v2 groups of 4-40 members. Engagement pods are the large ones, so its
+1-of-7 against 6-of-7 political could have been size. This pairs every v2 group
+of 4+ members (Leiden CPM 0.5, seed 0, over the 0.85 top 500: 255, 143, 27, 19,
+16, 12, 5, 5, 4, 4, 4) with the unused v1 cluster nearest its size (177, 88, 27,
+17, 14, 12, 5, 5, 4, 4, 4). v1 has no cluster near 255 or 143, so the two largest
+pairs are approximate; the rest match within three members.
+
+**Reader:** headless Claude Code (`05_a2_headless.py`, claude-sonnet-5). One
+fresh process per case, with the adjudicator's own system prompt and rubric, in
+an empty directory with no tools, MCP servers, hooks or user settings - checked
+with `--probe` - over 22 cases under shuffled ids. Verdicts were persisted before
+unblinding: `coordination/platform=x/kind=verdicts/dt=2026-09-11/run=20260911T161407Z.parquet`.
+22 cases in 34 s, 0 failures, reported cost $0.30.
+
+| | cases | political | Kenya-relevant | verdicts |
+|---|---|---|---|---|
+| v1 | 11 | 0 | 0 | engagement_pod 8, fandom_or_interest 3 |
+| v2 | 11 | 3 | 9 | engagement_pod 4, unclear 4, political_campaign 3 |
+
+By size: v1 is engagement pods and fandoms at every size. v2's two large blobs
+(255, 143) are engagement pods, both Kenya-relevant; its mid-sized groups are 2
+of 4 political; its small groups are 4 of 5 unclear. Nothing in either method was
+political at high confidence, and nothing was called an influence operation: all
+three political verdicts are open pro-Sifuna campaign amplification.
+
+**The four unclear v2 verdicts are an instrument gap, not a finding.** They are
+exactly v2's four cases with no shared objects. `kma.dossier.build` fills "what
+they jointly amplified" from co-retweets, which is v1's signal; a group v2 linked
+by text similarity arrives with that section empty, and the rubric tells the
+reader that members' own posts are "context, not evidence". All four rationales
+say the co-action was unavailable. Where v2's dossier did carry evidence, 3 of 7
+groups were political and 6 of 7 Kenya-relevant.
+
+What this does to the 2026-09-09 result:
+
+- **Does not survive:** "v2's output reads as political coordination (6 of 7)".
+  Size-matched it is 3 of 11 - 3 of 7 where there was evidence - and the largest
+  v2 groups are Kenyan engagement pods.
+- **Survives, and sharper:** v2 surfaces Kenyan activity and v1 does not - 9 of
+  11 against 0 of 11 Kenya-relevant, with v1 non-political at every size. For
+  monitoring the Kenyan election conversation, v2 is still the instrument.
+- **New:** adjudicating v2 needs a dossier that shows text-similarity co-action
+  (the groups' near-duplicate posts) before its small groups can be judged at all.
+
+Caveats kept attached: model verdicts, not human ones; n = 11 per method; the
+largest pairs are size-approximate; the Leiden split is a fixed seed, not
+2026-09-09's unrecorded one.
