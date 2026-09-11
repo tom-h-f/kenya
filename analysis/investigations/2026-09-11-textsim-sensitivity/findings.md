@@ -243,3 +243,22 @@ of this file.
 bge-m3 re-encodes the 335,023 posts on mike-pc at 572 posts/s, 1.8 GiB peak;
 its pair-similarity tail is close to mpnet's (7.7e-5 of pairs at 0.85 against
 6.3e-5 on the same 2,000 posts), so the same cuts produce comparable volumes.
+
+**bge-m3 re-ranked** (`08_encode.py`, `01_pairs.py` on its export, `02_score.py`,
+`10_compare.py`): 3,266,343 post pairs at 0.75; 1,525,142 / 324,710 / 91,907 /
+30,971 user edges at 0.75 / 0.80 / 0.85 / 0.90.
+
+| ranking | kept of current 500 | Kenya share mean / median | median posts |
+|---|---|---|---|
+| current (mpnet 0.85) | 500 | 0.404 / 0.456 | 18 |
+| mpnet 0.85 + word-overlap floor | 1 | 0.830 / 1.000 | 3 |
+| bge-m3 0.75 | 10 | 0.026 / 0.000 | 19 |
+| bge-m3 0.80 | 11 | 0.028 / 0.000 | 20 |
+| bge-m3 0.85 | 1 | 0.830 / 1.000 | 3 |
+| bge-m3 0.90 | 1 | 0.830 / 1.000 | 3 |
+
+Every variant gives the top 500 to one dense block, and the variants differ only
+in which block: the Sheng-reply mass (mpnet 0.85), one co-retweet block
+(the floor, bge-m3 at 0.85 and above, mpnet at 0.90 and above - the same 500
+accounts each time), or an off-domain text mass (bge-m3 at 0.75-0.80). Changing
+the encoder does not fix the ranking.
