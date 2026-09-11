@@ -128,3 +128,50 @@ What this does to the 2026-09-09 result:
 Caveats kept attached: model verdicts, not human ones; n = 11 per method; the
 largest pairs are size-approximate; the Leiden split is a fixed seed, not
 2026-09-09's unrecorded one.
+
+## What the 0.85 text trace links
+
+Found 2026-09-11 while building the dossier fix above. The rebuilt dossiers
+still showed nothing for v2's four empty cases, although every edge inside them
+is a text-similarity edge (so is every edge but 5 inside all 11 v2 groups). Two
+causes:
+
+- The dossier reads member posts through `_latest_posts_cte` with the default
+  14-day lookback. The pairs behind these groups date 2026-07-06 to 2026-08-15.
+  Fixable.
+- The pairs are not near-duplicates. They are unrelated short Swahili and Sheng
+  replies to different accounts - "@KeKirwa Wakifumble hapa watakuwa kama
+  wakamba..." against "@AokoOtieno_ Vitu zingine kama kuwa goons..." at 0.899.
+
+`06_pair_audit.py` measures this over the 0.85 top 500 (snapshot
+`2026-09-05-promotion-off`, 34,082 embedded posts):
+
+- 279,060 cross-author post pairs at or above 0.85.
+- In a sample of 3,000, median token Jaccard is 0. 84.6% share under a tenth of
+  their words; 3.0% are near-copies (Jaccard >= 0.5).
+- Random pairs average cosine 0.261 and essentially none reach 0.85 (0.04%
+  among the top 500's own posts). This is a dense region, not a collapsed
+  space.
+- A blind headless reader (claude-sonnet-5) on 100 of the 3,000: 26 same
+  message, 15 same topic, 59 unrelated. None of the 100 was a near-copy.
+
+The same-message pairs are what the trace is for. Most of those read were one
+paraphrased Tanzanian Saba Saba campaign (#TumekataaHarakatiZaVurugu,
+#AibuKwaWanaharakati) whose posts share almost no words. So the trace does catch
+paraphrased messaging, but at 0.85 most of its links behind the top 500 join
+posts that say different things. v2-findings section 4 says 0.85 was chosen
+"because that is where near-duplicates sit in our encoder's space"; near-copies
+are 3% of what it admits.
+
+What this changes:
+
+- **The four unclear A2 verdicts were correct.** Those groups have no co-action
+  to show.
+- **"v2 surfaces Kenyan activity, v1 does not" is weaker than stated above.** A
+  trace that links Swahili and Sheng replies whatever they say will surface
+  Kenyan accounts by language. That needs testing before the claim is quoted.
+- **The dossier exhibit on `feat/dossier-textsim` is not merged and A2 was not
+  rerun on it.** It labels these pairs "near-identical words", which is false
+  for most of them.
+
+Caveats: model labels, n = 100; one snapshot; one encoder.
