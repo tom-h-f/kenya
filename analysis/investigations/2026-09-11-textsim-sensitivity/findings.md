@@ -216,6 +216,30 @@ recorded pair indices follow `text_similarity_network`'s time-sorted order,
 not row order; checked directly (max cosine error 1.4e-6 sorted, 0.91 in row
 order).
 
-bge-m3 re-encodes the 335,023 posts on mike-pc at 380 posts/s, 1.8 GiB peak;
+**Re-ranked with the floor, text no longer reaches the top 500.** `02_score.py`
+over the floored edges (49,505 text edges after the activity floor) gives a top
+500 identical to the 0.95 one: 500 of 500 shared, 1 shared with the current
+0.85 list, zero text edges among the 49,800 fused edges inside it, Kenya share
+mean 0.830, median posts 3. The floor does not cut the campaigns out of the
+text graph - all 31 authors of the reader's same-message pairs keep text edges,
+all in its largest component (9,560 of 19,602 users) - but none of them ranks
+in the top 500 any more, where all 31 were before.
+
+So there are two problems, not one. The text trace's pair precision is fixed
+by the floor. The ranking is not: eigenvector centrality over the fused union
+concentrates on whichever trace forms the densest block, and the whole top 500
+belongs to that block. At 0.85 without the floor it was the Sheng-reply mass;
+with the floor, or above 0.90, it is one co-retweet block. That is also why the
+sweep replaced the top 500 wholesale between 0.85 and 0.90.
+
+What that co-retweet block amplifies (live engagements, read 2026-09-11): the
+most-retweeted authors are Kenyan political commentators and bloggers, two
+national news outlets and one presidential aspirant, each retweeted by 40-140 of
+the 500. That is on-topic Kenyan political amplification. Whether it is
+coordinated beyond the ordinary retweet behaviour of a political audience is
+exactly what the ranking cannot say and adjudication has to; handles stay out
+of this file.
+
+bge-m3 re-encodes the 335,023 posts on mike-pc at 572 posts/s, 1.8 GiB peak;
 its pair-similarity tail is close to mpnet's (7.7e-5 of pairs at 0.85 against
 6.3e-5 on the same 2,000 posts), so the same cuts produce comparable volumes.
