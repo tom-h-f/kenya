@@ -48,6 +48,13 @@ engagement-bait accounts.
 Acceptance: a verdict per sampled account, blind to which method surfaced it,
 with agreement reported per method.
 
+*Rerun size-matched 2026-09-11.* 11 v2 groups against the nearest-size v1
+clusters, read blind by headless Claude Code: v1 0 of 11 political and 0 of 11
+Kenya-relevant; v2 3 of 11 political and 9 of 11 Kenya-relevant. The 2026-09-09
+6-of-7 political does not survive; the relevance gap does. Follow-up:
+`kma.dossier` must show text-similarity co-action, because all four of v2's
+unclear verdicts were groups with no co-retweet evidence. See `v2-findings` §8.
+
 **A3. Unit of judgement - DECIDED 2026-09-08.**
 
 **Judge the campaign. Score the account.**

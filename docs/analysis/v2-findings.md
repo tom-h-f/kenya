@@ -295,3 +295,25 @@ resolution (0.05 gives one group of 500) and shatters entirely above 2.0. Only a
 So v2's Kenya output is not 500 findings; it is one dense mass plus a handful of
 separable groups. Anything reported per-account from it is reporting on a
 population that is largely one object.
+
+### Size-matched rerun, 2026-09-11
+
+The first caveat above has now been tested. All 11 v2 groups from a seeded split
+of the same top 500 (255, 143, 27, 19, ...) were paired with the nearest-size v1
+clusters and read blind by an isolated headless Claude Code reader using the
+adjudicator's own rubric. Verdicts persisted as
+`coordination/platform=x/kind=verdicts/dt=2026-09-11/run=20260911T161407Z.parquet`.
+
+| method | cases | political | Kenya-relevant |
+|---|---|---|---|
+| v1 | 11 | 0 | 0 |
+| v2 | 11 | 3 (3 of 7 with evidence) | 9 |
+
+**The 6-of-7 political figure above does not survive size-matching.** v2's two
+largest groups are Kenyan engagement pods, and its political groups are open
+pro-Sifuna campaigning, not concealed operations. What survives is the direction
+and the relevance gap: v2 surfaces Kenyan activity (9 of 11) where v1 surfaces
+none (0 of 11). v2's four "unclear" cases are exactly the groups whose dossier had
+no jointly-amplified content - the dossier is built from co-retweets, so
+text-similarity groups arrive without their evidence. Detail:
+`analysis/investigations/2026-09-11-textsim-sensitivity/findings.md`.
