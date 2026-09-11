@@ -88,14 +88,27 @@ MEMBERS = pd.DataFrame([
 ])
 
 
-def _post(con, pid, author, handle, text):
+def _post(con, pid, author, handle, text, days_ago=0):
     con.execute(
         "INSERT INTO posts (platform, platform_post_id, author_id, author_handle,"
         " text, created_at, collected_at, is_repost, like_count, reply_count,"
         " repost_count, quote_count)"
-        " VALUES ('x', ?, ?, ?, ?, now(), now(), FALSE, 0, 0, 0, 0)",
-        [pid, author, handle, text],
+        " VALUES ('x', ?, ?, ?, ?, now() - to_days(CAST(? AS INTEGER)), now(), FALSE, 0, 0, 0, 0)",
+        [pid, author, handle, text, days_ago],
     )
+
+
+def test_near_identical_posts_outside_the_coordination_lookback_still_count(con):
+    """The text trace looks back a year; the packet's other exhibits look back
+    14 days. Read over 14 days, every A2 text-linked group came up empty."""
+    text = "Every county must turn out and vote for change this August"
+    for pid, author, handle in (("o1", "a1", "member_one"), ("o2", "a2", "member_two")):
+        _post(con, pid, author, handle, text, days_ago=60)
+        _embed(con, pid, [0.0, 1.0, 0.0])
+
+    families = dossier.build(con, MEMBERS)[0]["shared_texts"]
+
+    assert len(families) == 1 and families[0]["n_members"] == 2
 
 
 def _embed(con, pid, vector):

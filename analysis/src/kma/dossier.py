@@ -237,15 +237,22 @@ def shared_texts(
     Eligibility follows the detector's own text trace: non-reposts whose cleaned
     text carries at least `coord2.MIN_TEXT_WORDS` words, embedded by the model
     v2 compared them with. Only those posts' embeddings are read, and missing
-    embeddings leave this exhibit empty rather than failing the packet."""
+    embeddings leave this exhibit empty rather than failing the packet.
+
+    Read over the text trace's own window (`coord2.TEXT_WINDOW_DAYS`), not the
+    packet's 14-day coordination lookback: measured on A2's size-matched run,
+    the pairs behind v2's text-linked groups were four to nine weeks old, and
+    the short window left every one of those groups with an empty exhibit."""
     from kma import semantic
 
     columns = ["cluster_id", *FAMILY_COLUMNS]
+    window = _latest_posts_cte(platform, lookback_days=coord2.TEXT_WINDOW_DAYS, author_scope="_dos_scope")
     posts = con.sql(
-        """
+        f"""
+        WITH p AS ({window})
         SELECT m.cluster_id, p.platform_post_id, p.author_id, p.author_handle,
                p.text, p.created_at
-        FROM _dos_members m JOIN _dos_posts p ON p.author_id = m.author_id
+        FROM _dos_members m JOIN p ON p.author_id = m.author_id
         WHERE p.text IS NOT NULL AND COALESCE(p.is_repost, FALSE) = FALSE
         """
     ).df()
