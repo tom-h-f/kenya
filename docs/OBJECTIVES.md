@@ -27,6 +27,13 @@ election on X, in near-real time, and produce three things:
    toxicity, coordination, and narrative that survive the criticism that they
    are artifacts of how the data was collected.
 
+**Superseded 2026-09-11: collection continues until the August 2027 election.**
+The two paragraphs below record the 2026-09-05 decision that it would stop
+within weeks; that decision is reversed. The snapshot stays the substrate for
+the v2 build and its benchmark, but operational work on the collector - pool
+longevity, targeting re-points, the dashboard - earns its keep again. See
+`plans/2026-09-05-v2-next-steps.md` Track C for what re-opens.
+
 **Collection has a horizon of weeks, not years** (decided 2026-09-05). It runs
 to feed the v2 methodology build and its Kenya transfer, after which it stops or
 is rebuilt as a separate design problem. The election itself is August 2027, but

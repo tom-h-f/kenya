@@ -589,6 +589,29 @@ cut to the ones the frozen corpus can answer rather than kept as four.
 
 # Track C - production and operations
 
+**Superseded 2026-09-11: collection continues until the August 2027 election.**
+The premise below - that collection runs for weeks and then stops - is reversed.
+This is an election monitor again, not a weeks-long feed for the v2 build, so
+work that earns its keep only over months now earns it. Item by item:
+
+- **C1 pool.** The ~40-active trigger for the cookie-refresh route stands. The
+  difference is that a lapsing pool is now a problem to fix, not one to outlast.
+- **C3 targeting.** This section's own test - re-pointing promotion at v2 ranks
+  pays back only if collection runs long enough for densification to matter -
+  is now met. The gap since `2026-09-05-promotion-off` becomes something to
+  close rather than a permanent property of the corpus.
+- **C4 dashboard.** Still waits for v2 to have something to publish; that is now
+  a when, not an if.
+- **C5 retire v1.** No longer moot. tf1 computing v1 output indefinitely is a
+  standing cost and the source of the sticky-union confusion, so v1 needs an
+  explicit retirement once v2 runs in production.
+- **Track B option 1** (instrument the collector's own selection) is no longer
+  ruled out by collection ending; `census_ttl/` (deployed 2026-09-08) started it.
+- **Risk register** rows *Pool decay* and *Collection gap* assumed the weeks
+  horizon and should be read with this note.
+- **The pacing revert in `c2fc5ce` stands.** It rested on the diagnosed cause of
+  the account deaths (X's login flow, not rate), not on the horizon.
+
 **Scoped down 2026-09-05.** Collection runs for weeks, to feed the v2 build,
 then stops or is rebuilt. Most of what was here earns its keep only over months,
 so it is dropped rather than carried as pretend work.

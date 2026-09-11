@@ -138,6 +138,12 @@ re-run afterwards **must report whether deepened accounts rose in rank** - the
 
 ## P3: deferred by decision, not oversight
 
+*2026-09-11: part of the reason for deferring these was a weeks-long collection
+horizon, and that is gone - collection continues until August 2027 (see
+next-steps Track C). The dashboard and the one-post authors come back after
+P0-P2. Elmas-style forensics and IOHunter stay separate by methodology choice,
+which never depended on the horizon.*
+
 - **Dashboard.** Blocked on an R2 token scoped to both buckets and the Zero Trust
   application, both unrequested by decision until v2 has something to publish.
 - **The accounts v2 discards.** 251,171 one-post authors can never be ranked by
