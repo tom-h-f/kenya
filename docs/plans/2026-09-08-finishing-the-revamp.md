@@ -97,6 +97,14 @@ the Kenya side lived in trace construction: the single-action clique, the text
 floor, the hashtag-order question. Build traces from the raw archive for one
 campaign and compare against the shipped networks.
 
+*2026-09-11: blocked as specified.* The release cannot support the comparison:
+`data.zip` is 56 entries, all under `data/processed/`, and the shipped nodes are
+bare integers with no attributes and no id mapping anywhere, so they cannot be
+matched to archive accounts. With campaign attribution in the archive still open
+(next-steps A2 check 4), the routes left are asking the authors for the node-id
+mapping, or comparing aggregate structure per trace once attribution is solved.
+See `analysis/investigations/2026-09-11-iran-divergence/findings.md`.
+
 **B2. The relevance-gate measurement rests on model labels.** Precision 0.980 and
 recall 0.508 come from 300 posts I labelled, recorded as
 `claude-opus-5 (model labels, not human ground truth)` in the sample's

@@ -274,6 +274,14 @@ construction is still untested and needs the raw archive.
 Five of six reproduce, four of them to within 0.2 Macro-F1 points. The mean is
 76.76 against a target of 74.96.
 
+**Resolved 2026-09-11.** IOHunter's own NodePruning code, run verbatim on the
+released pickles, gives Iran 71.31 +/- 0.76 while reproducing the published
+russia, venezuela and china figures to two decimals. The published 60.83 is not
+reachable from the published code and data; ours (71.43) matches the reference
+code. Proposed, not applied: judge the Iran copy check against the reference code
+on the release, keeping the published figure beside it. See
+`analysis/investigations/2026-09-11-iran-divergence/findings.md`.
+
 **The Iran anomaly, unresolved.** We score 10.6 points ABOVE the published
 number. Being better than the reference is a divergence, not a success, and it
 is not explained by: the rewiring seed (identical across five seeds), the
