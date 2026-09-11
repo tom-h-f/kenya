@@ -12,8 +12,8 @@ from twscrape.accounts_pool import AccountsPool
 # Briefly widened to 4-16s on 2026-09-05 to protect the account pool, then put
 # back: the four dead accounts were not rate casualties. Two of them routed
 # through proxies and two did not, and all four failed identically, so the cause
-# is X's login flow rather than request volume. Collection now has a horizon of
-# weeks, so throughput is worth more than a precaution against the wrong thing.
+# is X's login flow rather than request volume, and slowing down would cost
+# throughput to defend against the wrong thing.
 DELAY_MIN = float(os.getenv("REQUEST_DELAY_MIN", "3"))
 DELAY_MAX = float(os.getenv("REQUEST_DELAY_MAX", "12"))
 
