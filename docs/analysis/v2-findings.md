@@ -43,7 +43,17 @@ Unsupervised 5/6. Supervised 3/6 at a fixed epoch budget, with the **mean at
 88.16 against a target of 87.77** - the aggregate matches while individual
 countries scatter.
 
-**Iran is unexplained.** We score 10.6 points ABOVE the published number, which
+**Iran - explained 2026-09-11: the benchmark disagrees with itself, not with
+us.** IOHunter's own NodePruning code, run verbatim with its own seed on the
+released pickles, reproduces its published mean and standard deviation to two
+decimals for russia, venezuela and china - and gives Iran **71.31 +/- 0.76**,
+not the published 60.83. Ours is 71.43. The published Iran figure cannot be
+produced by the published code on the published data, so the gap sits between
+the paper and its data release. The eigenvector computation was also ruled out
+(every iteration scheme gives 71.43-71.46). Evidence and scripts:
+`analysis/investigations/2026-09-11-iran-divergence/`.
+
+*Superseded:* **Iran is unexplained.** We score 10.6 points ABOVE the published number, which
 is a divergence and not a success. Ruled out: the rewiring seed (identical across
 five seeds), eigenvector convergence settings (identical at max_iter 50/100/1000
 and tol 1e-6/1e-8), and the isolated-node definition (correcting it moved Iran
