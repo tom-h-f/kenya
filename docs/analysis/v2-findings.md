@@ -138,6 +138,15 @@ edge count commensurate with co-retweet. **This value is ours, not the paper's,*
 and the sensitivity is steep - 3.1M edges at 0.52, 107,625 at 0.70, 510 at 0.85
 on comparable samples.
 
+*Checked 2026-09-11: 0.85 is not where near-duplicates sit.* Of the 279,060
+cross-author post pairs at or above 0.85 behind the top 500, 3% are near-copies
+and the median pair shares no words; a blind reader labelled 100 of them 26 same
+message, 15 same topic, 59 unrelated. Short Swahili and Sheng replies cluster in
+this encoder's space. A char-4gram word-overlap floor of 0.10 on top of the cut
+removes the unrelated pairs while keeping 92% of the reader's matches, but then
+the text trace no longer reaches the top 500 at all - see
+`analysis/investigations/2026-09-11-textsim-sensitivity/findings.md`.
+
 ## 5. What v2 surfaces on the Kenya corpus
 
 Latest run: `coord2/platform=x/kind=scores/dt=2026-09-08/run=20260908T081903Z.parquet`.
@@ -317,3 +326,10 @@ none (0 of 11). v2's four "unclear" cases are exactly the groups whose dossier h
 no jointly-amplified content - the dossier is built from co-retweets, so
 text-similarity groups arrive without their evidence. Detail:
 `analysis/investigations/2026-09-11-textsim-sensitivity/findings.md`.
+
+*Revised the same day.* Those four groups had no evidence to show: the post
+pairs linking them are unrelated Sheng replies, so "unclear" was the right call.
+Every v2 group in the sample is held together almost entirely by text edges, so
+"v2 surfaces Kenyan activity" may be language rather than coordination, and is
+not to be quoted until the text trace and the ranking are fixed and A2 is
+redone.
