@@ -4,6 +4,10 @@
     # fill in the `label` column by hand, then:
     uv run kma-measure-eval score out/measure_sample.csv
 
+    # B2: a blind human pass over 100 of the same posts, scored beside the model's labels
+    uv run kma-measure-eval human-sheet out/measure_sample.csv --n 100
+    uv run kma-measure-eval agree out/measure_human.csv out/measure_sample.csv
+
 `kma.measure.domain_bucket` is a regex lexicon that decides whether a post is
 about Kenya. It gates cluster promotion in the collector, it is how the v2 top
 500 was reported as 37% Kenya-referencing, and its error rate has never been
@@ -149,6 +153,80 @@ def _wilson(successes: int, trials: int, z: float = 1.96) -> tuple[float, float]
     return (round(max(0.0, centre - half), 3), round(min(1.0, centre + half), 3))
 
 
+def human_subset(sample: pd.DataFrame, n: int = 100, seed: int = 0) -> pd.DataFrame:
+    """A blind, stratified subset of an already-labelled sample, for a human pass.
+
+    The first labelled sample carries model labels, so every Kenya-share figure
+    corrected by its recall rests on how far a model agrees with the regex. A
+    human pass over part of the SAME posts turns that into something defensible
+    without relabelling all of it.
+
+    Allocation matches `draw_sample` - equal per bucket - so the subset scores
+    through `score` unchanged. Blind twice over: the sheet shows neither the
+    gate's bucket nor the model's label.
+    """
+    k = len(BUCKETS)
+    sizes = {bucket: n // k + (1 if i < n % k else 0) for i, bucket in enumerate(BUCKETS)}
+    rng = np.random.default_rng(seed)
+
+    parts = []
+    for bucket in BUCKETS:
+        rows = sample[sample["bucket"] == bucket]
+        if rows.empty:
+            continue
+        take = min(sizes[bucket], len(rows))
+        parts.append(rows.sample(take, random_state=rng.integers(1 << 31)))
+
+    subset = pd.concat(parts, ignore_index=True)
+    subset = subset.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+    return subset.assign(label="")[["post_id", "text", "label"]]
+
+
+def agreement(human: pd.DataFrame, sample: pd.DataFrame) -> dict:
+    """The gate scored against the human and against the model, on the SAME posts.
+
+    The model's full-sample figures are not comparable to a subset; only the
+    same posts are. Agreement between the two labellers is reported raw and as
+    Cohen's kappa over all three labels, `unclear` included - disagreeing about
+    what is unclear is still disagreeing.
+    """
+    h = human.assign(
+        post_id=human["post_id"].astype(str),
+        label=human["label"].fillna("").astype(str).str.strip().str.lower(),
+    )
+    unknown = sorted(set(h["label"]) - set(LABELS) - {""})
+    if unknown:
+        raise ValueError(f"labels must be one of {LABELS}; found {unknown}")
+
+    key = sample.assign(
+        post_id=sample["post_id"].astype(str),
+        label=sample["label"].fillna("").astype(str).str.strip().str.lower(),
+    )
+    merged = h[["post_id", "label"]].merge(
+        key[["post_id", "bucket", "stratum_share", "label"]],
+        on="post_id",
+        suffixes=("_human", "_model"),
+        validate="one_to_one",
+    )
+    labelled = merged[merged["label_human"] != ""]
+    if labelled.empty:
+        raise ValueError("no usable labels: fill in the `label` column first")
+
+    a, b = labelled["label_human"], labelled["label_model"]
+    observed = float((a == b).mean())
+    expected = float(sum((a == lab).mean() * (b == lab).mean() for lab in LABELS))
+    kappa = (observed - expected) / (1 - expected) if expected < 1 else float("nan")
+
+    return {
+        "posts": len(labelled),
+        "agreement": round(observed, 3),
+        "kappa": round(kappa, 3),
+        "confusion_human_by_model": pd.crosstab(a, b).to_dict(orient="index"),
+        "gate_vs_human": score(labelled.rename(columns={"label_human": "label"})),
+        "gate_vs_model": score(labelled.rename(columns={"label_model": "label"})),
+    }
+
+
 def main() -> None:
     import argparse
 
@@ -165,6 +243,16 @@ def main() -> None:
     c = sub.add_parser("score", help="score a filled-in sample")
     c.add_argument("path", type=Path)
 
+    h = sub.add_parser("human-sheet", help="blind subset of a labelled sample for a human pass")
+    h.add_argument("sample", type=Path)
+    h.add_argument("--n", type=int, default=100)
+    h.add_argument("--seed", type=int, default=0)
+    h.add_argument("--out", type=Path, default=Path("out/measure_human.csv"))
+
+    g = sub.add_parser("agree", help="score a human sheet against the gate and the model")
+    g.add_argument("sheet", type=Path)
+    g.add_argument("sample", type=Path)
+
     args = ap.parse_args()
 
     if args.command == "sample":
@@ -175,6 +263,24 @@ def main() -> None:
         print(f"wrote {args.out} ({len(sample)} rows)")
         print("Label each row `kenya`, `offdomain` or `unclear`, then:")
         print(f"    uv run kma-measure-eval score {args.out}")
+        return
+
+    if args.command == "human-sheet":
+        sheet = human_subset(pd.read_csv(args.sample, dtype={"post_id": str}), n=args.n, seed=args.seed)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        sheet.to_csv(args.out, index=False)
+        print(f"wrote {args.out} ({len(sheet)} rows)")
+        print("Label each row `kenya`, `offdomain` or `unclear`, then:")
+        print(f"    uv run kma-measure-eval agree {args.out} {args.sample}")
+        return
+
+    if args.command == "agree":
+        result = agreement(
+            pd.read_csv(args.sheet, dtype={"post_id": str}),
+            pd.read_csv(args.sample, dtype={"post_id": str}),
+        )
+        for key, value in result.items():
+            print(f"{key}: {value}")
         return
 
     result = score(pd.read_csv(args.path))

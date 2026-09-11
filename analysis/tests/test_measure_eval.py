@@ -74,3 +74,66 @@ def test_sample_is_blind_and_carries_stratum_weights():
     cols = ["post_id", "user_id", "text", "label", "bucket", "stratum_share"]
     frame = pd.DataFrame(columns=cols)
     assert list(frame.columns).index("label") < list(frame.columns).index("bucket")
+
+
+def _model_labelled(per_bucket=40):
+    rows = []
+    for bucket, share in (("kenya", 0.1), ("offdomain", 0.2), ("ambiguous", 0.7)):
+        label = "offdomain" if bucket == "offdomain" else "kenya"
+        rows += [(f"{bucket}{k}", f"text {k}", label, bucket, share) for k in range(per_bucket)]
+    return pd.DataFrame(rows, columns=["post_id", "text", "label", "bucket", "stratum_share"])
+
+
+def _copy_model_labels(sheet, sample):
+    return sheet.assign(label=sample.set_index("post_id").loc[sheet["post_id"], "label"].to_numpy())
+
+
+def test_human_sheet_hides_both_the_gate_and_the_model():
+    sheet = measure_eval.human_subset(_model_labelled(), n=100)
+    assert list(sheet.columns) == ["post_id", "text", "label"]
+    assert (sheet["label"] == "").all()
+
+
+def test_human_sheet_is_stratified_to_the_requested_size():
+    sample = _model_labelled()
+    sheet = measure_eval.human_subset(sample, n=100)
+    assert len(sheet) == 100
+    per_bucket = sample.set_index("post_id").loc[sheet["post_id"], "bucket"].value_counts()
+    assert sorted(per_bucket.tolist()) == [33, 33, 34]
+
+
+def test_agreement_is_perfect_when_the_human_matches_the_model():
+    sample = _model_labelled()
+    sheet = _copy_model_labels(measure_eval.human_subset(sample, n=60), sample)
+    got = measure_eval.agreement(sheet, sample)
+    assert got["agreement"] == 1.0
+    assert got["kappa"] == 1.0
+    assert got["gate_vs_human"] == got["gate_vs_model"]
+
+
+def test_agreement_compares_only_the_posts_the_human_labelled():
+    """The model's labels on the other posts must not leak into either score."""
+    sample = _model_labelled()
+    sheet = _copy_model_labels(measure_eval.human_subset(sample, n=30), sample)
+    got = measure_eval.agreement(sheet, sample)
+    assert got["posts"] == 30
+    assert got["gate_vs_model"]["labelled"] == 30
+
+
+def test_agreement_rejects_a_typo_rather_than_dropping_it():
+    sample = _model_labelled()
+    sheet = measure_eval.human_subset(sample, n=30).assign(label="kenyaa")
+    with pytest.raises(ValueError, match="kenyaa"):
+        measure_eval.agreement(sheet, sample)
+
+
+def test_confusion_is_keyed_by_the_human_label_first():
+    """A pandas crosstab's plain to_dict() keys by column - the model's label -
+    which silently transposes the matrix the key's name promises."""
+    sample = _model_labelled(per_bucket=10)
+    sheet = _copy_model_labels(measure_eval.human_subset(sample, n=30), sample)
+    first = sheet["post_id"].iloc[0]
+    model_label = sample.set_index("post_id").loc[first, "label"]
+    sheet.loc[sheet["post_id"] == first, "label"] = "unclear"
+    confusion = measure_eval.agreement(sheet, sample)["confusion_human_by_model"]
+    assert confusion["unclear"][model_label] == 1
