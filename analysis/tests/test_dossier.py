@@ -42,6 +42,11 @@ def con(monkeypatch):
         CREATE TABLE hatespeech (
             platform_post_id VARCHAR, domain VARCHAR, scored_at TIMESTAMPTZ)
     """)
+    c.execute("""
+        CREATE TABLE embeddings (
+            platform_post_id VARCHAR, embedding FLOAT[], embedded_at TIMESTAMPTZ)
+    """)
+    monkeypatch.setattr(dossier, "embeddings_source", lambda platform="x", model="*": "embeddings")
 
     def post(pid, author, handle, text, engagement=0, repost=False):
         c.execute(
@@ -81,6 +86,80 @@ MEMBERS = pd.DataFrame([
     {"cluster_id": 0, "author_id": "a1"},
     {"cluster_id": 0, "author_id": "a2"},
 ])
+
+
+def _post(con, pid, author, handle, text):
+    con.execute(
+        "INSERT INTO posts (platform, platform_post_id, author_id, author_handle,"
+        " text, created_at, collected_at, is_repost, like_count, reply_count,"
+        " repost_count, quote_count)"
+        " VALUES ('x', ?, ?, ?, ?, now(), now(), FALSE, 0, 0, 0, 0)",
+        [pid, author, handle, text],
+    )
+
+
+def _embed(con, pid, vector):
+    con.execute("INSERT INTO embeddings VALUES (?, ?, now())", [pid, vector])
+
+
+def test_near_identical_posts_by_two_members_are_an_exhibit(con):
+    """v2's text trace links accounts by what they WROTE; that co-action has to
+    reach the reader, or a text-linked group arrives with no joint evidence."""
+    text = "Vote for real change across the whole county this August"
+    for pid, author, handle in (("d1", "a1", "member_one"), ("d2", "a2", "member_two")):
+        _post(con, pid, author, handle, text)
+        _embed(con, pid, [0.0, 1.0, 0.0])
+    _embed(con, "m1", [1.0, 0.0, 0.0])
+
+    packet = dossier.build(con, MEMBERS)[0]
+
+    assert len(packet["shared_texts"]) == 1
+    family = packet["shared_texts"][0]
+    assert family["n_members"] == 2 and family["n_posts"] == 2
+    assert family["text"] == text
+
+
+def test_a_packet_without_embeddings_still_builds(con):
+    packet = dossier.build(con, MEMBERS)[0]
+
+    assert packet["shared_texts"] == []
+
+
+def test_one_member_repeating_themselves_is_not_co_action():
+    import numpy as np
+
+    posts = pd.DataFrame({
+        "author_id": ["a1", "a1"], "author_handle": ["h", "h"],
+        "text": ["same words said twice here", "same words said twice here"],
+        "created_at": pd.to_datetime(["2026-01-01", "2026-01-02"], utc=True),
+    })
+
+    got = dossier.near_duplicate_families(posts, np.array([[1.0, 0.0], [1.0, 0.0]]))
+
+    assert got.empty
+
+
+def test_families_join_transitively_and_rank_by_members():
+    """A~B and B~C is one family even when A and C sit below the cut - the same
+    connectivity the text trace itself builds on."""
+    import numpy as np
+
+    angle = np.deg2rad([0, 20, 40])
+    vectors = np.vstack([
+        np.column_stack([np.cos(angle), np.sin(angle), np.zeros(3)]),
+        [[0.0, 0.0, 1.0], [0.0, 0.1, 1.0]],
+    ])
+    posts = pd.DataFrame({
+        "author_id": ["a", "b", "c", "d", "e"],
+        "author_handle": ["a", "b", "c", "d", "e"],
+        "text": ["t1", "t2", "t3", "t4", "t5"],
+        "created_at": pd.date_range("2026-01-01", periods=5, tz="UTC"),
+    })
+
+    got = dossier.near_duplicate_families(posts, vectors)
+
+    assert got["n_members"].tolist() == [3, 2]
+    assert got.iloc[0]["text"] == "t1"
 
 
 def test_a_packet_carries_the_evidence_a_reader_needs(con):
