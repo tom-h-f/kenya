@@ -106,6 +106,11 @@ convert it from indicative to defensible, and this project has been burned by
 treating LLM labels as truth before - though on coded incitement, which is much
 harder than topical relevance.
 
+*Done 2026-09-11.* Tom's blind pass over 100 of the 300: agreement with the
+model 90 of 100, kappa 0.83, and no disagreement on any Kenya call. Gate
+precision 0.971, now human-confirmed; recall on the subset 0.655 against his
+labels and 0.606 against the model's on the same posts. See `v2-findings` §6.
+
 **B3. Iran, +10.6 Macro-F1 above the published benchmark.** Being better than the
 reference is a divergence. Seed, convergence settings and isolated-node handling
 are all ruled out. Any Iran figure from this pipeline is suspect until explained.

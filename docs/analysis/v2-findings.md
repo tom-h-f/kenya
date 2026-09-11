@@ -183,6 +183,27 @@ careful reader", not human ground truth. That is a real and independent check -
 the labeller reads context, the gate matches keywords - but it is a weaker claim,
 and this project has been burned before by treating LLM labels as truth.
 
+**Human check, 2026-09-11 (finishing-the-revamp B2).** Tom labelled 100 of the
+300 posts blind: stratified across the gate's buckets, with neither the bucket
+nor the model's label shown, and a literal machine translation beside each
+non-English post. He and the model agree on **90 of 100 (Cohen's kappa 0.83)**,
+and on **every Kenya call** - all ten disagreements are `offdomain` against
+`unclear`. On those posts:
+
+| | against Tom's labels | against the model's, same posts |
+|---|---|---|
+| precision | **0.971** (95% CI 0.851-0.995) | 0.971 |
+| recall | **0.655** | 0.606 |
+| usable labels | 91, plus 9 `unclear` | 87, plus 13 `unclear` |
+
+The recall gap on the same posts comes only from which ones each labeller set
+aside as unclear. So the model labels hold up as a measure of Kenya relevance,
+the precision figure is now human-confirmed, and the model-based recall is, if
+anything, slightly conservative. The 100-post subset carries no recall interval
+and is not the same sample as the 300, so the full-sample 0.508 is not replaced
+by it; the "floor, not an estimate" reading above stands. Tooling:
+`kma-measure-eval human-sheet` and `agree`.
+
 ## 7. What remains unresolved
 
 - **Which method is right.** v1 and v2 agree on 4.4% of accounts. No statistic

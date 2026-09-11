@@ -221,7 +221,7 @@ def agreement(human: pd.DataFrame, sample: pd.DataFrame) -> dict:
         "posts": len(labelled),
         "agreement": round(observed, 3),
         "kappa": round(kappa, 3),
-        "confusion_human_by_model": pd.crosstab(a, b).to_dict(),
+        "confusion_human_by_model": pd.crosstab(a, b).to_dict(orient="index"),
         "gate_vs_human": score(labelled.rename(columns={"label_human": "label"})),
         "gate_vs_model": score(labelled.rename(columns={"label_model": "label"})),
     }

@@ -125,3 +125,15 @@ def test_agreement_rejects_a_typo_rather_than_dropping_it():
     sheet = measure_eval.human_subset(sample, n=30).assign(label="kenyaa")
     with pytest.raises(ValueError, match="kenyaa"):
         measure_eval.agreement(sheet, sample)
+
+
+def test_confusion_is_keyed_by_the_human_label_first():
+    """A pandas crosstab's plain to_dict() keys by column - the model's label -
+    which silently transposes the matrix the key's name promises."""
+    sample = _model_labelled(per_bucket=10)
+    sheet = _copy_model_labels(measure_eval.human_subset(sample, n=30), sample)
+    first = sheet["post_id"].iloc[0]
+    model_label = sample.set_index("post_id").loc[first, "label"]
+    sheet.loc[sheet["post_id"] == first, "label"] = "unclear"
+    confusion = measure_eval.agreement(sheet, sample)["confusion_human_by_model"]
+    assert confusion["unclear"][model_label] == 1
