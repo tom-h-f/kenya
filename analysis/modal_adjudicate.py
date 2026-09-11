@@ -2,6 +2,7 @@
 
     uv run --with modal modal run modal_adjudicate.py --dry-run --limit 5
     uv run --with modal modal run modal_adjudicate.py --limit 20
+    uv run --with modal modal run modal_adjudicate.py --sample /data/a2_matched/a2_sample.parquet
 
 Why this exists on Modal rather than tf1: the decision of 2026-09-08 is that no
 `ANTHROPIC_API_KEY` goes on the collector or enrichment hosts and all model work
@@ -24,6 +25,14 @@ render on campaigns and inherit one-directionally to members.
 
 `--unit` takes `campaign` (default) or `cluster` so the choice stays visible
 rather than baked in.
+
+## Judging a pre-drawn sample
+
+`--sample` takes a parquet of `cluster_id, author_id` already on the volume and
+judges exactly those cases, instead of ranking v1's clusters by size. It exists
+for comparisons such as A2's size-matched v1/v2 run, where the case set has to
+be drawn - and blinded - by whoever designed the experiment: cases arrive under
+neutral ids, and which method produced each one never reaches this app.
 
 ## Secrets
 
@@ -69,6 +78,7 @@ def adjudicate_run(
     unit: str = "campaign",
     model: str = "",
     dry_run: bool = False,
+    sample: str = "",
 ) -> dict:
     import os
 
@@ -87,33 +97,43 @@ def adjudicate_run(
         )
 
     con = connect()
-    members = db.coordination_run_latest(con, kind="clusters").df()
-    if members.empty:
-        raise RuntimeError("no persisted clustering to adjudicate")
-
-    if unit == "campaign":
-        acts = coordination.traces(con, "co_retweet").df()
-        groups = coordination.campaigns(members, acts)
-        # Campaign ids replace cluster ids so a verdict is rendered on the unit
-        # a reader can actually judge, then inherited by members for scoring.
-        members = members.merge(groups, on="cluster_id", how="left")
-        key = "campaign_id" if "campaign_id" in members.columns else "cluster_id"
-    elif unit == "cluster":
-        key = "cluster_id"
+    if sample:
+        members = pd.read_parquet(sample)[["cluster_id", "author_id"]]
+        if members.empty:
+            raise RuntimeError(f"sample {sample} has no members")
+        unit, key = "sample", "cluster_id"
+        ranked = sorted(members["cluster_id"].unique().tolist())
     else:
-        raise ValueError(f"unit must be campaign or cluster, got {unit!r}")
+        members = db.coordination_run_latest(con, kind="clusters").df()
+        if members.empty:
+            raise RuntimeError("no persisted clustering to adjudicate")
 
-    ranked = (
-        members.groupby(key).size().sort_values(ascending=False).head(limit).index.tolist()
-    )
+        if unit == "campaign":
+            acts = coordination.traces(con, "co_retweet").df()
+            groups = coordination.campaigns(members, acts)
+            # Campaign ids replace cluster ids so a verdict is rendered on the unit
+            # a reader can actually judge, then inherited by members for scoring.
+            members = members.merge(groups, on="cluster_id", how="left")
+            key = "campaign_id" if "campaign_id" in members.columns else "cluster_id"
+        elif unit == "cluster":
+            key = "cluster_id"
+        else:
+            raise ValueError(f"unit must be campaign or cluster, got {unit!r}")
+
+        ranked = (
+            members.groupby(key).size().sort_values(ascending=False).head(limit).index.tolist()
+        )
+
     packets = dossier.build(con, members, cluster_ids=ranked)
     print(f"built {len(packets)} dossier(s) on unit={unit} (key={key})", flush=True)
 
     if dry_run:
         return {
             "unit": unit,
+            "sample": sample or None,
             "packets": len(packets),
             "ids": [str(p.get("cluster_id")) for p in packets],
+            "sizes": [p.get("size") for p in packets],
             "judged": 0,
         }
 
@@ -124,10 +144,12 @@ def adjudicate_run(
     # its model, prompt and dossier run cannot be audited or superseded.
     frame["adjudicator"] = chosen
     frame["unit"] = unit
+    frame["sample"] = sample or None
     key_written = coordination.persist_verdicts(con, frame, members, adjudicator=chosen)
 
     return {
         "unit": unit,
+        "sample": sample or None,
         "packets": len(packets),
         "judged": len(frame),
         "model": chosen,
@@ -137,5 +159,5 @@ def adjudicate_run(
 
 
 @app.local_entrypoint()
-def main(limit: int = 20, unit: str = "campaign", model: str = "", dry_run: bool = False):
-    print(adjudicate_run.remote(limit=limit, unit=unit, model=model, dry_run=dry_run))
+def main(limit: int = 20, unit: str = "campaign", model: str = "", dry_run: bool = False, sample: str = ""):
+    print(adjudicate_run.remote(limit=limit, unit=unit, model=model, dry_run=dry_run, sample=sample))
