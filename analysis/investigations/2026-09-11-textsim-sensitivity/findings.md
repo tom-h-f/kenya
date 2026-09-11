@@ -262,3 +262,17 @@ in which block: the Sheng-reply mass (mpnet 0.85), one co-retweet block
 (the floor, bge-m3 at 0.85 and above, mpnet at 0.90 and above - the same 500
 accounts each time), or an off-domain text mass (bge-m3 at 0.75-0.80). Changing
 the encoder does not fix the ranking.
+
+The bge-m3 0.80 block is greeting farms: 122,966 cross-author pairs among its
+5,660 embedded posts, median token Jaccard 0.333, and the reader called 93 of
+100 sampled pairs same_message - "@x Good morning dear" against "@y Good
+morning sir". Literally the same message, and the engagement-pod pattern, not
+campaigning.
+
+Those posts only qualify for the text trace because `coord2.clean_text` keeps
+@handles as words: "@x_weeep Good morning sir" cleans to four words, the
+minimum. 58.7% of eligible posts carry a mention; stripping mentions drops 7.7%
+of them below four words. That would remove 87.9% of the bge-m3 0.80 block's
+sampled pairs, but only 10.7% of the mpnet 0.85 ones - it is a correctness
+fix, not the fix - and it would lose 12 of the 65 same-message pairs, short
+replies whose substance is in two or three words.
