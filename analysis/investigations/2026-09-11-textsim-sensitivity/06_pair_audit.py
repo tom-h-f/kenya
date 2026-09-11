@@ -1,15 +1,15 @@
-"""What the 0.85 text trace actually links: the post pairs behind v2's top 500.
+"""What the text trace actually links: the post pairs behind v2's top 500.
 
     cd analysis && uv run python investigations/2026-09-11-textsim-sensitivity/06_pair_audit.py \\
-        investigations/2026-09-11-textsim-sensitivity/out/2026-09-05-promotion-off [--judge 100]
+        investigations/2026-09-11-textsim-sensitivity/out/2026-09-05-promotion-off [--cut 0.90] [--judge 100]
 
 v2-findings section 4 says 0.85 was chosen "because that is where near-duplicates
 sit in our encoder's space". This checks that against the pairs themselves:
-every cross-author post pair at or above the cut among the top 500's embedded
-posts (from `00_export`'s rows and matrix), a sample's word overlap, and a
-random-pair baseline for the embedding space. `--judge N` has a blind headless
-reader label N of the sampled pairs same_message / same_topic / unrelated,
-with the same isolation as `05_a2_headless.py`.
+every cross-author post pair at or above the cut among that cut's top 500
+embedded posts (from `00_export`'s rows and matrix), a sample's word overlap,
+and a random-pair baseline for the embedding space. `--judge N` has a blind
+headless reader label N of the sampled pairs same_message / same_topic /
+unrelated, 100 to a call, with the same isolation as `05_a2_headless.py`.
 
 Found 2026-09-11 while rebuilding A2's dossiers: v2's four empty groups are all
 text-similarity edges, and the pairs behind them are unrelated Sheng replies.
@@ -28,8 +28,8 @@ from kma import coord2
 from kma import coordination as co
 from kma.db import connect
 
-CUT = 0.85
 SAMPLE = 3000
+JUDGE_BATCH = 100
 
 JUDGE_SYSTEM = """You compare pairs of social media posts, mostly Kenyan English, Swahili and Sheng. \
 For each pair decide:
@@ -76,17 +76,17 @@ def grams(text, n: int = 4) -> set:
     return {s[k : k + n] for k in range(max(len(s) - n + 1, 1))}
 
 
-def baseline(matrix, pools: dict[str, np.ndarray], rng) -> None:
+def baseline(matrix, pools: dict[str, np.ndarray], cut: float, rng) -> None:
     for name, pool in pools.items():
         a, b = rng.choice(pool, 100_000), rng.choice(pool, 100_000)
         cos = (unit(matrix, np.sort(a))[rng.permutation(len(a))] * unit(matrix, np.sort(b))).sum(1)
         print(f"  {name:<22} n={len(pool):>7}  mean {cos.mean():.3f}  p99 {np.quantile(cos, .99):.3f}"
-              f"  share >= {CUT} {np.mean(cos >= CUT):.4f}")
+              f"  share >= {cut} {np.mean(cos >= cut):.4f}")
 
 
-def judge(sample: pd.DataFrame) -> pd.Series:
+def judge_batch(batch: pd.DataFrame) -> list[str]:
     body = "\n\n".join(
-        f"PAIR {k}\nA: {r.text_a.strip()}\nB: {r.text_b.strip()}" for k, r in sample.iterrows()
+        f"PAIR {k}\nA: {r.text_a.strip()}\nB: {r.text_b.strip()}" for k, r in enumerate(batch.itertuples())
     )
     prompt = (f"{body}\n\nReturn ONLY a JSON array, one object per pair, in order: "
               '{"pair": <n>, "label": "same_message" | "same_topic" | "unrelated"}')
@@ -100,30 +100,35 @@ def judge(sample: pd.DataFrame) -> pd.Series:
         raise SystemExit(proc.stderr[-500:])
     out = json.loads(proc.stdout)
     result = next(m for m in (out if isinstance(out, list) else [out]) if m.get("type") == "result")["result"]
-    labels = pd.DataFrame(json.loads(result[result.find("[") : result.rfind("]") + 1]))
-    return labels.set_index("pair")["label"]
+    labels = pd.DataFrame(json.loads(result[result.find("[") : result.rfind("]") + 1])).set_index("pair")["label"]
+    return [labels.get(k) for k in range(len(batch))]
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("snapshot_dir", type=Path)
+    ap.add_argument("--cut", type=float, default=0.85)
     ap.add_argument("--judge", type=int, default=0, help="pairs for the blind reader; 0 skips it")
     args = ap.parse_args()
+    tag = f"t{args.cut:.2f}"
 
     rows = pd.read_parquet(args.snapshot_dir / "rows.parquet")
     matrix = np.load(args.snapshot_dir / "matrix.npy", mmap_mode="r")
-    top = set(pd.read_parquet(args.snapshot_dir / "sweep_min0.75" / "top500_t0.85.parquet").user_id.astype(str))
+    top = set(pd.read_parquet(args.snapshot_dir / "sweep_min0.75" / f"top500_{tag}.parquet").user_id.astype(str))
     in_top = rows.user_id.astype(str).isin(top).to_numpy()
     index = np.flatnonzero(in_top)
     authors = rows.user_id.astype(str).to_numpy()[index]
 
     rng = np.random.default_rng(0)
-    print("random-pair cosine baseline:")
+    print(f"cut {args.cut}, that cut's top 500. Random-pair cosine baseline:")
     baseline(matrix, {"all eligible posts": np.arange(len(rows)), "top-500 authors' posts": index,
-                      "other authors' posts": np.flatnonzero(~in_top)}, rng)
+                      "other authors' posts": np.flatnonzero(~in_top)}, args.cut, rng)
 
-    i, j = pairs_at_cut(unit(matrix, index), authors, CUT)
-    print(f"\ntop-500 embedded posts {len(index):,}; cross-author pairs >= {CUT}: {len(i):,}")
+    i, j = pairs_at_cut(unit(matrix, index), authors, args.cut)
+    print(f"\ntop-500 embedded posts {len(index):,}; cross-author pairs >= {args.cut}: {len(i):,}")
+    if len(i) == 0:
+        print("no text pairs among this cut's top 500: text similarity does not reach its ranking")
+        return
     pick = np.random.default_rng(0).choice(len(i), size=min(SAMPLE, len(i)), replace=False)
     post_ids = rows.post_id.to_numpy()
     sample = pd.DataFrame({"a": post_ids[index[i[pick]]].astype(str), "b": post_ids[index[j[pick]]].astype(str)})
@@ -137,14 +142,18 @@ def main() -> None:
     print(f"             char-4gram Jaccard quantiles {np.round(np.quantile(sample.gram_j, q), 3)}")
     print(f"  under 0.1 of words shared: {np.mean(sample.tok_j < 0.1):.3f}; "
           f"near-copies (>= 0.5): {np.mean(sample.tok_j >= 0.5):.3f}")
-    sample.to_parquet(args.snapshot_dir / "pair_audit_sample.parquet")
+    sample.to_parquet(args.snapshot_dir / f"pair_audit_sample_{tag}.parquet")
 
     if args.judge:
-        judged = sample.sample(args.judge, random_state=1).reset_index(drop=True)
-        judged["label"] = judged.index.map(judge(judged))
-        judged.to_parquet(args.snapshot_dir / "pair_audit_judged.parquet")
-        print(f"\nblind reader on {len(judged)} pairs:")
+        judged = sample.sample(min(args.judge, len(sample)), random_state=1).reset_index(drop=True)
+        labels = []
+        for start in range(0, len(judged), JUDGE_BATCH):
+            labels += judge_batch(judged.iloc[start : start + JUDGE_BATCH])
+        judged["label"] = labels
+        judged.to_parquet(args.snapshot_dir / f"pair_audit_judged_{tag}.parquet")
+        print(f"\nblind reader on {len(judged)} pairs ({judged.label.isna().sum()} unlabelled):")
         print(judged.label.value_counts().to_string())
+        print(pd.crosstab(judged.tok_j >= 0.5, judged.label).rename_axis(index="near-copy").to_string())
 
 
 if __name__ == "__main__":
