@@ -161,3 +161,50 @@ At the 0.5 floor the budget is not spent - 381 of 500 accounts - because only
 21 communities qualify and each contributes at most `--per-group` 25. Raising
 the cap or lowering the floor spends the rest; both are triage-budget choices,
 not detection ones.
+
+## 6. Rebuilt on full embedding coverage
+
+The trace above was built when 62% of text-eligible posts had vectors. After the
+backfill (`2026-09-12-embedding-backfill`) it is 100%. Snapshots pin an explicit
+object list, so a derived snapshot -
+`2026-09-05-promotion-off__emb20260912`, the parent's posts with `embeddings/`
+relisted - changes coverage and nothing else.
+
+| | 62% coverage | 100% coverage |
+|---|---|---|
+| eligible posts | 309,391 | 485,285 |
+| text edges | 50,085 | 82,667 |
+| users with a text edge | 12,737 | 20,575 |
+| communities (4+ accounts) | 125 | 142 |
+| listed at Kenya floor 0.5 | 21 communities, 381 accounts | 17 communities, 328 accounts |
+| campaign authors listed (of 31) | 7 | 8 |
+
+A2 on the full-coverage listing (34 cases, 0 failures, verdicts at
+`coordination/platform=x/kind=verdicts/dt=2026-09-12/run=20260912T224647Z.parquet`):
+
+| | cases | political | Kenya-relevant | verdicts |
+|---|---|---|---|---|
+| v1 | 17 | 1 | 3 | engagement_pod 12, fandom 2, news 1, political 1, unclear 1 |
+| v2 | 17 | 5 | 12 | political_campaign 5, engagement_pod 4, unclear 5, news 2, commercial_spam 1 |
+
+The off-domain problem is gone from the v2 side: no fandom verdicts at all, and
+Kenya-relevance is 12 of 17 (71%) against 12 of 21 (57%) before the floor. What
+remains off-domain is named as such by the reader - Tanzanian opposition
+politics, two Ugandan court items, one Temu referral spam - rather than K-pop
+hashtag drives filling the list.
+
+v2's political verdicts are the Sifuna campaign (matching #SifunaForKenya /
+#SisiNdioSifuna hashtags), opposition-politician amplification, IEBC and
+election content, and an Ol Kalou by-election group. Still nothing called an
+influence operation, and nothing political at high confidence: the reader's
+rationales say the same thing each time - real-looking aged accounts, diverse
+avatars, no concealment of origin.
+
+Five v2 cases came back unclear, three of them from the four small communities
+(4-5 accounts), where the evidence is two or three overlapping posts. Small
+communities are cheap to list and hard to judge; raising `--min-size` is the
+lever if that trade is not worth it.
+
+Two A2 runs were killed for memory before this one: at full coverage the text
+exhibit pulled every member post's vector into pandas at once. `dossier.py` now
+holds one cluster's vectors at a time.
