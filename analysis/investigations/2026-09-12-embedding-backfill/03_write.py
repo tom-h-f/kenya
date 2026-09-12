@@ -26,7 +26,7 @@ HERE = Path(__file__).parent
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--chunk", type=int, default=100_000)
+    ap.add_argument("--chunk", type=int, default=50_000)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -48,11 +48,16 @@ def main() -> None:
     for start in range(0, len(todo), args.chunk):
         part = todo[start : start + args.chunk]
         now = datetime.now(timezone.utc)
+        # Built from the numpy buffer rather than a list per row: 100k rows of
+        # 768 Python floats is gigabytes of objects. The type stays list<double>,
+        # which is what `semantic.embed_new` writes.
+        flat = np.asarray(vectors[part], dtype=np.float64).reshape(-1)
+        offsets = pa.array(np.arange(len(part) + 1, dtype=np.int32) * semantic.DIM)
         table = pa.table({
             "platform_post_id": ids[part].tolist(),
             "model": [slug] * len(part),
             "dim": [semantic.DIM] * len(part),
-            "embedding": [np.asarray(vectors[k], dtype=np.float64).tolist() for k in part],
+            "embedding": pa.ListArray.from_arrays(offsets, pa.array(flat)),
             "embedded_at": [now] * len(part),
         })
         key = f"embeddings/platform=x/model={slug}/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
