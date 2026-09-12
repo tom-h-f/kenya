@@ -4,7 +4,7 @@ The one trace our data can actually support that we never built. It is 72.8% of
 the UAE benchmark's signal and 0% of ours, purely because it was never run: we
 already hold the embeddings and the text.
 
-    uv run --with modal modal run modal_textsim.py --snapshot 2026-09-05-promotion-off
+    uv run --with modal modal run modal_textsim.py --snapshot 2026-09-05-promotion-off --threshold 0.85
     uv run --with modal modal run --detach modal_textsim.py --limit 50000   # smoke
 
 Writes `textsim/<snapshot>.parquet` to the `iohunter-bench` volume.
@@ -13,6 +13,10 @@ Why GPU: 411k eligible posts is 8.4e10 upper-triangle pairs. The CPU
 implementation streams every pair for the caller to filter, which cannot finish;
 `coord2.gpu_cosine_pairs` pushes the threshold into the block and keeps only
 survivors.
+
+`--overlap` is the word-overlap floor on each surviving pair
+(`coord2.TEXT_MIN_OVERLAP` by default, `--overlap 0` for the cosine cut alone).
+It goes into the R2 key, so a floored and an unfloored trace never share a path.
 """
 
 import modal
@@ -46,7 +50,7 @@ image = (
     timeout=60 * 60 * 6,
 )
 def build(snapshot: str, limit: int = 0, percentile: float = 96.0, chunk: int = 1024,
-          threshold: float = 0.0) -> dict:
+          threshold: float = 0.0, overlap: float = -1.0) -> dict:
     import numpy as np
     import pandas as pd
 
@@ -94,21 +98,23 @@ def build(snapshot: str, limit: int = 0, percentile: float = 96.0, chunk: int = 
         )
         print(f"{percentile}th percentile threshold = {cut:.4f}", flush=True)
 
+    floor = coord2.TEXT_MIN_OVERLAP if overlap < 0 else overlap
     edges = coord2.text_similarity_network(
-        joined[["user_id", "created_at"]],
+        joined[["user_id", "created_at", "clean"]],
         matrix,
         threshold=float(cut),
         similarity=coord2.gpu_cosine_pairs(float(cut)),
         chunk=chunk,
+        min_overlap=floor or None,
     )
-    print(f"edges: {len(edges)}", flush=True)
+    print(f"edges: {len(edges)} (word-overlap floor {floor or 'off'})", flush=True)
 
     # Persist to R2 under the key the runner reads, so a pass is one command
     # after this. The volume copy stays as a cheap local artifact.
     from kma.coord2_run import textsim_key
     from kma.db import BUCKET
 
-    r2_key = textsim_key(snapshot, float(cut))
+    r2_key = textsim_key(snapshot, float(cut), overlap=floor or None)
     con.register("_ts", edges)
     try:
         con.execute(f"COPY _ts TO 'r2://{BUCKET}/{r2_key}' (FORMAT parquet, COMPRESSION zstd)")
@@ -119,12 +125,12 @@ def build(snapshot: str, limit: int = 0, percentile: float = 96.0, chunk: int = 
     import os
 
     os.makedirs("/data/textsim", exist_ok=True)
-    # Threshold and row bound belong in the KEY. Without them a 20k-row smoke
-    # overwrites a full corpus run at the same path and the two are then
+    # Threshold, floor and row bound belong in the KEY. Without them a 20k-row
+    # smoke overwrites a full corpus run at the same path and the two are then
     # distinguishable only by file timestamp, which is how one of these was
     # briefly mistaken for the other.
     scope = "full" if not limit else f"limit{limit}"
-    path = f"/data/textsim/{snapshot}__t{cut:.2f}__{scope}.parquet"
+    path = f"/data/textsim/{snapshot}__t{cut:.2f}__o{floor:.2f}__{scope}.parquet"
     edges.to_parquet(path)
     vol.commit()
 
@@ -133,6 +139,7 @@ def build(snapshot: str, limit: int = 0, percentile: float = 96.0, chunk: int = 
         "snapshot": snapshot,
         "rows": len(joined),
         "threshold": float(cut),
+        "overlap": floor,
         "edges": len(edges),
         "users": users,
         "path": path,
@@ -142,5 +149,5 @@ def build(snapshot: str, limit: int = 0, percentile: float = 96.0, chunk: int = 
 
 @app.local_entrypoint()
 def main(snapshot: str = "2026-09-05-promotion-off", limit: int = 0, percentile: float = 96.0,
-         threshold: float = 0.0):
-    print(build.remote(snapshot, limit, percentile, threshold=threshold))
+         threshold: float = 0.0, overlap: float = -1.0):
+    print(build.remote(snapshot, limit, percentile, threshold=threshold, overlap=overlap))

@@ -494,14 +494,30 @@ def fast_retweet_coverage(
 # --------------------------------------------------------------------------
 
 _URL = re.compile(r"https?://\S+|www\.\S+", re.UNICODE)
+_MENTION = re.compile(r"@\w+", re.UNICODE)
 _EMOJI = re.compile(
     "[\U0001f000-\U0001faff\U00002600-\U000027bf\U0000fe00-\U0000fe0f\U0001f1e6-\U0001f1ff]+"
 )
 _PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
 
+# The second test on a text pair: char n-gram Jaccard of the cleaned texts.
+# OURS, not the paper's. Measured 2026-09-11 (textsim investigation, 06-09):
+# at cosine 0.85 in this project's encoder most admitted post pairs share no
+# words - short Sheng replies cluster - and on 300 reader-labelled pairs a
+# char-4gram floor of 0.10 kept 92% of same-message pairs and none of the
+# unrelated ones, where no encoder's cosine came close (best AUC 0.913 against
+# 0.975 for this). Cleaned text, so handles, URLs and stopwords do not count.
+TEXT_MIN_OVERLAP = 0.10
+TEXT_OVERLAP_GRAM = 4
+
 
 def clean_text(text: object, stopwords: frozenset[str] | None = None) -> str:
-    """URLs, emoji, punctuation and stopwords removed, per the paper's recipe.
+    """URLs, @mentions, emoji, punctuation and stopwords removed.
+
+    The paper's recipe plus mentions. A handle is not something the author
+    wrote, and kept it counts as a word: "@x_weeep Good morning sir" made
+    `MIN_TEXT_WORDS` and linked whole greeting farms (textsim investigation,
+    2026-09-11 - 58.7% of eligible posts carried a mention).
 
     The stopword list defaults to `kma.semantic.STOPWORDS`, which carries
     Swahili and Sheng function words the English lists miss - this corpus is
@@ -512,8 +528,20 @@ def clean_text(text: object, stopwords: frozenset[str] | None = None) -> str:
         return ""
     if stopwords is None:
         stopwords = _default_stopwords()
-    stripped = _PUNCT.sub(" ", _EMOJI.sub(" ", _URL.sub(" ", text))).lower()
+    stripped = _PUNCT.sub(" ", _EMOJI.sub(" ", _MENTION.sub(" ", _URL.sub(" ", text)))).lower()
     return " ".join(w for w in stripped.split() if w not in stopwords)
+
+
+def _grams(text: str, n: int = TEXT_OVERLAP_GRAM) -> frozenset[str]:
+    return frozenset(text[k : k + n] for k in range(max(len(text) - n + 1, 1)))
+
+
+def text_overlap(a: str, b: str, n: int = TEXT_OVERLAP_GRAM) -> float:
+    """Char n-gram Jaccard of two cleaned texts, 0 when either is empty."""
+    if not a or not b:
+        return 0.0
+    x, y = _grams(a, n), _grams(b, n)
+    return len(x & y) / len(x | y)
 
 
 _STOPWORDS: frozenset[str] | None = None
@@ -723,9 +751,16 @@ def text_similarity_network(
     max_sample_rows: int = 4000,
     seed: int = 0,
     similarity: PairSimilarity = cosine_pairs,
+    min_overlap: float | None = None,
 ) -> pd.DataFrame:
     """Users linked by at least one similar pair of tweets; weight is the MEAN
     similarity over the qualifying pairs.
+
+    `min_overlap` adds a second test on every pair that clears the cut: the
+    char n-gram Jaccard of the two cleaned texts (`text_overlap`) must reach
+    it. Then `rows` also needs `clean`, as `text_rows` supplies. Off by
+    default because the paper has no such test; production passes
+    `TEXT_MIN_OVERLAP`, for the reason recorded there.
 
     `rows` needs `user_id` and `created_at`; `vectors` is one embedding per row,
     in the same order. Embeddings are injected rather than computed here so the
@@ -755,6 +790,18 @@ def text_similarity_network(
     window_seconds = float(window_days) * 86400.0
     users = rows["user_id"].to_numpy()
 
+    if min_overlap is not None:
+        if "clean" not in rows:
+            raise ValueError("min_overlap needs a `clean` column of cleaned text, as text_rows supplies")
+        # Sorted with the rows above: pair indices are positions in time order.
+        clean = rows["clean"].fillna("").to_numpy()
+        grams: dict[int, frozenset[str]] = {}
+
+        def shared(a: int, b: int) -> float:
+            x = grams.setdefault(a, _grams(clean[a]) if clean[a] else frozenset())
+            y = grams.setdefault(b, _grams(clean[b]) if clean[b] else frozenset())
+            return len(x & y) / len(x | y) if x and y else 0.0
+
     if threshold is None:
         if percentile is None:
             raise ValueError("text_similarity_network needs either a percentile or a threshold")
@@ -773,6 +820,10 @@ def text_similarity_network(
     parts = []
     for i, j, sim in similarity(vectors, times, window_seconds=window_seconds, chunk=chunk):
         keep = (sim >= threshold) & (users[i] != users[j])
+        if min_overlap is not None and keep.any():
+            kept = np.flatnonzero(keep)
+            overlap = np.fromiter((shared(int(i[k]), int(j[k])) for k in kept), dtype=float, count=len(kept))
+            keep[kept[overlap < min_overlap]] = False
         if not keep.any():
             continue
         a, b = users[i[keep]], users[j[keep]]
