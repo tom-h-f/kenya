@@ -51,6 +51,47 @@ global score is what finds them. So the score stays the paper's. What changes
 is the report: `03_communities.py` splits the fused graph into communities and
 ranks within each, keeping the global score on every row.
 
+## 3. The production text trace, and what the community report lists
+
+`coord2.clean_text` now strips @mentions and `text_similarity_network` takes a
+word-overlap floor (`TEXT_MIN_OVERLAP` 0.10, char-4gram Jaccard on cleaned
+text). Built on Modal over the snapshot: 309,391 eligible posts (25,632 fewer
+than before - mentions no longer count toward four words), 50,085 user edges
+over 12,737 users, at
+`coord2/platform=x/kind=textsim/snapshot=2026-09-05-promotion-off/threshold=0.85/overlap=0.10/edges.parquet`.
+Checked against an independent replay of the recorded 0.85 pairs with the new
+cleaner and floor (`09_lexical_floor.py --texts`): 50,085 edges shared, weights
+within 1.4e-6, and one replay-only edge at exactly 0.85 - the GPU rounding
+boundary seen in the original check.
+
+`03_communities.py` on that trace: 17,655 accounts, 398,694 edges, 872 Leiden
+communities (modularity, resolution 1, seed 0), 125 of four or more accounts.
+Listing each community's top 25 by its own leading eigenvector, communities in
+order of their leading eigenvalue, fills the 500-account budget from 21
+communities. 55 of the 500 are in the global top 500.
+
+| | global top 500 | community listing |
+|---|---|---|
+| communities represented | 1 block | 21 |
+| text-linked accounts | 15 | 154 |
+| campaign authors (of 31) | 0 | 7 |
+| Kenya share mean | 0.830 | 0.505 |
+
+The 21 are three kinds: eleven co-retweet communities, most with listed Kenya
+share 0.77-0.91 (two at 0.116 and 0.355); one large text community (3,008
+accounts, 84% text edges, Kenya share 0.597); and five text communities with
+Kenya share 0.000-0.015. What each is, is A2's question.
+
+## 4. A2 on the community report
+
+`04_a2_sample.py`: each listed community is one case (its listed accounts),
+paired largest first with the unused v1 cluster nearest its size. 42 blinded
+cases, 905 member rows, in `analysis/out/a2_communities/`. The sizes do not
+match well: every v2 case is 25 accounts or fewer by construction, and v1's
+remaining clusters run 40 down to 6, so later pairs set 25 against 6-13. v1's
+largest clusters (177, 88) were not drawn, so v1 is not handicapped by pod
+size this time; results are reported by size band regardless.
+
 One local download of the UAE pickle from the `iohunter-bench` volume came back
 with 86 zero-filled 64 KiB blocks and would not unpickle; a second download
 loaded cleanly (sha256 d6ddec3c...). Check the hash before trusting a copy.
