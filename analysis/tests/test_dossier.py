@@ -169,10 +169,27 @@ def test_families_join_transitively_and_rank_by_members():
         "created_at": pd.date_range("2026-01-01", periods=5, tz="UTC"),
     })
 
-    got = dossier.near_duplicate_families(posts, vectors)
+    got = dossier.near_duplicate_families(posts, vectors, min_overlap=None)
 
     assert got["n_members"].tolist() == [3, 2]
     assert got.iloc[0]["text"] == "t1"
+
+
+def test_close_posts_that_share_no_words_are_not_an_exhibit():
+    """The production trace's second test. Without it most 0.85 pairs on this
+    corpus are unrelated Sheng replies, shown to the reader as if copied."""
+    import numpy as np
+
+    posts = pd.DataFrame({
+        "author_id": ["a1", "a2"], "author_handle": ["h1", "h2"],
+        "text": ["@KeKirwa Wakifumble hapa watakuwa kama wakamba na kalonzo",
+                 "@AokoOtieno_ Vitu zingine kama kuwa goons ni watu kujiamulia"],
+        "created_at": pd.to_datetime(["2026-07-06", "2026-08-15"], utc=True),
+    })
+    vectors = np.array([[1.0, 0.0], [0.95, 0.31]])
+
+    assert dossier.near_duplicate_families(posts, vectors).empty
+    assert not dossier.near_duplicate_families(posts, vectors, min_overlap=None).empty
 
 
 def test_a_packet_carries_the_evidence_a_reader_needs(con):

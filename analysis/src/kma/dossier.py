@@ -172,30 +172,40 @@ def shared_objects(
 
 
 def near_duplicate_families(
-    posts: pd.DataFrame, vectors: np.ndarray, threshold: float = TEXT_SIMILARITY
+    posts: pd.DataFrame,
+    vectors: np.ndarray,
+    threshold: float = TEXT_SIMILARITY,
+    min_overlap: float | None = coord2.TEXT_MIN_OVERLAP,
 ) -> pd.DataFrame:
-    """Posts that two or more DIFFERENT members wrote in near-identical words.
+    """Posts that two or more DIFFERENT members wrote in matching words.
 
     This is the text-similarity trace's co-action, which the retweet exhibit
     cannot show: a group v2 linked by what its members wrote has no objects in
-    common, and before this its packet arrived with no joint evidence at all -
-    measured on A2's size-matched run, all four of v2's `unclear` verdicts were
-    groups in exactly that state. Pairs are posts at or above `threshold` cosine
-    from different authors; a family is a connected set of them, so A~B and B~C
-    is one family even when A and C sit below the cut. One row per family, most
-    members first, shown by its earliest post."""
+    common, and before this its packet arrived with no joint evidence at all.
+    A pair is two posts from different authors at or above `threshold` cosine
+    AND, as in the production trace, at or above `min_overlap` word overlap
+    (`coord2.text_overlap` on cleaned text) - without that second test most
+    0.85 pairs on this corpus are unrelated Sheng replies, and the exhibit
+    would show them as if they were copies. A family is a connected set of
+    pairs, so A~B and B~C is one family even when A and C sit below the cut.
+    One row per family, most members first, shown by its earliest post."""
     if len(posts) < 2:
         return pd.DataFrame(columns=FAMILY_COLUMNS)
     posts = posts.reset_index(drop=True)
     unit = np.asarray(vectors, dtype=np.float32)
     unit = unit / np.clip(np.linalg.norm(unit, axis=1, keepdims=True), 1e-12, None)
     authors = posts["author_id"].to_numpy()
+    clean = (posts["clean"] if "clean" in posts else posts["text"].map(coord2.clean_text)).to_numpy()
 
     rows, cols = [], []
     for start in range(0, len(unit), 1024):
         i, j = np.nonzero(unit[start : start + 1024] @ unit.T >= threshold)
         i = i + start
         keep = (j > i) & (authors[i] != authors[j])
+        if min_overlap is not None and keep.any():
+            kept = np.flatnonzero(keep)
+            shared = np.array([coord2.text_overlap(clean[i[k]], clean[j[k]]) for k in kept])
+            keep[kept[shared < min_overlap]] = False
         rows.append(i[keep])
         cols.append(j[keep])
     rows, cols = np.concatenate(rows), np.concatenate(cols)
