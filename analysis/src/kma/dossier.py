@@ -274,27 +274,45 @@ def shared_texts(
 
     con.register("_dos_text_ids", posts[["platform_post_id"]].drop_duplicates())
     try:
-        vectors = con.sql(
+        # Into a temp table, not a frame: a vector arrives in pandas as a list
+        # of 768 Python floats, so a corpus with full embedding coverage pulls
+        # gigabytes of objects in before a single family is computed - two A2
+        # runs were killed for memory that way. Held here, each cluster's
+        # vectors are fetched, stacked and dropped one cluster at a time.
+        con.execute("DROP TABLE IF EXISTS _dos_emb")
+        con.execute(
             f"""
+            CREATE TEMP TABLE _dos_emb AS
             SELECT e.platform_post_id, e.embedding
             FROM {embeddings_source(platform, semantic._slug(semantic.MODEL))} e
             SEMI JOIN _dos_text_ids i ON i.platform_post_id = e.platform_post_id
             QUALIFY row_number() OVER (
                 PARTITION BY e.platform_post_id ORDER BY e.embedded_at DESC) = 1
             """
-        ).df()
+        )
     except duckdb.Error:
         log.warning("dossier: embeddings unavailable; no near-identical-text exhibit")
         return pd.DataFrame(columns=columns)
     finally:
         con.unregister("_dos_text_ids")
 
-    joined = posts.merge(vectors, on="platform_post_id", how="inner")
     parts = []
-    for cid, group in joined.groupby("cluster_id"):
-        families = near_duplicate_families(group, np.vstack(group["embedding"].to_numpy()), threshold)
+    for cid, group in posts.groupby("cluster_id"):
+        con.register("_dos_cluster_ids", group[["platform_post_id"]])
+        try:
+            vectors = con.sql(
+                "SELECT e.platform_post_id, e.embedding FROM _dos_emb e "
+                "SEMI JOIN _dos_cluster_ids i ON i.platform_post_id = e.platform_post_id"
+            ).df()
+        finally:
+            con.unregister("_dos_cluster_ids")
+        if vectors.empty:
+            continue
+        joined = group.merge(vectors, on="platform_post_id", how="inner")
+        families = near_duplicate_families(joined, np.vstack(joined["embedding"].to_numpy()), threshold)
         if not families.empty:
             parts.append(families.head(max_texts).assign(cluster_id=cid))
+    con.execute("DROP TABLE IF EXISTS _dos_emb")
     if not parts:
         return pd.DataFrame(columns=columns)
     return pd.concat(parts, ignore_index=True)[columns]
