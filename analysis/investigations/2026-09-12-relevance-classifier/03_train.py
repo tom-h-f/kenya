@@ -119,7 +119,9 @@ def main() -> None:
     tokenizer.save_pretrained(out)
 
     report = {}
-    for name, path, weighted in (("human 100", "measure_human.csv", False), ("model 300", "measure_sample.csv", True)):
+    # Both corpus-weighted by the gate's buckets, as the recorded B2 figures are
+    # (human recall 0.655 weighted; unweighted it reads 0.892).
+    for name, path, weighted in (("human 100", "measure_human.csv", True), ("model 300", "measure_sample.csv", True)):
         frame = pd.read_csv(args.data / path)
         if "bucket" not in frame:
             frame = frame.merge(pd.read_csv(args.data / "measure_sample.csv")[["post_id", "bucket", "stratum_share"]],
