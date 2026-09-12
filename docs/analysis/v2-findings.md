@@ -344,3 +344,12 @@ so any top 500 is one block. Replacing the score fails the reproduction gate
 paper's and the REPORT changes: Leiden communities over the fused graph, each
 ranked by its own leading eigenvector, the 500-account budget spread across 21
 communities. Detail: `analysis/investigations/2026-09-12-component-ranking/findings.md`.
+
+*A2 redone on the community report, 2026-09-12.* 21 listed v2 communities
+against 21 size-matched v1 clusters, read blind: v1 2 political and 3
+Kenya-relevant, v2 6 political and 12 Kenya-relevant. No influence operation on
+either side and nothing political at high confidence. v1's cases are
+engagement pods; v2's are a mix of Kenyan political amplification, off-domain
+fan and hashtag campaigns, and pods. "v2 surfaces Kenyan activity, v1 does not"
+holds on the fixed pipeline; a third of v2's listing is off-domain, which the
+community ordering has to account for.

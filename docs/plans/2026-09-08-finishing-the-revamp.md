@@ -69,6 +69,11 @@ the gate) and v2 reports by community instead of one global top 500. A2 redone
 on the community report: see the component-ranking investigation's
 `findings.md`.
 
+*A2 done 2026-09-12.* v1 2 of 21 political, 3 Kenya-relevant; v2 6 of 21
+political, 12 Kenya-relevant; no influence operation on either side. This is
+the finish line as specified. Open: order the community listing by relevance
+(a third of it is off-domain), and merge `feat/component-ranking`.
+
 **A3. Unit of judgement - DECIDED 2026-09-08.**
 
 **Judge the campaign. Score the account.**

@@ -92,6 +92,43 @@ remaining clusters run 40 down to 6, so later pairs set 25 against 6-13. v1's
 largest clusters (177, 88) were not drawn, so v1 is not handicapped by pod
 size this time; results are reported by size band regardless.
 
+Read blind by the isolated headless reader (claude-sonnet-5, rubric
+`2026-09-12-communities`, dossier text exhibit floored like the trace): 42
+cases in 90 s, 0 failures. Verdicts persisted before unblinding at
+`coordination/platform=x/kind=verdicts/dt=2026-09-12/run=20260912T100555Z.parquet`;
+unblinded in `analysis/out/a2_communities/a2_unblinded.csv`.
+
+| | cases | political | Kenya-relevant | verdicts |
+|---|---|---|---|---|
+| v1 | 21 | 2 | 3 | engagement_pod 17, political_campaign 2, news 1, fandom 1 |
+| v2 | 21 | 6 | 12 | political_campaign 6, engagement_pod 5, fandom 5, unclear 3, news 2 |
+
+- Nothing on either side was called an influence operation, or political at
+  high confidence.
+- v2's political verdicts: four Kenyan - the large text community (open
+  pro-Sifuna campaigning with matching slogans), election and opposition
+  amplification, vote-protection messaging, a partisan exchange - and two not:
+  Tanzanian opposition, and Mexican anti-Morena hashtag copypasta.
+- v2's five fandom verdicts are the off-domain text communities: K-pop and
+  anime fan hashtag drives, a Mexican reality show, football transfer news.
+  That is real matching-text coordination - the trace now finds what it is
+  for - about other things.
+- v1's cases are 17 engagement pods (greetings, motivational posts, buy-sell
+  prompts) plus one pro-Sifuna cluster, one DCP cluster and one Kenyan-news one.
+- The empty-evidence cases of 2026-09-11 are gone. v2's three unclears now
+  carry evidence - overlaps of two to four members per object - and the reader
+  found it too thin to call.
+
+What survives, now on a text trace whose pairs share words and a report no
+longer confined to one block: v2 surfaces Kenyan political activity where v1
+surfaces engagement pods - 12 of 21 Kenya-relevant against 3, 6 political
+against 2. What is new: a third of v2's listed communities are off-domain, so
+the listing should order communities by Kenya share (or by the relevance
+classifier being trained) rather than by eigenvalue alone.
+
+Caveats kept attached: model verdicts; 21 cases per method; sizes mismatched
+(v2 10-25 accounts, v1 6-40); one Leiden seed and resolution.
+
 One local download of the UAE pickle from the `iohunter-bench` volume came back
 with 86 zero-filled 64 KiB blocks and would not unpickle; a second download
 loaded cleanly (sha256 d6ddec3c...). Check the hash before trusting a copy.
