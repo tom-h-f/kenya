@@ -36,12 +36,43 @@ import numpy as np
 import pandas as pd
 
 from kma import bench, coord2, coord2_run
-from kma.db import connect
+from kma.db import connect, relevance_source
 
 HERE = Path(__file__).parent
+RELEVANCE_MODEL = "kenya-relevance-afroxlmr-2026-09-12"
 spec = importlib.util.spec_from_file_location("structure", HERE / "01_structure.py")
 structure = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(structure)
+
+
+def model_kenya_share(con, view: str, ids: list[str], model: str, threshold: float) -> pd.Series:
+    """Share of each account's posts the relevance classifier calls Kenyan.
+
+    The same shape as `coord2_run.attach_relevance`, from the learned scores
+    instead of the keyword gate: A2 found a third of the listed communities
+    were K-pop, anime and other off-domain hashtag drives, and the gate's
+    recall (0.655) is too leaky to separate them.
+    """
+    con.register("_rel_ids", pd.DataFrame({"user_id": ids}))
+    try:
+        got = con.sql(
+            f"""
+            WITH scored AS (
+                SELECT platform_post_id, p_kenya FROM {relevance_source('x', model)}
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform_post_id ORDER BY scored_at DESC) = 1
+            )
+            SELECT CAST(p.user_id AS VARCHAR) AS user_id,
+                   avg(CASE WHEN s.p_kenya >= {float(threshold)} THEN 1.0 ELSE 0.0 END) AS kenya_model
+            FROM ({view}) p
+            JOIN _rel_ids i ON CAST(p.user_id AS VARCHAR) = i.user_id
+            JOIN scored s ON s.platform_post_id = p.post_id
+            GROUP BY 1
+            """
+        ).df()
+    finally:
+        con.unregister("_rel_ids")
+    return got.set_index("user_id")["kenya_model"]
 
 
 def communities(graph: nx.Graph, resolution: float, seed: int) -> dict[str, int]:
@@ -63,6 +94,10 @@ def main() -> None:
     ap.add_argument("--resolution", type=float, default=1.0)
     ap.add_argument("--campaign", type=Path)
     ap.add_argument("--rows", type=Path)
+    ap.add_argument("--relevance-model", default=RELEVANCE_MODEL, help="'' to rank without it")
+    ap.add_argument("--relevance-threshold", type=float, default=0.5)
+    ap.add_argument("--min-kenya", type=float, default=0.2,
+                    help="drop communities whose members' model Kenya share is below this")
     args = ap.parse_args()
 
     con = connect()
@@ -94,6 +129,20 @@ def main() -> None:
 
     table = pd.DataFrame(table).sort_values("eigenvalue", ascending=False).reset_index(drop=True)
     scored = pd.DataFrame(rows).sort_values(["community_eigenvalue", "within_score"], ascending=[False, False])
+
+    if args.relevance_model:
+        share = model_kenya_share(con, view, scored["user_id"].astype(str).unique().tolist(),
+                                  args.relevance_model, args.relevance_threshold)
+        scored["kenya_model"] = scored["user_id"].astype(str).map(share)
+        per_community = scored.groupby("community")["kenya_model"].mean()
+        table["kenya_model"] = table["community"].map(per_community).round(3)
+        # A filter, not a re-sort: the eigenvalue order is the coherence the
+        # detector fired on, and relevance decides whether it is our business.
+        dropped = table[table["kenya_model"].fillna(0) < args.min_kenya]
+        print(f"\ndropping {len(dropped)} of {len(table)} communities below Kenya share {args.min_kenya}"
+              f" (largest: {dropped.nlargest(5, 'size')[['community', 'size', 'kenya_model']].to_dict('records')})")
+        scored = scored[~scored["community"].isin(set(dropped["community"]))]
+        table = table[~table["community"].isin(set(dropped["community"]))]
     scored["rank_in_group"] = scored.groupby("community").cumcount()
     listed = scored[scored["rank_in_group"] < args.per_group].head(args.budget)
     scored["listed"] = scored.index.isin(listed.index)

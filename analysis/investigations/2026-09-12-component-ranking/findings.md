@@ -132,3 +132,32 @@ Caveats kept attached: model verdicts; 21 cases per method; sizes mismatched
 One local download of the UAE pickle from the `iohunter-bench` volume came back
 with 86 zero-filled 64 KiB blocks and would not unpickle; a second download
 loaded cleanly (sha256 d6ddec3c...). Check the hash before trusting a copy.
+
+## 5. Ordering the listing by relevance
+
+A2 found a third of the listed communities were off-domain. `03_communities.py`
+now takes `--relevance-model` and `--min-kenya`: each account's share of posts
+the classifier calls Kenyan (`db.relevance_source`, same shape as
+`coord2_run.attach_relevance` uses the gate), averaged over a community's
+members, and communities below the floor are dropped. A filter, not a re-sort:
+the eigenvalue order is the coherence the detector fired on, and relevance only
+decides whether it is our business.
+
+The two separate cleanly. Kenyan communities score 0.92-0.98; the off-domain
+ones 0.00-0.45. At a 0.5 floor, 104 of 125 communities drop, including the
+823-account devotional group and the K-pop, anime and Mexican hashtag drives
+A2 read.
+
+| listing | communities | accounts | gate Kenya share (listed) mean / median | text-linked |
+|---|---|---|---|---|
+| eigenvalue only | 21 | 500 | 0.505 / 0.500 | 154 |
+| + relevance floor 0.2 | 28 | 472 | 0.635 / 0.744 | 123 |
+| + relevance floor 0.5 | 21 | 381 | 0.730 / 0.878 | 66 |
+
+Two of the kept communities are exactly what the classifier was built for: the
+gate puts them at 0.116 and 0.355 Kenya share, the model at 0.976 and 0.936.
+
+At the 0.5 floor the budget is not spent - 381 of 500 accounts - because only
+21 communities qualify and each contributes at most `--per-group` 25. Raising
+the cap or lowering the floor spends the rest; both are triage-budget choices,
+not detection ones.

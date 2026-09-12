@@ -431,6 +431,17 @@ def topics_source(platform: str = "*", model: str = "*") -> str:
     return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
 
 
+def relevance_source(platform: str = "*", model: str = "*") -> str:
+    """Learned Kenya-relevance probabilities, one row per post per model.
+
+    A second opinion on `kma.measure.domain_bucket`, not a replacement: the
+    gate still decides `kenya_share`. Readers pick a threshold themselves,
+    because the probability is persisted and the cut is not tuned.
+    """
+    glob = f"r2://{BUCKET}/relevance/platform={platform}/model={model}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
 def latest_topics(con: duckdb.DuckDBPyConnection, platform: str = "*", model: str = "*"):
     """One topic assignment per post (latest run), for a given model."""
     return con.sql(

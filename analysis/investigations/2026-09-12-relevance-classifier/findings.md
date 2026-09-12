@@ -55,3 +55,31 @@ human pass over a fresh sample is what would settle it.
 Not wired into production. `kma.measure.domain_bucket` still decides
 `kenya_share`; adopting the model means scoring the corpus and persisting a
 `relevance/` prefix, which is a separate decision.
+
+## Scored over the corpus
+
+1,281,210 posts (every post with text, latest copy) scored on mike-pc in 2,204 s
+(581/s, 3.60 GiB peak) and persisted as probabilities to
+`relevance/platform=x/model=kenya-relevance-afroxlmr-2026-09-12/`. The cut is
+not tuned, so the probability is what is stored; readers choose a threshold.
+
+At p >= 0.5 the model calls **37.7%** of the corpus Kenyan against the gate's
+**21.5%**. That is the size the gate's measured recall predicts: 0.215 / 0.655
+= 0.33. The distribution is bimodal - 58.5% below 0.1, 32.5% above 0.9 - and it
+agrees with the gate where the gate is strong (95.9% of its `kenya` bucket,
+1.5% of its `offdomain` bucket). The work happens in `ambiguous`, 76% of the
+corpus, of which it calls 22.5% Kenyan.
+
+Failure modes visible in `07_check_scores.py`'s samples, on 1.28M posts rather
+than the 91 of the B2 check:
+
+- **Near-empty posts ride on the handle.** "@StomaCop @WMPolice [emoji]" scores
+  0.80 - West Midlands Police, no Kenyan content. Replies to Kenyan politicians
+  are legitimately Kenyan, which is where the model learned it.
+- **Short slogans are missed:** "UDA Wantam" at 0.28.
+- **It fixes real gate errors:** Indian and French "DCP" posts drop out, Martha
+  Karua and Laikipia posts come in. Only 522 posts move the other way (gate
+  off-domain, model Kenyan).
+
+Anything adopting this should think about the first one - a floor on content
+words, or a higher threshold where precision matters.
