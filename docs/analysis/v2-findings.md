@@ -333,3 +333,14 @@ Every v2 group in the sample is held together almost entirely by text edges, so
 "v2 surfaces Kenyan activity" may be language rather than coordination, and is
 not to be quoted until the text trace and the ranking are fixed and A2 is
 redone.
+
+*Fixed 2026-09-12.* The text trace now strips @mentions and requires a
+word-overlap floor on every pair (`coord2.TEXT_MIN_OVERLAP`, 0.10 char-4gram
+Jaccard): 50,085 edges instead of 409,084, rebuilt on Modal and verified against
+an independent replay. The ranking was the harder half. The fused Kenya graph is
+one giant component, and its leading eigenvector localises on the densest core,
+so any top 500 is one block. Replacing the score fails the reproduction gate
+(per-component eigenvector 3/6, PageRank 3/6, global 6/6), so the score stays the
+paper's and the REPORT changes: Leiden communities over the fused graph, each
+ranked by its own leading eigenvector, the 500-account budget spread across 21
+communities. Detail: `analysis/investigations/2026-09-12-component-ranking/findings.md`.

@@ -63,6 +63,12 @@ out. **A2 is blocked on two fixes, not one: the text trace's pair precision and
 the ranking.** Neither result from the size-matched run stands until both are
 done and A2 is redone. See the textsim investigation's `findings.md`.
 
+*2026-09-12: both fixes made.* Text trace: mention stripping plus a word-overlap
+floor, rebuilt on Modal. Ranking: the paper's score is kept (alternatives fail
+the gate) and v2 reports by community instead of one global top 500. A2 redone
+on the community report: see the component-ranking investigation's
+`findings.md`.
+
 **A3. Unit of judgement - DECIDED 2026-09-08.**
 
 **Judge the campaign. Score the account.**
