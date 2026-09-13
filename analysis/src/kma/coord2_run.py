@@ -78,16 +78,21 @@ def build_networks(
     return networks, pd.DataFrame(sizes)
 
 
-def textsim_key(snapshot: str, threshold: float, platform: str = "x") -> str:
+def textsim_key(
+    snapshot: str, threshold: float, platform: str = "x", overlap: float | None = None
+) -> str:
     """Where a text-similarity trace for this snapshot and cut lives in R2.
 
     Threshold is in the key because it decides most of the ranking: at 0.85 the
     trace carries 409,084 edges, at 0.70 it would carry millions. Two runs at
-    different cuts are different traces, not versions of one.
+    different cuts are different traces, not versions of one. The word-overlap
+    floor is in it for the same reason - at 0.85 it keeps 106,061 of those
+    edges - and a trace built without one keeps the original path.
     """
+    floor = "" if overlap is None else f"/overlap={overlap:.2f}"
     return (
         f"coord2/platform={platform}/kind=textsim"
-        f"/snapshot={snapshot}/threshold={threshold:.2f}/edges.parquet"
+        f"/snapshot={snapshot}/threshold={threshold:.2f}{floor}/edges.parquet"
     )
 
 
@@ -128,18 +133,18 @@ def apply_text_floor(
 
 
 def load_textsim(
-    con: duckdb.DuckDBPyConnection, snapshot: str, threshold: float
+    con: duckdb.DuckDBPyConnection, snapshot: str, threshold: float, overlap: float | None = None
 ) -> pd.DataFrame:
     """Read the persisted text-similarity trace, or say exactly how to make it."""
-    key = textsim_key(snapshot, threshold)
+    key = textsim_key(snapshot, threshold, overlap=overlap)
     try:
         edges = con.sql(f"SELECT * FROM read_parquet('r2://{BUCKET}/{key}')").df()
     except duckdb.Error as exc:
         raise RuntimeError(
             f"no text-similarity trace at {key}. It is a GPU pass, so it is built "
-            f"separately and once per (snapshot, threshold):\n"
+            f"separately and once per (snapshot, threshold, overlap):\n"
             f"    cd analysis && uv run --with modal modal run modal_textsim.py "
-            f"--snapshot {snapshot} --threshold {threshold}\n"
+            f"--snapshot {snapshot} --threshold {threshold} --overlap {overlap or 0}\n"
             f"Then re-run this. Use --no-text to run without it, but note the "
             f"trace is over half the fused edges."
         ) from exc
@@ -152,6 +157,7 @@ def run(
     days: int | None = None,
     top: int = 500,
     text_threshold: float | None = 0.85,
+    text_overlap: float | None = coord2.TEXT_MIN_OVERLAP,
     con: duckdb.DuckDBPyConnection | None = None,
 ) -> RunResult:
     """One v2 pass over a pinned snapshot: traces, fusion, centrality, relevance.
@@ -171,7 +177,7 @@ def run(
     networks, sizes = build_networks(con, view)
 
     if text_threshold is not None:
-        edges = apply_text_floor(con, load_textsim(con, snapshot, text_threshold), view)
+        edges = apply_text_floor(con, load_textsim(con, snapshot, text_threshold, text_overlap), view)
         networks["text_similarity"] = edges
         sizes = pd.concat(
             [sizes, pd.DataFrame([{"trace": "text_similarity", "trace_rows": pd.NA,
@@ -199,12 +205,16 @@ def main() -> None:
     ap.add_argument("--days", type=int, default=0, help="0 for the whole snapshot")
     ap.add_argument("--top", type=int, default=500, help="triage budget, not a verdict")
     ap.add_argument("--text-threshold", type=float, default=0.85)
+    ap.add_argument("--text-overlap", type=float, default=coord2.TEXT_MIN_OVERLAP,
+                    help="word-overlap floor the text trace was built with; 0 for none")
     ap.add_argument("--no-text", action="store_true", help="skip the text-similarity trace")
     ap.add_argument("--persist", action="store_true", help="write the run to R2")
     args = ap.parse_args()
 
     threshold = None if args.no_text else args.text_threshold
-    result = run(args.snapshot, days=args.days or None, top=args.top, text_threshold=threshold)
+    overlap = args.text_overlap or None
+    result = run(args.snapshot, days=args.days or None, top=args.top, text_threshold=threshold,
+                 text_overlap=overlap)
 
     print(result.trace_sizes.to_string(index=False))
     print()
@@ -218,7 +228,7 @@ def main() -> None:
         con = connect()
         print("\npersisted:", persist(con, result.scores, snapshot=args.snapshot,
                                       trace_sizes=result.trace_sizes,
-                                      text_threshold=threshold))
+                                      text_threshold=threshold, text_overlap=overlap))
 
 
 if __name__ == "__main__":
@@ -232,6 +242,7 @@ def persist(
     snapshot: str,
     trace_sizes: pd.DataFrame,
     text_threshold: float | None = None,
+    text_overlap: float | None = None,
     platform: str = "x",
 ) -> str:
     """Write one v2 pass under its own R2 prefix.
@@ -251,6 +262,7 @@ def persist(
     buf["snapshot"] = snapshot
     buf["computed_at"] = now
     buf["text_threshold"] = text_threshold
+    buf["text_overlap"] = text_overlap
     buf["min_entities"] = coord2.MIN_ENTITIES_PER_USER
     for _, row in trace_sizes.iterrows():
         buf[f"edges_{row['trace']}"] = int(row["edges"])
@@ -271,27 +283,37 @@ def persist(
 
 
 def attach_relevance(
-    con: duckdb.DuckDBPyConnection, scores: pd.DataFrame, view: str
+    con: duckdb.DuckDBPyConnection, scores: pd.DataFrame, view: str, use_model: bool = True
 ) -> pd.DataFrame:
-    """Kenya share per surfaced account, from `kma.measure`'s domain bucket.
+    """Kenya share per surfaced account, from `kma.relevance`.
+
+    `use_model=False` puts it back on `measure.domain_bucket` alone, which is
+    what every figure recorded before 2026-09-13 was computed with.
 
     Detection says accounts act together; it cannot say whether they act
     together about Kenya. v1's strongest evidence tier was only 8.3%
     Kenya-referencing, which is what discredited it, so no v2 output should be
     read without this column beside it.
     """
-    from kma import measure
+    from kma import measure, relevance
 
     ids = scores["user_id"].astype(str).tolist()
     con.register("_ids", pd.DataFrame({"user_id": ids}))
     posts = con.sql(
-        f"SELECT p.user_id, p.text FROM ({view}) p JOIN _ids i ON CAST(p.user_id AS VARCHAR) = i.user_id"
+        f"SELECT p.post_id, p.user_id, p.text FROM ({view}) p "
+        "JOIN _ids i ON CAST(p.user_id AS VARCHAR) = i.user_id"
     ).df()
     con.unregister("_ids")
     if posts.empty:
         return scores.assign(kenya_share=np.nan, n_posts=0)
 
-    posts["bucket"] = [measure.domain_bucket(t) for t in posts["text"]]
+    # The learned gate where a post has been scored, the keyword one where it
+    # has not: recall 0.655 -> 1.000 on the human labels, and every Kenya share
+    # in v2's output rests on this column.
+    posts["bucket"] = (
+        relevance.buckets(con, posts) if use_model
+        else posts["text"].map(measure.domain_bucket)
+    )
     agg = posts.groupby("user_id").agg(
         n_posts=("bucket", "size"),
         kenya_share=("bucket", lambda b: float((b == "kenya").mean())),

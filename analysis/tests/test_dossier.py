@@ -169,10 +169,27 @@ def test_families_join_transitively_and_rank_by_members():
         "created_at": pd.date_range("2026-01-01", periods=5, tz="UTC"),
     })
 
-    got = dossier.near_duplicate_families(posts, vectors)
+    got = dossier.near_duplicate_families(posts, vectors, min_overlap=None)
 
     assert got["n_members"].tolist() == [3, 2]
     assert got.iloc[0]["text"] == "t1"
+
+
+def test_close_posts_that_share_no_words_are_not_an_exhibit():
+    """The production trace's second test. Without it most 0.85 pairs on this
+    corpus are unrelated Sheng replies, shown to the reader as if copied."""
+    import numpy as np
+
+    posts = pd.DataFrame({
+        "author_id": ["a1", "a2"], "author_handle": ["h1", "h2"],
+        "text": ["@KeKirwa Wakifumble hapa watakuwa kama wakamba na kalonzo",
+                 "@AokoOtieno_ Vitu zingine kama kuwa goons ni watu kujiamulia"],
+        "created_at": pd.to_datetime(["2026-07-06", "2026-08-15"], utc=True),
+    })
+    vectors = np.array([[1.0, 0.0], [0.95, 0.31]])
+
+    assert dossier.near_duplicate_families(posts, vectors).empty
+    assert not dossier.near_duplicate_families(posts, vectors, min_overlap=None).empty
 
 
 def test_a_packet_carries_the_evidence_a_reader_needs(con):
@@ -218,6 +235,27 @@ def test_provenance_is_aggregated_not_per_account(con):
     assert prov["share_empty_bio"] == 0.5
     assert prov["share_default_image"] == 1.0
     assert "author_id" not in prov and "handle" not in prov
+
+
+def test_the_learned_gate_overrides_the_lexicon_where_it_scored_the_post(con):
+    """`kenya_share` is what a reader weighs the packet against, and the lexicon
+    misses plain Kenyan politics that avoids its vocabulary (recall 0.655)."""
+    from kma import relevance
+
+    con.execute("CREATE TABLE relevance (platform_post_id VARCHAR, model VARCHAR,"
+                " p_kenya DOUBLE, scored_at TIMESTAMPTZ)")
+    # m2 is 'offdomain' to the lexicon; the classifier calls it Kenyan.
+    con.execute("INSERT INTO relevance VALUES ('m2', 'm', 0.99, now())")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(relevance, "relevance_source", lambda platform="x", model="*": "relevance")
+
+        share = dossier.build(con, MEMBERS)[0]["kenya"]["kenya_share"]
+
+    assert share == 1.0, "m1 by the lexicon, m2 by the model"
+
+
+def test_kenya_share_falls_back_to_the_lexicon_when_nothing_is_scored(con):
+    assert dossier.build(con, MEMBERS)[0]["kenya"]["kenya_share"] == 0.5
 
 
 def test_kenya_share_is_evidence_not_a_filter(con):

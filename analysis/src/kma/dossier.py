@@ -172,30 +172,40 @@ def shared_objects(
 
 
 def near_duplicate_families(
-    posts: pd.DataFrame, vectors: np.ndarray, threshold: float = TEXT_SIMILARITY
+    posts: pd.DataFrame,
+    vectors: np.ndarray,
+    threshold: float = TEXT_SIMILARITY,
+    min_overlap: float | None = coord2.TEXT_MIN_OVERLAP,
 ) -> pd.DataFrame:
-    """Posts that two or more DIFFERENT members wrote in near-identical words.
+    """Posts that two or more DIFFERENT members wrote in matching words.
 
     This is the text-similarity trace's co-action, which the retweet exhibit
     cannot show: a group v2 linked by what its members wrote has no objects in
-    common, and before this its packet arrived with no joint evidence at all -
-    measured on A2's size-matched run, all four of v2's `unclear` verdicts were
-    groups in exactly that state. Pairs are posts at or above `threshold` cosine
-    from different authors; a family is a connected set of them, so A~B and B~C
-    is one family even when A and C sit below the cut. One row per family, most
-    members first, shown by its earliest post."""
+    common, and before this its packet arrived with no joint evidence at all.
+    A pair is two posts from different authors at or above `threshold` cosine
+    AND, as in the production trace, at or above `min_overlap` word overlap
+    (`coord2.text_overlap` on cleaned text) - without that second test most
+    0.85 pairs on this corpus are unrelated Sheng replies, and the exhibit
+    would show them as if they were copies. A family is a connected set of
+    pairs, so A~B and B~C is one family even when A and C sit below the cut.
+    One row per family, most members first, shown by its earliest post."""
     if len(posts) < 2:
         return pd.DataFrame(columns=FAMILY_COLUMNS)
     posts = posts.reset_index(drop=True)
     unit = np.asarray(vectors, dtype=np.float32)
     unit = unit / np.clip(np.linalg.norm(unit, axis=1, keepdims=True), 1e-12, None)
     authors = posts["author_id"].to_numpy()
+    clean = (posts["clean"] if "clean" in posts else posts["text"].map(coord2.clean_text)).to_numpy()
 
     rows, cols = [], []
     for start in range(0, len(unit), 1024):
         i, j = np.nonzero(unit[start : start + 1024] @ unit.T >= threshold)
         i = i + start
         keep = (j > i) & (authors[i] != authors[j])
+        if min_overlap is not None and keep.any():
+            kept = np.flatnonzero(keep)
+            shared = np.array([coord2.text_overlap(clean[i[k]], clean[j[k]]) for k in kept])
+            keep[kept[shared < min_overlap]] = False
         rows.append(i[keep])
         cols.append(j[keep])
     rows, cols = np.concatenate(rows), np.concatenate(cols)
@@ -264,27 +274,45 @@ def shared_texts(
 
     con.register("_dos_text_ids", posts[["platform_post_id"]].drop_duplicates())
     try:
-        vectors = con.sql(
+        # Into a temp table, not a frame: a vector arrives in pandas as a list
+        # of 768 Python floats, so a corpus with full embedding coverage pulls
+        # gigabytes of objects in before a single family is computed - two A2
+        # runs were killed for memory that way. Held here, each cluster's
+        # vectors are fetched, stacked and dropped one cluster at a time.
+        con.execute("DROP TABLE IF EXISTS _dos_emb")
+        con.execute(
             f"""
+            CREATE TEMP TABLE _dos_emb AS
             SELECT e.platform_post_id, e.embedding
             FROM {embeddings_source(platform, semantic._slug(semantic.MODEL))} e
             SEMI JOIN _dos_text_ids i ON i.platform_post_id = e.platform_post_id
             QUALIFY row_number() OVER (
                 PARTITION BY e.platform_post_id ORDER BY e.embedded_at DESC) = 1
             """
-        ).df()
+        )
     except duckdb.Error:
         log.warning("dossier: embeddings unavailable; no near-identical-text exhibit")
         return pd.DataFrame(columns=columns)
     finally:
         con.unregister("_dos_text_ids")
 
-    joined = posts.merge(vectors, on="platform_post_id", how="inner")
     parts = []
-    for cid, group in joined.groupby("cluster_id"):
-        families = near_duplicate_families(group, np.vstack(group["embedding"].to_numpy()), threshold)
+    for cid, group in posts.groupby("cluster_id"):
+        con.register("_dos_cluster_ids", group[["platform_post_id"]])
+        try:
+            vectors = con.sql(
+                "SELECT e.platform_post_id, e.embedding FROM _dos_emb e "
+                "SEMI JOIN _dos_cluster_ids i ON i.platform_post_id = e.platform_post_id"
+            ).df()
+        finally:
+            con.unregister("_dos_cluster_ids")
+        if vectors.empty:
+            continue
+        joined = group.merge(vectors, on="platform_post_id", how="inner")
+        families = near_duplicate_families(joined, np.vstack(joined["embedding"].to_numpy()), threshold)
         if not families.empty:
             parts.append(families.head(max_texts).assign(cluster_id=cid))
+    con.execute("DROP TABLE IF EXISTS _dos_emb")
     if not parts:
         return pd.DataFrame(columns=columns)
     return pd.concat(parts, ignore_index=True)[columns]
@@ -358,14 +386,27 @@ def provenance(con: duckdb.DuckDBPyConnection, platform: str) -> pd.DataFrame:
     ).df()
 
 
-def kenya_share(con: duckdb.DuckDBPyConnection, platform: str) -> pd.DataFrame:
-    """Lexicon Kenya-relevance per cluster, from the persisted `domain` column.
+def kenya_share(con: duckdb.DuckDBPyConnection, platform: str, use_model: bool = True) -> pd.DataFrame:
+    """Kenya-relevance per cluster: the classifier where it scored the post,
+    the persisted lexicon `domain` column where it did not.
 
     Included as EVIDENCE for the reader, never as a filter here. The gate has
     two documented blind spots - it drops a genuinely Kenyan cluster that avoids
     anchor vocabulary, and misses an operation discussing Kenya obliquely - and
     closing the second is a large part of why a reader is in the loop at all.
     A reader who can see the share can also disagree with it."""
+    from kma import relevance
+
+    learned = (
+        f"LEFT JOIN ({relevance.latest_scores_cte(platform)}) r"
+        " ON r.platform_post_id = p.platform_post_id"
+        if use_model else ""
+    )
+    call = (
+        f"CASE WHEN r.p_kenya IS NOT NULL THEN (r.p_kenya >= {relevance.THRESHOLD})"
+        " ELSE h.domain = 'kenya' END"
+        if use_model else "h.domain = 'kenya'"
+    )
     try:
         return con.sql(
             f"""
@@ -376,14 +417,19 @@ def kenya_share(con: duckdb.DuckDBPyConnection, platform: str) -> pd.DataFrame:
             )
             SELECT m.cluster_id,
                    count(*) AS posts_classified,
-                   avg(CASE WHEN h.domain = 'kenya' THEN 1.0 ELSE 0.0 END) AS kenya_share
+                   avg(CASE WHEN {call} THEN 1.0 ELSE 0.0 END) AS kenya_share
             FROM _dos_members m
             JOIN _dos_posts p ON p.author_id = m.author_id
             JOIN h ON h.platform_post_id = p.platform_post_id
+            {learned}
             GROUP BY 1
             """
         ).df()
     except duckdb.Error:
+        if use_model:
+            # No scores persisted for this corpus yet: the gate still answers.
+            log.warning("dossier: relevance scores unavailable; using the keyword gate")
+            return kenya_share(con, platform, use_model=False)
         log.warning("dossier: Kenya-share unavailable; leaving it out of the packet")
         return pd.DataFrame(columns=["cluster_id", "posts_classified", "kenya_share"])
 

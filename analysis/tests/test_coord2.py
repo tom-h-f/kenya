@@ -419,6 +419,55 @@ def test_text_similarity_window_excludes_pairs_more_than_a_year_apart():
     ).empty
 
 
+def test_a_handle_is_not_a_word_the_author_wrote():
+    """Kept, "@x Good morning sir" made the four-word minimum and linked whole
+    greeting farms into the text trace."""
+    assert "x_weeep" not in coord2.clean_text("@x_weeep Good morning sir").split()
+    con, view = _con(pd.DataFrame([
+        _post("p1", "u1", text="@x_weeep @ShylaBaemy Good morning sir"),
+        _post("p2", "u2", text="the electoral commission rigged tallying centres nationwide"),
+    ]))
+    assert coord2.text_rows(con, view)["post_id"].tolist() == ["p2"]
+
+
+def test_text_overlap_is_char_gram_jaccard():
+    assert coord2.text_overlap("vurugu tena", "vurugu tena") == 1.0
+    assert coord2.text_overlap("vurugu tena", "good morning") == 0.0
+    assert coord2.text_overlap("", "anything") == 0.0
+    assert 0.0 < coord2.text_overlap("wanaharakati walishindwa", "wanaharakati wameshindwa") < 1.0
+
+
+def _floor_fixture() -> tuple[pd.DataFrame, np.ndarray]:
+    """Three posts close in the embedding; only two share their words."""
+    rows = pd.DataFrame({
+        "post_id": ["p1", "p2", "p3"],
+        "user_id": ["u1", "u2", "u3"],
+        "created_at": [BASE, BASE + timedelta(hours=1), BASE + timedelta(hours=2)],
+        "clean": ["wanaharakati walishindwa kuleta vurugu",
+                  "wanaharakati walishindwa kuleta vurugu tena",
+                  "kula ngoma uachie wamama fitina"],
+    })
+    return rows, np.array([[1.0, 0.0], [0.99, 0.141], [0.98, 0.199]])
+
+
+def test_the_overlap_floor_drops_close_vectors_that_share_no_words():
+    """Measured on the Kenya corpus: at cosine 0.85 most pairs are unrelated
+    Sheng replies that merely sit near each other in the encoder's space."""
+    rows, vectors = _floor_fixture()
+    pairs = lambda edges: set(zip(edges["source"], edges["target"], strict=True))
+
+    assert pairs(coord2.text_similarity_network(rows, vectors, threshold=0.9)) == {
+        ("u1", "u2"), ("u1", "u3"), ("u2", "u3")}
+    assert pairs(coord2.text_similarity_network(
+        rows, vectors, threshold=0.9, min_overlap=coord2.TEXT_MIN_OVERLAP)) == {("u1", "u2")}
+
+
+def test_the_overlap_floor_needs_the_cleaned_text():
+    rows, vectors = _floor_fixture()
+    with pytest.raises(ValueError, match="clean"):
+        coord2.text_similarity_network(rows.drop(columns="clean"), vectors, threshold=0.9, min_overlap=0.1)
+
+
 def test_text_similarity_threshold_is_derived_from_the_observed_distribution():
     """A percentile, not the paper's 0.95: the threshold has to be re-derived
     per embedding space, because a cosine value does not port between spaces."""
@@ -835,6 +884,17 @@ def test_text_floor_keeps_edges_between_active_accounts():
     con, view = _con(posts)
     edges = pd.DataFrame({"source": ["a"], "target": ["b"], "weight": [0.9]})
     assert len(coord2_run.apply_text_floor(con, edges, view)) == 1
+
+
+def test_a_floored_text_trace_never_shares_a_path_with_an_unfloored_one():
+    """At 0.85 the floor keeps about a quarter of the edges. Two such traces at
+    one path would be told apart only by file timestamp."""
+    from kma import coord2_run
+
+    plain = coord2_run.textsim_key("snap", 0.85)
+    floored = coord2_run.textsim_key("snap", 0.85, overlap=0.10)
+    assert plain.endswith("/threshold=0.85/edges.parquet"), "existing traces keep their path"
+    assert "/overlap=0.10/" in floored and floored != plain
 
 
 def test_ioa_view_reads_a_truncated_slice(tmp_path):

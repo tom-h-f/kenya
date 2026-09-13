@@ -177,7 +177,7 @@ def test_judge_uses_an_injected_client(monkeypatch):
     assert got["cluster_id"] == 7
 
 
-def test_near_identical_writing_is_shown_as_co_action_before_members_own_posts():
+def test_matching_writing_is_shown_as_co_action_before_members_own_posts():
     """A group v2 linked by text similarity has no jointly amplified objects; its
     co-action is what several members wrote. Filed under members' own posts, the
     rubric told the reader to discount exactly the evidence the detector used."""
@@ -187,10 +187,13 @@ def test_near_identical_writing_is_shown_as_co_action_before_members_own_posts()
     ])
     text = adj.render(packet)
 
-    assert text.index("NEAR-IDENTICAL") < text.index("MEMBERS POST THEMSELVES")
+    assert text.index("MATCHING WORDS") < text.index("MEMBERS POST THEMSELVES")
     assert "[4 members] @member_one: Vote for change this August" in text
 
 
-def test_the_system_prompt_counts_near_identical_writing_as_joint_evidence():
-    assert "near-identical" in adj.SYSTEM
+def test_the_system_prompt_counts_matching_writing_as_joint_evidence():
+    """Not "near-identical": the trace's floor is shared words, and paraphrased
+    campaigns pass it while sharing well under half their wording."""
+    assert "matching words" in adj.SYSTEM
+    assert "near-identical" not in adj.SYSTEM
     assert adj.RUBRIC_VERSION
