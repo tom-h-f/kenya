@@ -142,6 +142,9 @@ class ReplayState:
     t: datetime
     posts: str
     engagements: str | None = None
+    # The toxic arm ranks by hate score, so it needs this; the baseline arm
+    # never reads it. Clipped at `t` like the others, by object write time.
+    hatespeech: str | None = None
     # This policy's OWN fetch history, not the corpus's. A counterfactual policy
     # censused a different set, so its TTL must be evaluated against what IT
     # fetched; the driver seeds this from the corpus before the replay window and
@@ -407,6 +410,7 @@ def state_at(
         t=t,
         posts=posts,
         engagements=clipped_source(manifest, "engagements", t, **filters),
+        hatespeech=clipped_source(manifest, "hatespeech", t, column="scored_at"),
         censused_at=dict(censused_at or {}),
     )
 
@@ -528,6 +532,133 @@ class IncumbentCensus:
         return [
             FetchRequest("retweeters", str(oid), self.request_cost(int(deg)), rank)
             for rank, (oid, deg) in enumerate(rows)
+        ]
+
+
+@dataclass(frozen=True)
+class ToxicCensus:
+    """The census's SECOND arm, as a replayable policy.
+
+    A port of `hate_signal.hot_toxic_objects`'s retweeted arm, the way
+    `IncumbentCensus` ports the baseline one. Ranks ORIGINAL posts by their own
+    `repost_count` and hate score, where the baseline ranks `repost_of_id` off
+    retweet rows, so the two select different things and overlap only by
+    accident.
+
+    This exists because per-id reproduction was stuck: a pass counts as clean
+    only when the baseline arm selected inside its cap, and from 2026-09-01
+    every pass appended this arm (mean selected 300-420 against a cap of 250).
+    With one arm modelled, those passes score the appended objects as
+    observed-but-not-replayed and recall cannot reach the bar however correct
+    the port is.
+
+    Deployed values (`hate_signal`, `config`): 14-day window - much longer than
+    the baseline's 2 days, because a post has to be scored before it can be
+    ranked - band 3..100, 250 objects, 12-hour TTL.
+    """
+
+    band_min: int = 3
+    band_max: int = 100
+    lookback_days: int = 14
+    top_retweeted: int = 250
+    refresh_hours: int = 12
+    retweeters_limit: int = 300
+    page_size: int = RETWEETERS_PAGE
+    name: str = "toxic"
+
+    def params(self) -> dict[str, object]:
+        return {
+            "band_min": self.band_min,
+            "band_max": self.band_max,
+            "lookback_days": self.lookback_days,
+            "top_retweeted": self.top_retweeted,
+            "refresh_hours": self.refresh_hours,
+        }
+
+    def request_cost(self, degree: int) -> int:
+        capped = min(int(degree), int(self.retweeters_limit))
+        return max(1, math.ceil(capped / self.page_size))
+
+    def candidates(self, state: ReplayState) -> list[FetchRequest]:
+        if state.hatespeech is None:
+            # Before the first hate score was written there was no second arm,
+            # which is a real state of the corpus rather than a failure.
+            return []
+        ledger = state.censused_relation()
+        cutoff = _iso(state.t - timedelta(hours=self.refresh_hours))
+        # `_toxic_expr`, degraded: the scored schema gained `coded_suspect` and
+        # `in_kenya_scope` later, and a replay reads whichever columns the rows
+        # written before `t` actually carry.
+        columns = set(state.con.sql(f"SELECT * FROM {state.hatespeech} LIMIT 0").df().columns)
+        toxic = "(h.label <> 'neither' OR COALESCE(h.hate_flag, FALSE))"
+        if "coded_suspect" in columns:
+            toxic = f"({toxic} OR COALESCE(h.coded_suspect, FALSE))"
+        if "in_kenya_scope" in columns:
+            toxic = f"({toxic} AND COALESCE(h.in_kenya_scope, TRUE))"
+        rows = state.con.sql(
+            f"""
+            WITH lp AS (
+                SELECT * FROM {state.posts}
+                WHERE dt >= CAST(TIMESTAMPTZ '{_iso(state.t)}'
+                                 - INTERVAL {int(self.lookback_days) + 1} DAY AS DATE)
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+                ) = 1
+            ), lh AS (
+                SELECT * FROM {state.hatespeech}
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform_post_id ORDER BY scored_at DESC
+                ) = 1
+            ), flag AS (
+                SELECT h.platform_post_id, {toxic} AS toxic, h.p_hate FROM lh h
+            ), recent AS (
+                SELECT lp.*, COALESCE(f.toxic, FALSE) AS toxic, f.p_hate
+                FROM lp LEFT JOIN flag f USING (platform_post_id)
+                WHERE lp.created_at > TIMESTAMPTZ '{_iso(state.t)}'
+                                      - INTERVAL {int(self.lookback_days)} DAY
+            )
+            SELECT platform_post_id, COALESCE(repost_count, 0) AS deg FROM recent
+            WHERE toxic AND NOT COALESCE(is_repost, FALSE)
+              AND COALESCE(repost_count, 0) BETWEEN {int(self.band_min)} AND {int(self.band_max)}
+              AND NOT EXISTS (
+                  SELECT 1 FROM {ledger} l
+                  WHERE l.target = recent.platform_post_id
+                    AND l.censused_at > TIMESTAMPTZ '{cutoff}'
+              )
+            ORDER BY repost_count DESC NULLS LAST, p_hate DESC NULLS LAST
+            LIMIT {int(self.top_retweeted)}
+            """
+        ).fetchall()
+        return [
+            FetchRequest("retweeters", str(oid), self.request_cost(int(deg)), rank)
+            for rank, (oid, deg) in enumerate(rows)
+        ]
+
+
+@dataclass(frozen=True)
+class MergedCensus:
+    """Both arms, the way `runner.select_census_objects` merges them.
+
+    Baseline first, toxic APPENDED and de-duplicated against it - the live
+    merge keeps the baseline order intact so a rate-limit abort truncates the
+    discretionary tail rather than the baseline. Ranks continue from the end of
+    the baseline arm, so `budget` truncates in the same place.
+    """
+
+    baseline: IncumbentCensus = field(default_factory=IncumbentCensus)
+    toxic: ToxicCensus = field(default_factory=ToxicCensus)
+    name: str = "merged"
+
+    def params(self) -> dict[str, object]:
+        return {"baseline": self.baseline.params(), "toxic": self.toxic.params()}
+
+    def candidates(self, state: ReplayState) -> list[FetchRequest]:
+        base = list(self.baseline.candidates(state))
+        seen = {r.target for r in base}
+        extra = [r for r in self.toxic.candidates(state) if r.target not in seen]
+        return base + [
+            FetchRequest(r.kind, r.target, r.requests, len(base) + i)
+            for i, r in enumerate(extra)
         ]
 
 
@@ -1124,6 +1255,12 @@ def main() -> None:
     )
     ap.add_argument("--band-max", type=int, default=None, help="candidate band ceiling; omit for unbanded")
     ap.add_argument(
+        "--arms",
+        choices=("baseline", "merged"),
+        default="merged",
+        help="which census arms to replay; the collector has run both since 2026-09-01",
+    )
+    ap.add_argument(
         "--clean-only",
         action="store_true",
         help="replay only passes where the baseline arm selected alone (see clean_pass_times)",
@@ -1148,7 +1285,8 @@ def main() -> None:
     print(f"replaying {len(times)} passes, {_iso(times[0])} .. {_iso(times[-1])}")
 
     if args.reproduce:
-        rep = reproduce(con, manifest=manifest, times=times, snapshot=args.snapshot)
+        policy = MergedCensus() if args.arms == "merged" else IncumbentCensus()
+        rep = reproduce(con, manifest=manifest, times=times, snapshot=args.snapshot, policy=policy)
         print(rep.per_pass.to_string(index=False))
         agree = selection_agreement(con, rep.per_pass)
         if not agree.empty:

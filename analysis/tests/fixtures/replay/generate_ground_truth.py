@@ -42,6 +42,7 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from kenya_monitor.hate_signal import hot_toxic_objects
 from kenya_monitor.runner import hot_objects
 from kenya_monitor.storage import ENGAGEMENT_SCHEMA, POST_SCHEMA
 
@@ -63,6 +64,41 @@ BATCH_TIMES = [
     REFERENCE + timedelta(hours=1, minutes=30),
     REFERENCE + timedelta(hours=4, minutes=30),
 ]
+
+# The toxic arm ranks ORIGINAL posts by their own repost_count and hate score,
+# over a 14-day window - the baseline's 2 days is far too short for a post to be
+# scored first. Its selections are recorded beside the baseline's so the port of
+# each is tested against the implementation it copies.
+TOXIC_PARAMS = {
+    "lookback_days": 14,
+    "top_retweeted": 5,
+    "top_conversations": 5,
+    "band_min": 3,
+    "band_max": 100,
+    "refresh_hours": 12,
+}
+
+# Which originals carry a toxic score, and when it was written. o05 is scored
+# only after pass 2, so a replay that ignores `scored_at` selects it too early.
+TOXIC_SCORES = [
+    ("o04", "hate", True, 0.91, REFERENCE - timedelta(hours=2)),
+    ("o06", "offensive", False, 0.44, REFERENCE - timedelta(hours=2)),
+    ("o08", "neither", False, 0.02, REFERENCE - timedelta(hours=2)),
+    ("o09", "hate", True, 0.77, REFERENCE - timedelta(hours=2)),
+    ("o10", "hate", True, 0.66, REFERENCE - timedelta(hours=2)),
+    ("o13", "hate", True, 0.88, REFERENCE + timedelta(hours=2)),
+    ("o05", "hate", True, 0.95, REFERENCE + timedelta(hours=4)),
+    ("o11", "hate", True, 0.99, REFERENCE - timedelta(hours=2)),
+]
+
+HATE_SCHEMA = pa.schema([
+    ("platform_post_id", pa.string()),
+    ("label", pa.string()),
+    ("hate_flag", pa.bool_()),
+    ("p_hate", pa.float64()),
+    ("domain", pa.string()),
+    ("scored_at", pa.timestamp("us", tz="UTC")),
+])
 
 PARAMS = {
     "lookback_days": 2,
@@ -149,6 +185,45 @@ def _post_rows() -> list[dict]:
     return rows
 
 
+def _original_rows() -> list[dict]:
+    """One ORIGINAL post per object, which is what the toxic arm ranks.
+
+    The baseline arm ranks `repost_of_id` off retweet rows and never reads
+    these; the toxic arm ranks `platform_post_id` off the original's own
+    `repost_count`. Both arms therefore see the same objects through different
+    rows, which is exactly the confusion a port can make silently.
+    """
+    rows = []
+    for oid, degree, _n_rows, batch in OBJECTS:
+        row = dict(_post_rows()[0])
+        row.update({
+            "platform_post_id": oid,
+            "author_id": f"orig{int(oid[1:]):03d}",
+            "text": f"original {oid}",
+            "is_repost": False,
+            "repost_of_id": None,
+            "repost_count": degree,
+            "conversation_id": oid,
+            "collected_at": BATCH_TIMES[batch],
+        })
+        rows.append(row)
+    return rows
+
+
+def _hate_rows() -> list[dict]:
+    return [
+        {
+            "platform_post_id": oid,
+            "label": label,
+            "hate_flag": flag,
+            "p_hate": p,
+            "domain": "kenya",
+            "scored_at": when,
+        }
+        for oid, label, flag, p, when in TOXIC_SCORES
+    ]
+
+
 def _retweeters(oid: str, degree: int, limit: int) -> list[str]:
     """Deterministic amplifier ids with deliberate overlap between objects, so
     the TF-IDF projection has co-amplification pairs to find."""
@@ -214,9 +289,11 @@ def _exists(root: Path, prefix: str) -> bool:
 
 
 def main() -> None:
-    posts = _post_rows()
+    posts = _post_rows() + _original_rows()
+    hate = _hate_rows()
     engagement_rows: list[dict] = []
     selections: list[list[str]] = []
+    toxic_selections: list[list[str]] = []
 
     corpus = HERE / "corpus"
     if corpus.exists():
@@ -227,6 +304,12 @@ def main() -> None:
             [r for r in posts if r["collected_at"] == when],
             POST_SCHEMA,
             corpus / (_key("posts", when, type_="search") + ".csv"),
+        )
+    for when in sorted({r["scored_at"] for r in hate}):
+        _write_csv(
+            [r for r in hate if r["scored_at"] == when],
+            HATE_SCHEMA,
+            corpus / (_key("hatespeech", when) + ".csv"),
         )
 
     for pass_time in PASS_TIMES:
@@ -254,6 +337,12 @@ def main() -> None:
                 )
                 _write(rows, ENGAGEMENT_SCHEMA, staging / _key("engagements", when + shift))
 
+            for when in sorted({r["scored_at"] for r in hate}):
+                if when > pass_time:
+                    continue
+                rows = _shift([r for r in hate if r["scored_at"] == when], shift, ("scored_at",))
+                _write(rows, HATE_SCHEMA, staging / _key("hatespeech", when + shift))
+
             con = duckdb.connect()
             retweeted, _conversations, _missing = hot_objects(
                 con,
@@ -268,10 +357,25 @@ def main() -> None:
                 None,
                 PARAMS["refresh_hours"],
             )
+            toxic_rt: list[str] = []
+            if _exists(staging, "hatespeech"):
+                toxic_rt, _conv, _miss = hot_toxic_objects(
+                    con,
+                    _glob(staging, "hatespeech"),
+                    _glob(staging, "posts", "*"),
+                    TOXIC_PARAMS["lookback_days"],
+                    TOXIC_PARAMS["top_retweeted"],
+                    TOXIC_PARAMS["top_conversations"],
+                    TOXIC_PARAMS["band_min"],
+                    TOXIC_PARAMS["band_max"],
+                    _glob(staging, "engagements") if _exists(staging, "engagements") else None,
+                    TOXIC_PARAMS["refresh_hours"],
+                )
             con.close()
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
+        toxic_selections.append(list(toxic_rt))
         selections.append(list(retweeted))
         print(f"{pass_time.isoformat()} -> {retweeted}")
 
@@ -300,6 +404,12 @@ def main() -> None:
         "generated_at": datetime.now(UTC).isoformat(),
         "generator": "analysis/tests/fixtures/replay/generate_ground_truth.py",
         "selector": "kenya_monitor.runner.hot_objects (retweeted arm)",
+        "toxic_selector": "kenya_monitor.hate_signal.hot_toxic_objects (retweeted arm)",
+        "toxic_params": TOXIC_PARAMS,
+        "toxic_scores": [
+            {"id": oid, "label": label, "hate_flag": flag, "p_hate": p, "scored_at": when.isoformat()}
+            for oid, label, flag, p, when in TOXIC_SCORES
+        ],
         "reference": REFERENCE.isoformat(),
         "pass_times": [t.isoformat() for t in PASS_TIMES],
         "params": PARAMS,
@@ -307,6 +417,7 @@ def main() -> None:
             {"id": oid, "degree": deg, "rows": n, "batch": b} for oid, deg, n, b in OBJECTS
         ],
         "selected": selections,
+        "selected_toxic": toxic_selections,
     }
     (HERE / "ground_truth.json").write_text(json.dumps(ground_truth, indent=2) + "\n")
     print(f"wrote {HERE / 'ground_truth.json'}")
