@@ -386,14 +386,27 @@ def provenance(con: duckdb.DuckDBPyConnection, platform: str) -> pd.DataFrame:
     ).df()
 
 
-def kenya_share(con: duckdb.DuckDBPyConnection, platform: str) -> pd.DataFrame:
-    """Lexicon Kenya-relevance per cluster, from the persisted `domain` column.
+def kenya_share(con: duckdb.DuckDBPyConnection, platform: str, use_model: bool = True) -> pd.DataFrame:
+    """Kenya-relevance per cluster: the classifier where it scored the post,
+    the persisted lexicon `domain` column where it did not.
 
     Included as EVIDENCE for the reader, never as a filter here. The gate has
     two documented blind spots - it drops a genuinely Kenyan cluster that avoids
     anchor vocabulary, and misses an operation discussing Kenya obliquely - and
     closing the second is a large part of why a reader is in the loop at all.
     A reader who can see the share can also disagree with it."""
+    from kma import relevance
+
+    learned = (
+        f"LEFT JOIN ({relevance.latest_scores_cte(platform)}) r"
+        " ON r.platform_post_id = p.platform_post_id"
+        if use_model else ""
+    )
+    call = (
+        f"CASE WHEN r.p_kenya IS NOT NULL THEN (r.p_kenya >= {relevance.THRESHOLD})"
+        " ELSE h.domain = 'kenya' END"
+        if use_model else "h.domain = 'kenya'"
+    )
     try:
         return con.sql(
             f"""
@@ -404,14 +417,19 @@ def kenya_share(con: duckdb.DuckDBPyConnection, platform: str) -> pd.DataFrame:
             )
             SELECT m.cluster_id,
                    count(*) AS posts_classified,
-                   avg(CASE WHEN h.domain = 'kenya' THEN 1.0 ELSE 0.0 END) AS kenya_share
+                   avg(CASE WHEN {call} THEN 1.0 ELSE 0.0 END) AS kenya_share
             FROM _dos_members m
             JOIN _dos_posts p ON p.author_id = m.author_id
             JOIN h ON h.platform_post_id = p.platform_post_id
+            {learned}
             GROUP BY 1
             """
         ).df()
     except duckdb.Error:
+        if use_model:
+            # No scores persisted for this corpus yet: the gate still answers.
+            log.warning("dossier: relevance scores unavailable; using the keyword gate")
+            return kenya_share(con, platform, use_model=False)
         log.warning("dossier: Kenya-share unavailable; leaving it out of the packet")
         return pd.DataFrame(columns=["cluster_id", "posts_classified", "kenya_share"])
 

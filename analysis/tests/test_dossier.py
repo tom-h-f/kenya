@@ -237,6 +237,27 @@ def test_provenance_is_aggregated_not_per_account(con):
     assert "author_id" not in prov and "handle" not in prov
 
 
+def test_the_learned_gate_overrides_the_lexicon_where_it_scored_the_post(con):
+    """`kenya_share` is what a reader weighs the packet against, and the lexicon
+    misses plain Kenyan politics that avoids its vocabulary (recall 0.655)."""
+    from kma import relevance
+
+    con.execute("CREATE TABLE relevance (platform_post_id VARCHAR, model VARCHAR,"
+                " p_kenya DOUBLE, scored_at TIMESTAMPTZ)")
+    # m2 is 'offdomain' to the lexicon; the classifier calls it Kenyan.
+    con.execute("INSERT INTO relevance VALUES ('m2', 'm', 0.99, now())")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(relevance, "relevance_source", lambda platform="x", model="*": "relevance")
+
+        share = dossier.build(con, MEMBERS)[0]["kenya"]["kenya_share"]
+
+    assert share == 1.0, "m1 by the lexicon, m2 by the model"
+
+
+def test_kenya_share_falls_back_to_the_lexicon_when_nothing_is_scored(con):
+    assert dossier.build(con, MEMBERS)[0]["kenya"]["kenya_share"] == 0.5
+
+
 def test_kenya_share_is_evidence_not_a_filter(con):
     """The gate has documented blind spots, so the packet reports the share and
     leaves the judgement to the reader - it must not drop the cluster."""

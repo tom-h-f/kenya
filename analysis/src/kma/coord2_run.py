@@ -283,27 +283,37 @@ def persist(
 
 
 def attach_relevance(
-    con: duckdb.DuckDBPyConnection, scores: pd.DataFrame, view: str
+    con: duckdb.DuckDBPyConnection, scores: pd.DataFrame, view: str, use_model: bool = True
 ) -> pd.DataFrame:
-    """Kenya share per surfaced account, from `kma.measure`'s domain bucket.
+    """Kenya share per surfaced account, from `kma.relevance`.
+
+    `use_model=False` puts it back on `measure.domain_bucket` alone, which is
+    what every figure recorded before 2026-09-13 was computed with.
 
     Detection says accounts act together; it cannot say whether they act
     together about Kenya. v1's strongest evidence tier was only 8.3%
     Kenya-referencing, which is what discredited it, so no v2 output should be
     read without this column beside it.
     """
-    from kma import measure
+    from kma import measure, relevance
 
     ids = scores["user_id"].astype(str).tolist()
     con.register("_ids", pd.DataFrame({"user_id": ids}))
     posts = con.sql(
-        f"SELECT p.user_id, p.text FROM ({view}) p JOIN _ids i ON CAST(p.user_id AS VARCHAR) = i.user_id"
+        f"SELECT p.post_id, p.user_id, p.text FROM ({view}) p "
+        "JOIN _ids i ON CAST(p.user_id AS VARCHAR) = i.user_id"
     ).df()
     con.unregister("_ids")
     if posts.empty:
         return scores.assign(kenya_share=np.nan, n_posts=0)
 
-    posts["bucket"] = [measure.domain_bucket(t) for t in posts["text"]]
+    # The learned gate where a post has been scored, the keyword one where it
+    # has not: recall 0.655 -> 1.000 on the human labels, and every Kenya share
+    # in v2's output rests on this column.
+    posts["bucket"] = (
+        relevance.buckets(con, posts) if use_model
+        else posts["text"].map(measure.domain_bucket)
+    )
     agg = posts.groupby("user_id").agg(
         n_posts=("bucket", "size"),
         kenya_share=("bucket", lambda b: float((b == "kenya").mean())),

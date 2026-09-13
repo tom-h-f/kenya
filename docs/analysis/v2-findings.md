@@ -345,6 +345,19 @@ paper's and the REPORT changes: Leiden communities over the fused graph, each
 ranked by its own leading eigenvector, the 500-account budget spread across 21
 communities. Detail: `analysis/investigations/2026-09-12-component-ranking/findings.md`.
 
+*The learned gate is adopted, 2026-09-13.* `kma.relevance` now decides
+`kenya_share` in the analysis layer - the classifier's call where a post has a
+persisted score, `measure.domain_bucket` where it does not (posts collected
+since the last scoring pass, and any corpus with no scores at all). It reaches
+`coord2_run.attach_relevance` and the dossier's Kenya block; both take
+`use_model=False` to reproduce the old figures. **Every Kenya-share figure
+recorded before this date was computed with the keyword gate**, whose measured
+recall is 0.655 against 1.000 for the model, so they understate relevance and
+are not comparable with figures computed after it. The collector's own
+promotion gate (`CLUSTER_MIN_KENYA_SHARE`, SQL in `adaptive.py`) is unchanged:
+it runs on pi0 inside a 600 MB budget and joining a 1.28M-row prefix per pass
+has not been measured there.
+
 *A2 redone on the community report, 2026-09-12.* 21 listed v2 communities
 against 21 size-matched v1 clusters, read blind: v1 2 political and 3
 Kenya-relevant, v2 6 political and 12 Kenya-relevant. No influence operation on
