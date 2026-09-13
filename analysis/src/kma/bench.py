@@ -55,7 +55,7 @@ PREFIXES = (
 SNAPSHOT_PREFIX = "bench"
 
 
-def _r2_client():
+def _r2_client(config=None):
     import boto3
 
     return boto3.client(
@@ -64,6 +64,7 @@ def _r2_client():
         aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
         region_name="auto",
+        config=config,
     )
 
 

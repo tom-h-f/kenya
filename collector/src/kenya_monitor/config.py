@@ -249,6 +249,11 @@ CLUSTER_MIN_KENYA_SHARE = float(os.getenv("CLUSTER_MIN_KENYA_SHARE", "0.15"))
 # #thirstyformore and #citizenweekend all cleared it, and their posts landed in
 # the BASELINE search partition.
 KEYWORD_MIN_KENYA_SHARE = float(os.getenv("KEYWORD_MIN_KENYA_SHARE", "0.10"))
+# Where a post's learned relevance probability counts as Kenyan. The analysis
+# side persists probabilities rather than verdicts because this cut is not
+# tuned: 0.5 is where the classifier was evaluated (precision 0.918, recall
+# 1.000 against hand labels, against 0.971 / 0.655 for the keyword gate).
+CLUSTER_RELEVANCE_THRESHOLD = float(os.getenv("CLUSTER_RELEVANCE_THRESHOLD", "0.5"))
 
 # Hate-seeking collection (docs/collection/hate-seeking.md). Runs as its own
 # cycle step with its own concurrency, never merged into the baseline keyword

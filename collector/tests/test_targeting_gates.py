@@ -117,6 +117,86 @@ def test_off_domain_cluster_is_not_promoted():
     assert got == ["kenyan_acct"]
 
 
+def _relevance(con, rows: list[dict]):
+    con.register(
+        "relevance_tbl",
+        pa.Table.from_pylist(
+            rows or [],
+            schema=pa.schema([
+                ("platform_post_id", pa.string()), ("p_kenya", pa.float64()),
+                ("scored_at", pa.timestamp("us", tz="UTC")),
+            ]),
+        ),
+    )
+    return "relevance_tbl"
+
+
+def test_the_learned_gate_promotes_a_cluster_the_lexicon_misses():
+    """The keyword gate's recall is 0.655 and its misses are plain Kenyan
+    politics without the anchor vocabulary - the clusters most worth chasing."""
+    posts, hate = _posts_for("1", ["ambiguous"] * 10)
+    con = _con([_cluster("1", 0, 2)], [_author("1", "oblique_acct")], posts, hate)
+    view = _relevance(con, [{"platform_post_id": p["platform_post_id"], "p_kenya": 0.98,
+                             "scored_at": NOW} for p in posts])
+
+    assert cluster_accounts(
+        con, "clusters_tbl", "authors_tbl", posts_view="posts_tbl",
+        hatespeech_view="hate_tbl", min_channels=2, min_kenya_share=0.15,
+    ) == [], "the lexicon alone sees nothing Kenyan here"
+
+    assert cluster_accounts(
+        con, "clusters_tbl", "authors_tbl", posts_view="posts_tbl",
+        hatespeech_view="hate_tbl", min_channels=2, min_kenya_share=0.15,
+        relevance_view=view,
+    ) == ["oblique_acct"]
+
+
+def test_the_learned_gate_also_rejects_what_the_lexicon_over_calls():
+    """It cuts both ways: Indian 'DCP' posts and French 'dcp' tripped the
+    lexicon, and the model drops them."""
+    posts, hate = _posts_for("1", ["kenya"] * 10)
+    con = _con([_cluster("1", 0, 2)], [_author("1", "false_hit")], posts, hate)
+    view = _relevance(con, [{"platform_post_id": p["platform_post_id"], "p_kenya": 0.01,
+                             "scored_at": NOW} for p in posts])
+
+    assert cluster_accounts(
+        con, "clusters_tbl", "authors_tbl", posts_view="posts_tbl",
+        hatespeech_view="hate_tbl", min_channels=2, min_kenya_share=0.15,
+        relevance_view=view,
+    ) == []
+
+
+def test_posts_the_scorer_has_not_reached_keep_the_lexicon_call():
+    """Scores arrive a pass behind collection, so a mixed cluster is normal and
+    must not be decided by the unscored half."""
+    posts, hate = _posts_for("1", ["kenya"] * 10)
+    con = _con([_cluster("1", 0, 2)], [_author("1", "half_scored")], posts, hate)
+    view = _relevance(con, [{"platform_post_id": posts[0]["platform_post_id"],
+                             "p_kenya": 0.01, "scored_at": NOW}])
+
+    assert cluster_accounts(
+        con, "clusters_tbl", "authors_tbl", posts_view="posts_tbl",
+        hatespeech_view="hate_tbl", min_channels=2, min_kenya_share=0.15,
+        relevance_view=view,
+    ) == ["half_scored"], "nine lexicon-Kenyan posts still carry the cluster"
+
+
+def test_the_latest_relevance_score_decides():
+    posts, hate = _posts_for("1", ["ambiguous"] * 4)
+    con = _con([_cluster("1", 0, 2)], [_author("1", "rescored")], posts, hate)
+    rows = []
+    for p in posts:
+        rows.append({"platform_post_id": p["platform_post_id"], "p_kenya": 0.01,
+                     "scored_at": NOW - timedelta(days=2)})
+        rows.append({"platform_post_id": p["platform_post_id"], "p_kenya": 0.99, "scored_at": NOW})
+
+    assert cluster_accounts(
+        con, "clusters_tbl", "authors_tbl", posts_view="posts_tbl",
+        hatespeech_view="hate_tbl", min_channels=2, min_kenya_share=0.15,
+        relevance_view=_relevance(con, rows),
+    ) == ["rescored"]
+
+
 def test_single_channel_cluster_is_rejected_on_the_floor():
     p, h = _posts_for("1", ["kenya"] * 10)
     con = _con([_cluster("1", 0, 1)], [_author("1", "solo")], p, h)

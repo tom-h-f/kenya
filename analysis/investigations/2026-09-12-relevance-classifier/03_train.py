@@ -32,6 +32,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
 
 BASE = "Davlan/afro-xlmr-large"
+MENTION = r"@\w+"
 MAX_LEN = 128
 
 
@@ -73,11 +74,19 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--limit", type=int, default=0, help="train on N rows only, for a timing run")
     ap.add_argument("--threshold", type=float, default=0.5)
+    ap.add_argument("--keep-mentions", dest="strip_mentions", action="store_false",
+                    help="train on raw text; the 2026-09-12 model was trained this way")
     args = ap.parse_args()
     torch.manual_seed(0)
 
     labelled = pd.read_parquet(args.data / "labelled.parquet")
     labelled = labelled[labelled["label"] != "unclear"].sample(frac=1.0, random_state=0).reset_index(drop=True)
+    if args.strip_mentions:
+        # Train on what the scorer sees. Serving strips mentions, because a post
+        # with no words of its own otherwise rides on the handles it replies to
+        # ("@SomeForcePolice [emoji]" scored 0.80 over 1.28M posts), and a model
+        # trained with them and served without them is a mismatch.
+        labelled["text"] = labelled["text"].astype(str).str.replace(MENTION, " ", regex=True)
     if args.limit:
         labelled = labelled.head(args.limit)
     val = labelled.iloc[: max(1, len(labelled) // 10)]
@@ -127,6 +136,8 @@ def main() -> None:
             frame = frame.merge(pd.read_csv(args.data / "measure_sample.csv")[["post_id", "bucket", "stratum_share"]],
                                 on="post_id")
         frame = frame[frame["label"].isin(("kenya", "offdomain"))].reset_index(drop=True)
+        if args.strip_mentions:
+            frame["text"] = frame["text"].astype(str).str.replace(MENTION, " ", regex=True)
         # The gate's own call, recorded on both B2 files when they were drawn.
         gate = frame["bucket"].eq("kenya").to_numpy()
         learned = predict(model, tokenizer, frame["text"].astype(str).tolist()) >= args.threshold

@@ -345,6 +345,18 @@ paper's and the REPORT changes: Leiden communities over the fused graph, each
 ranked by its own leading eigenvector, the 500-account budget spread across 21
 communities. Detail: `analysis/investigations/2026-09-12-component-ranking/findings.md`.
 
+*In production the same day.* The weights are in R2
+(`models/relevance/<slug>/`), a deployed Modal app scores new posts daily
+(`kma-relevance`), and the collector's promotion gate reads the scores too -
+measured on pi0 at 5 s and 245 MB for the added join, inside its 600 MB budget.
+The serving model is `kenya-relevance-afroxlmr-2026-09-13`, retrained on
+mention-stripped text to match how it is served: precision 0.997 / recall 0.980
+against Tom's labels, against 0.971 / 0.655 for the keyword gate. It calls 31.8%
+of the corpus Kenyan where the gate calls 21.5%. Rebuilt on those scores, the
+community listing holds the same 17 communities with listed Kenya share mean
+0.909 / median 1.000, against 0.738 / 0.886 under the gate. Plan and the drift
+caveats: `docs/plans/2026-09-13-relevance-in-production.md`.
+
 *The learned gate is adopted, 2026-09-13.* `kma.relevance` now decides
 `kenya_share` in the analysis layer - the classifier's call where a post has a
 persisted score, `measure.domain_bucket` where it does not (posts collected

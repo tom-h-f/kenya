@@ -534,6 +534,15 @@ class Storage:
         glob = self._uri(f"hatespeech/platform={platform}/dt=*/run=*.parquet")
         return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
 
+    def relevance_view(self, platform: str = "*", model: str = "*") -> str:
+        """Analysis-written Kenya-relevance probabilities (kma.relevance).
+
+        The keyword `domain` column on `hatespeech/` has measured recall 0.655;
+        this is the learned second opinion the promotion gate prefers where a
+        post has one. Read-only here, like every other analysis output."""
+        glob = self._uri(f"relevance/platform={platform}/model={model}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
     def healthcheck(self) -> int:
         """Round-trip a probe under a fixed key outside posts/ (overwritten each call)."""
         table = pa.table({"ok": [1], "at": [datetime.now(timezone.utc)]})
