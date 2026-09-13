@@ -666,28 +666,6 @@ def latest_coordination_edges(
     )
 
 
-def latest_coordination_clusters(con: duckdb.DuckDBPyConnection, platform: str = "x"):
-    """STICKY UNION across runs, and badly so - use `coordination_run_latest`.
-
-    `cluster_id` is a per-run Leiden label (`coordination.communities` returns
-    `part.membership`) with no stability across passes, so partitioning on it
-    never collapses to one clustering: the same author appears once per cluster
-    id they have ever been assigned. Measured 2026-08-12: 44,585 member rows
-    across 1,078 cluster ids drawn from 47 distinct passes, against a true latest
-    run of 1,043 rows and 128 clusters - 42.7x inflation.
-
-    There is no correct way to read a single run out of this helper. It is
-    retained only because it is re-exported from `kma/__init__.py`."""
-    return con.sql(
-        f"""
-        SELECT * FROM {coordination_source('clusters', platform)}
-        QUALIFY row_number() OVER (
-            PARTITION BY cluster_id, author_id ORDER BY computed_at DESC
-        ) = 1
-        """
-    )
-
-
 def coordination_metrics(con: duckdb.DuckDBPyConnection, platform: str = "x"):
     """Every persisted coordination-pass counter, oldest first.
 
