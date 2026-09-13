@@ -34,7 +34,11 @@ from kma.db import BUCKET, relevance_source
 
 log = logging.getLogger("kma")
 
-MODEL = os.getenv("KMA_RELEVANCE_MODEL", "kenya-relevance-afroxlmr-2026-09-12")
+# 2026-09-13 retrains 09-12 on mention-stripped text, which is what `score_texts`
+# serves: trained with mentions and served without them, the 09-12 model scored
+# precision 0.918 / recall 1.000 against Tom's labels, and this one 0.997 /
+# 0.980. Scores carry their model, so the two never mix.
+MODEL = os.getenv("KMA_RELEVANCE_MODEL", "kenya-relevance-afroxlmr-2026-09-13")
 THRESHOLD = float(os.getenv("KMA_RELEVANCE_THRESHOLD", "0.5"))
 
 # The weights live in R2 beside the data, not on the HF Hub: there is no HF

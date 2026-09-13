@@ -49,6 +49,17 @@ join that instead.
 Acceptance: the gate picks the model's call where a post is scored, unit tests
 cover the fallback, and the pass is measured on pi0 inside budget.
 
+*Measured 2026-09-13, inside the collector container on pi0 with its own DuckDB
+settings (600 MB limit, 2 threads):* reading and deduplicating the whole
+relevance prefix - 1,281,210 rows - takes **5 s at 245 MB peak RSS**. The gate
+query already scans posts and hatespeech, which is the minutes-long part; this
+is the marginal cost, and it is small. The direct join stands and the
+per-account rollup is not needed.
+
+Running the FULL gate query there while the collector was mid-pass timed out on
+the posts read, which is the known shape of that query on pi0 rather than
+anything new.
+
 ## 4. Guardrails before it drives collection
 
 - **Mentions.** "@SomeForcePolice [emoji]" scores 0.80 on handles alone. Strip
