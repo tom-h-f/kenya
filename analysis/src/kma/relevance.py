@@ -53,13 +53,30 @@ def model_key(name: str = MODEL) -> str:
     return f"{MODEL_PREFIX}/{name}"
 
 
+def _transfer_client():
+    """An R2 client that survives a flaky link.
+
+    A 2.2 GB checkpoint is ~60 multipart parts, and one dropped part fails the
+    whole upload: this link dropped three transfers in a row on 2026-09-13.
+    Adaptive retries and a single-threaded transfer trade speed for finishing.
+    """
+    from botocore.config import Config
+
+    return _r2_client(Config(retries={"max_attempts": 10, "mode": "adaptive"},
+                             connect_timeout=30, read_timeout=120, max_pool_connections=4))
+
+
 def publish_model(source: Path, name: str = MODEL, bucket: str = BUCKET) -> list[str]:
     """Upload a trained model directory to R2. Returns the keys written."""
-    client = _r2_client()
+    from boto3.s3.transfer import TransferConfig
+
+    client = _transfer_client()
+    transfer = TransferConfig(multipart_chunksize=16 * 2**20, max_concurrency=2,
+                              num_download_attempts=10, use_threads=True)
     written = []
     for path in sorted(p for p in Path(source).iterdir() if p.is_file()):
         key = f"{model_key(name)}/{path.name}"
-        client.upload_file(str(path), bucket, key)
+        client.upload_file(str(path), bucket, key, Config=transfer)
         written.append(key)
         log.info("uploaded %s (%.1f MiB)", key, path.stat().st_size / 2**20)
     return written
@@ -72,7 +89,7 @@ def fetch_model(name: str = MODEL, cache: Path | None = None, bucket: str = BUCK
     """
     target = Path(cache or CACHE) / name
     target.mkdir(parents=True, exist_ok=True)
-    client = _r2_client()
+    client = _transfer_client()
     prefix = model_key(name)
     listing = client.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}/").get("Contents", [])
     if not listing:
