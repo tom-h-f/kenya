@@ -166,6 +166,32 @@ so ~25 clean passes), then a fresh snapshot and a re-run.
 **The current snapshot can never pass.** Its TTL working set was a 24-hour cache,
 never captured, gone permanently. Passing is only available prospectively.
 
+*Re-run 2026-09-13 on a fresh snapshot (`2026-09-13-c1-replay`, 27,837 objects,
+all 35 recorded census passes): **recall 0.756, precision 0.782, Jaccard
+0.624** against the 0.95 bar, up from 0.683. Selection agreement is now exact -
+median replay/live selected 1.000, fetched 1.008 - so the port picks the same
+number of objects the collector did.*
+
+**The premise of this item is falsified, and waiting will not fix it.** A pass
+counts as clean when the baseline arm selected within its 250 cap. From
+2026-09-01 the toxic arm has appended 50-170 objects to every pass (mean
+selected 300-420 against the cap), so there have been NO clean passes since,
+and `census_ttl/` only started recording on 2026-09-08. The ledger covers only
+passes the harness cannot score, and the 25 clean passes it replayed end on
+2026-09-01, a week before the ledger existed. The two windows never overlap.
+
+Three ways out, and the first is the honest one:
+
+- **Port the toxic arm** (`hate_signal.hot_toxic_objects`) into the replay as a
+  second policy arm, so merged passes become scoreable. The incumbent is
+  permanently two-armed now; a harness that models one arm cannot score it.
+- **Disable the toxic arm on pi0 for a day or two** to manufacture clean
+  passes. Cheap, but it degrades targeting in that window and the window closes
+  again the moment it is re-enabled.
+- **Close C1 at 0.756**, recording that per-id reproduction is unavailable
+  against a two-armed incumbent. The replay harness then cannot be used to
+  score candidate collection policies, which is what it exists for.
+
 **C2. Bulk depth passes.** Both are bounded-tested only: 200 parents of 167,220,
 and 20 accounts of 500. Hydration is worth ~3,700 fetches to take `fast_retweet`
 coverage past 60%; deep timelines is ~5,000 requests for the whole persisted
