@@ -21,6 +21,12 @@ anywhere. `models/relevance/<slug>/` beside the other prefixes, a loader in
 Acceptance: a fresh process with only R2 credentials can load the model and
 reproduce the B2 numbers.
 
+*Done 2026-09-13.* `models/relevance/<slug>/`, `relevance.publish_model` and
+`relevance.fetch_model`. Verified by downloading into an empty cache and
+re-scoring: precision 0.997, recall 0.980 on Tom's 100. The link dropped three
+2.2 GB transfers that day, so both directions now use adaptive retries and 16
+MiB parts.
+
 ## 2. A scoring job that keeps up
 
 `modal_relevance.py`, the shape of `modal_backfill.py`: `db.pending_posts`
@@ -32,6 +38,16 @@ inference is added there, and the two enrichments stay independent.
 
 Acceptance: a smoke run scores a bounded slice and writes it; a full pass
 leaves `pending_posts` empty; the schedule is registered.
+
+*Done 2026-09-13.* `modal_relevance.py`, deployed as `kma-relevance` with
+`modal.Period(days=1)`. The corpus is scored: **1,312,692 of 1,312,692 posts
+with text**, which includes the ~31k collected since the export. At 0.5 the
+model calls 31.8% of the corpus Kenyan, against 37.7% for the mention-keeping
+model and 21.5% for the keyword gate.
+
+`modal run --detach` is not enough on its own: the drain was cancelled when the
+local client exited. Trigger a one-off with `Function.from_name(...).spawn()`
+instead, which returns immediately and leaves the work server-side.
 
 ## 3. The collector's gate reads it
 
@@ -91,11 +107,27 @@ precision for 0.28 of recall.
   August 2027, and the training labels are model labels whose blind spots the
   human pass is the only check on.
 
+*Built 2026-09-13.* `10_human_check.py` draws the blind sheet (stratified by
+what the model says, excluding everything trained or labelled on) and scores it
+once filled in. `11_drift.py` reports the weekly disagreement.
+
+**Read the drift numbers per bucket, and only against adjacent weeks.** The
+overall rate tracks what the collector is bringing in: inside the `ambiguous`
+bucket it was 0.55 in early July, when that bucket was mostly Kenyan content,
+and 0.13 by September, when it is mostly not. That is the composition drift in
+OBJECTIVES C1, not the model moving. From 2026-08-03, when the mix settled, the
+weekly rate sits at 0.114-0.158, and that is the baseline to compare against.
+
 ## 6. Restate the figures
 
 Every Kenya-share figure recorded before 2026-09-13 used the keyword gate at
 recall 0.655. Recompute the headline v2 numbers on the model and mark each
 published figure with the basis it used.
+
+*Restated 2026-09-13.* The community listing rebuilt on the new scores holds the
+same 17 communities, and their listed Kenya share is **mean 0.909, median
+1.000** against the gate's 0.738 / 0.886. The groups were always this Kenyan;
+the keyword gate could not see it.
 
 ## Unresolved
 

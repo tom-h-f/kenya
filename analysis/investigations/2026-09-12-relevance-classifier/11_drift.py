@@ -22,7 +22,7 @@ from kma.db import connect, posts_source
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--weeks", type=int, default=12)
+    ap.add_argument("--weeks", type=int, default=8)
     ap.add_argument("--sample", type=int, default=40_000, help="posts per week to read")
     args = ap.parse_args()
 
@@ -41,19 +41,43 @@ def main() -> None:
         raise SystemExit("no scored posts in the window")
 
     posts["model"] = posts["p_kenya"] >= relevance.THRESHOLD
-    posts["gate"] = posts["text"].map(measure.domain_bucket) == "kenya"
-    weekly = posts.groupby(posts["week"].dt.date).agg(
-        posts=("model", "size"),
-        model_kenya=("model", "mean"),
-        gate_kenya=("gate", "mean"),
-        model_not_gate=("model", lambda s: float((s & ~posts.loc[s.index, "gate"]).mean())),
-        gate_not_model=("gate", lambda s: float((posts.loc[s.index, "gate"] & ~s).mean())),
-    ).round(3)
+    posts["bucket"] = posts["text"].map(measure.domain_bucket)
+    posts["gate"] = posts["bucket"] == "kenya"
+    # Both directions need both columns, so this is a frame-wise apply: an
+    # `agg` lambda sees one column, and `gate & ~gate` is silently always zero.
+    def rates(group: pd.DataFrame) -> pd.Series:
+        out = {
+            "posts": len(group),
+            "model_kenya": group["model"].mean(),
+            "gate_kenya": group["gate"].mean(),
+            "model_not_gate": (group["model"] & ~group["gate"]).mean(),
+            "gate_not_model": (group["gate"] & ~group["model"]).mean(),
+        }
+        # Per bucket as well as overall: the corpus mix itself moves (the
+        # collector's composition drift is documented in OBJECTIVES C1), and a
+        # rate that moves with the mix is an alarm that cries wolf every time
+        # targeting changes. Within a bucket, like is compared with like.
+        for bucket in ("ambiguous", "kenya", "offdomain"):
+            rows = group[group["bucket"] == bucket]
+            out[f"disagree:{bucket}"] = (
+                (rows["model"] != rows["gate"]).mean() if len(rows) else float("nan"))
+        return pd.Series(out)
+
+    weekly = posts.groupby(posts["week"].dt.date)[["model", "gate", "bucket"]].apply(rates).round(3)
+    weekly["posts"] = weekly["posts"].astype(int)
     weekly["disagree"] = (weekly["model_not_gate"] + weekly["gate_not_model"]).round(3)
     print(weekly.to_string())
-    recent, earlier = weekly["disagree"].iloc[-4:].mean(), weekly["disagree"].iloc[:-4].mean()
-    print(f"\nlast 4 weeks {recent:.3f} against {earlier:.3f} before them"
+    # The alarm watches the `ambiguous` bucket: 76% of the corpus, where the
+    # model does all of its work and the lexicon abstains by construction.
+    series = weekly["disagree:ambiguous"].dropna()
+    recent, earlier = series.iloc[-4:].mean(), series.iloc[-8:-4].mean()
+    print(f"\ndisagreement inside the ambiguous bucket: last 4 weeks {recent:.3f} "
+          f"against the 4 before them {earlier:.3f}"
           f" ({'stable' if abs(recent - earlier) < 0.05 else 'MOVED - look at what changed'})")
+    print("Compare adjacent windows only. Reaching further back crosses collection-regime\n"
+          "changes: in early July the ambiguous bucket disagreed at 0.55 because it was mostly\n"
+          "Kenyan content, and by August mostly not. That is the collector's composition drift\n"
+          "(OBJECTIVES C1), not the model moving.")
 
 
 if __name__ == "__main__":
