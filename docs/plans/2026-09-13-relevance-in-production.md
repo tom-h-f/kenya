@@ -69,6 +69,17 @@ anything new.
 - **Threshold.** 0.5 is where the evaluation ran, not a tuned value. Choose it
   against a precision target on the human labels and record the trade.
 
+*Both done 2026-09-13.* Mentions are handled by retraining rather than by
+stripping at serving time only: the 09-12 model was trained on raw text and
+served stripped, which is a mismatch, and the 09-13 model is trained the way it
+is served. On Tom's labels that moved precision 0.918 -> 0.997 for one post of
+recall (1.000 -> 0.980).
+
+The threshold sweep (`09_threshold.py`, corpus-weighted) says keep 0.5. The
+model is bimodal, so every cut from 0.3 to 0.5 gives the same 0.997 / 0.980;
+0.7 reaches precision 1.000 but costs recall 0.980 -> 0.702, which is 0.003 of
+precision for 0.28 of recall.
+
 ## 5. Validation and drift
 
 - A second blind human pass (100 fresh posts, `measure-eval human-sheet`)

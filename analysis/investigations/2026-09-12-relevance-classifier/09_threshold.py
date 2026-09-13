@@ -57,15 +57,19 @@ def main() -> None:
     args = ap.parse_args()
 
     thresholds = [0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 0.99]
-    scores = pd.read_parquet(args.scores)
-    scores["platform_post_id"] = scores["platform_post_id"].astype(str)
-    corpus = {t: round(float((scores["p_kenya"] >= t).mean()), 3) for t in thresholds}
+    scores, corpus = None, None
+    if args.scores and args.scores.exists():
+        scores = pd.read_parquet(args.scores)
+        scores["platform_post_id"] = scores["platform_post_id"].astype(str)
+        corpus = {t: round(float((scores["p_kenya"] >= t).mean()), 3) for t in thresholds}
 
     for name, path in (("Tom's 100", "measure_human.csv"), ("model-labelled 300", "measure_sample.csv")):
         frame = labelled(args.labels, path)
         if args.model_dir:
             from kma import relevance
             p = relevance.score_texts(args.model_dir, frame["text"].astype(str).tolist())
+        elif scores is None:
+            raise SystemExit("pass --model-dir, or --scores pointing at a corpus scoring")
         else:
             merged = frame.assign(post_id=frame["post_id"].astype(str)).merge(
                 scores, left_on="post_id", right_on="platform_post_id", how="left")
@@ -76,7 +80,8 @@ def main() -> None:
         print(f"\n== {name} (n={len(frame)}), corpus-weighted")
         print(sweep(frame, p, thresholds).to_string(index=False))
 
-    print("\nshare of the 1.28M-post corpus flagged at each cut:", corpus)
+    if corpus:
+        print("\nshare of the scored corpus flagged at each cut:", corpus)
 
 
 if __name__ == "__main__":

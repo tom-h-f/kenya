@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 
 import duckdb
@@ -46,6 +47,11 @@ THRESHOLD = float(os.getenv("KMA_RELEVANCE_THRESHOLD", "0.5"))
 # credentials. The slug is on every score row, so a file and a score can always
 # be matched up.
 MODEL_PREFIX = "models/relevance"
+
+# The same pattern `coord2.clean_text` strips, kept here so the serving path
+# imports nothing heavier than pandas - `coord2` pulls scipy and networkx, which
+# a scoring image should not have to carry. `test_relevance` pins them equal.
+MENTION = re.compile(r"@\w+", re.UNICODE)
 CACHE = Path(os.getenv("KMA_MODEL_CACHE", Path.home() / ".cache" / "kma-models"))
 
 
@@ -116,13 +122,11 @@ def score_texts(model_dir: Path, texts: list[str], batch: int = 256, max_len: in
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-    from kma.coord2 import _MENTION
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
     model = AutoModelForSequenceClassification.from_pretrained(str(model_dir)).to(device).eval()
 
-    cleaned = [_MENTION.sub(" ", t or "") for t in texts]
+    cleaned = [MENTION.sub(" ", t or "") for t in texts]
     order = np.argsort([len(t) for t in cleaned])[::-1]
     out = np.empty(len(cleaned), dtype=np.float32)
     for start in range(0, len(order), batch):

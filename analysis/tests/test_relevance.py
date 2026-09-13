@@ -116,3 +116,13 @@ def test_no_persisted_scores_is_the_gate_alone(monkeypatch):
     got = relevance.buckets(c, POSTS).tolist()
 
     assert got == ["ambiguous", "kenya", "ambiguous"]
+
+
+def test_the_serving_regex_matches_the_trace_one():
+    """Two copies of the mention pattern, because the scoring image should not
+    have to carry scipy and networkx to strip an @handle."""
+    from kma import coord2
+
+    assert relevance.MENTION.pattern == coord2._MENTION.pattern
+    for text in ("@x_weeep Good morning sir", "no mentions here", "@a @b c"):
+        assert relevance.MENTION.sub(" ", text) == coord2._MENTION.sub(" ", text)
