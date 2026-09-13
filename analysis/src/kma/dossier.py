@@ -12,6 +12,7 @@ there is nothing in it to reason about. A dossier is what a reader would
 actually need to judge a cluster:
 
     what they jointly amplified, in their own words
+    what several of them wrote in near-identical words
     what they themselves post
     whose content they push outward
     how the accounts were provisioned
@@ -29,16 +30,28 @@ from __future__ import annotations
 import logging
 
 import duckdb
+import numpy as np
 import pandas as pd
+from scipy import sparse
+from scipy.sparse.csgraph import connected_components
 
+from kma import coord2
 from kma.coordination import _latest_posts_cte
-from kma.db import engagements_source, hatespeech_source
+from kma.db import embeddings_source, engagements_source, hatespeech_source
 
 log = logging.getLogger("kma")
 
 DEFAULT_MAX_POSTS = 8
 DEFAULT_MAX_OBJECTS = 8
 DEFAULT_MAX_TARGETS = 8
+DEFAULT_MAX_TEXTS = 8
+
+# v2's text-similarity cut: an absolute cosine chosen for this project's encoder,
+# not the paper's percentile (v2-findings §4, deviation 4). The exhibit shows the
+# pairs the detector itself would link, so it uses the detector's cut.
+TEXT_SIMILARITY = 0.85
+
+FAMILY_COLUMNS = ["n_members", "n_posts", "author_handle", "text"]
 
 
 def _member_table(con: duckdb.DuckDBPyConnection, members: pd.DataFrame) -> None:
@@ -158,6 +171,125 @@ def shared_objects(
     ).df()
 
 
+def near_duplicate_families(
+    posts: pd.DataFrame, vectors: np.ndarray, threshold: float = TEXT_SIMILARITY
+) -> pd.DataFrame:
+    """Posts that two or more DIFFERENT members wrote in near-identical words.
+
+    This is the text-similarity trace's co-action, which the retweet exhibit
+    cannot show: a group v2 linked by what its members wrote has no objects in
+    common, and before this its packet arrived with no joint evidence at all -
+    measured on A2's size-matched run, all four of v2's `unclear` verdicts were
+    groups in exactly that state. Pairs are posts at or above `threshold` cosine
+    from different authors; a family is a connected set of them, so A~B and B~C
+    is one family even when A and C sit below the cut. One row per family, most
+    members first, shown by its earliest post."""
+    if len(posts) < 2:
+        return pd.DataFrame(columns=FAMILY_COLUMNS)
+    posts = posts.reset_index(drop=True)
+    unit = np.asarray(vectors, dtype=np.float32)
+    unit = unit / np.clip(np.linalg.norm(unit, axis=1, keepdims=True), 1e-12, None)
+    authors = posts["author_id"].to_numpy()
+
+    rows, cols = [], []
+    for start in range(0, len(unit), 1024):
+        i, j = np.nonzero(unit[start : start + 1024] @ unit.T >= threshold)
+        i = i + start
+        keep = (j > i) & (authors[i] != authors[j])
+        rows.append(i[keep])
+        cols.append(j[keep])
+    rows, cols = np.concatenate(rows), np.concatenate(cols)
+    if len(rows) == 0:
+        return pd.DataFrame(columns=FAMILY_COLUMNS)
+
+    graph = sparse.coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(len(posts), len(posts)))
+    _, labels = connected_components(graph, directed=False)
+    linked = np.zeros(len(posts), dtype=bool)
+    linked[rows] = True
+    linked[cols] = True
+
+    families = (
+        posts.assign(family=labels)[linked]
+        .sort_values("created_at")
+        .groupby("family")
+        .agg(
+            n_members=("author_id", "nunique"),
+            n_posts=("text", "size"),
+            author_handle=("author_handle", "first"),
+            text=("text", "first"),
+        )
+    )
+    families = families[families["n_members"] >= 2]
+    return (
+        families.sort_values(["n_members", "n_posts"], ascending=False)
+        .reset_index(drop=True)[FAMILY_COLUMNS]
+    )
+
+
+def shared_texts(
+    con: duckdb.DuckDBPyConnection,
+    platform: str,
+    threshold: float = TEXT_SIMILARITY,
+    max_texts: int = DEFAULT_MAX_TEXTS,
+) -> pd.DataFrame:
+    """Per cluster, what several members posted in near-identical words.
+
+    Eligibility follows the detector's own text trace: non-reposts whose cleaned
+    text carries at least `coord2.MIN_TEXT_WORDS` words, embedded by the model
+    v2 compared them with. Only those posts' embeddings are read, and missing
+    embeddings leave this exhibit empty rather than failing the packet.
+
+    Read over the text trace's own window (`coord2.TEXT_WINDOW_DAYS`), not the
+    packet's 14-day coordination lookback: measured on A2's size-matched run,
+    the pairs behind v2's text-linked groups were four to nine weeks old, and
+    the short window left every one of those groups with an empty exhibit."""
+    from kma import semantic
+
+    columns = ["cluster_id", *FAMILY_COLUMNS]
+    window = _latest_posts_cte(platform, lookback_days=coord2.TEXT_WINDOW_DAYS, author_scope="_dos_scope")
+    posts = con.sql(
+        f"""
+        WITH p AS ({window})
+        SELECT m.cluster_id, p.platform_post_id, p.author_id, p.author_handle,
+               p.text, p.created_at
+        FROM _dos_members m JOIN p ON p.author_id = m.author_id
+        WHERE p.text IS NOT NULL AND COALESCE(p.is_repost, FALSE) = FALSE
+        """
+    ).df()
+    if not posts.empty:
+        words = posts["text"].map(lambda t: len(coord2.clean_text(t).split()))
+        posts = posts[words >= coord2.MIN_TEXT_WORDS]
+    if posts.empty:
+        return pd.DataFrame(columns=columns)
+
+    con.register("_dos_text_ids", posts[["platform_post_id"]].drop_duplicates())
+    try:
+        vectors = con.sql(
+            f"""
+            SELECT e.platform_post_id, e.embedding
+            FROM {embeddings_source(platform, semantic._slug(semantic.MODEL))} e
+            SEMI JOIN _dos_text_ids i ON i.platform_post_id = e.platform_post_id
+            QUALIFY row_number() OVER (
+                PARTITION BY e.platform_post_id ORDER BY e.embedded_at DESC) = 1
+            """
+        ).df()
+    except duckdb.Error:
+        log.warning("dossier: embeddings unavailable; no near-identical-text exhibit")
+        return pd.DataFrame(columns=columns)
+    finally:
+        con.unregister("_dos_text_ids")
+
+    joined = posts.merge(vectors, on="platform_post_id", how="inner")
+    parts = []
+    for cid, group in joined.groupby("cluster_id"):
+        families = near_duplicate_families(group, np.vstack(group["embedding"].to_numpy()), threshold)
+        if not families.empty:
+            parts.append(families.head(max_texts).assign(cluster_id=cid))
+    if not parts:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(parts, ignore_index=True)[columns]
+
+
 def amplification_targets(
     con: duckdb.DuckDBPyConnection,
     platform: str,
@@ -265,6 +397,7 @@ def build(
     max_posts: int = DEFAULT_MAX_POSTS,
     max_objects: int = DEFAULT_MAX_OBJECTS,
     max_targets: int = DEFAULT_MAX_TARGETS,
+    max_texts: int = DEFAULT_MAX_TEXTS,
 ) -> list[dict]:
     """One evidence packet per cluster, ready to hand to a reader.
 
@@ -285,6 +418,7 @@ def build(
 
     posts = representative_posts(con, max_posts)
     objects = shared_objects(con, platform, max_objects)
+    texts = shared_texts(con, platform, max_texts=max_texts)
     targets = amplification_targets(con, platform, max_targets)
     prov = provenance(con, platform).set_index("cluster_id")
     kenya = kenya_share(con, platform).set_index("cluster_id")
@@ -299,6 +433,8 @@ def build(
             "cluster_id": int(cid),
             "size": int(len(grp)),
             "shared_objects": objects[objects["cluster_id"] == cid]
+                .drop(columns=["cluster_id"]).to_dict("records"),
+            "shared_texts": texts[texts["cluster_id"] == cid]
                 .drop(columns=["cluster_id"]).to_dict("records"),
             "representative_posts": posts[posts["cluster_id"] == cid]
                 .drop(columns=["cluster_id"]).to_dict("records"),

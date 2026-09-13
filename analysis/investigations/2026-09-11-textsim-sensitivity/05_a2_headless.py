@@ -129,7 +129,10 @@ def main() -> None:
         probe(args.model, args.timeout)
         return
 
-    out = args.sample.parent / "headless"
+    # One folder per rubric, so a rerun under a changed dossier or prompt never
+    # overwrites the prompts, replies and verdicts of the run before it.
+    rubric = getattr(adjudicate, "RUBRIC_VERSION", "original")
+    out = args.sample.parent / f"headless-{rubric}"
     (out / "prompts").mkdir(parents=True, exist_ok=True)
     (out / "replies").mkdir(parents=True, exist_ok=True)
 
@@ -148,6 +151,7 @@ def main() -> None:
         for packet in packets:
             print(f"  case {packet['cluster_id']:>2}: {packet.get('size'):>3} accounts, "
                   f"{len(packet.get('shared_objects', []))} shared objects, "
+                  f"{len(packet.get('shared_texts', []))} near-identical families, "
                   f"{len(adjudicate.prompt(packet)):,} prompt chars")
         return
 
@@ -159,6 +163,7 @@ def main() -> None:
     frame = pd.DataFrame(verdicts)
     adjudicator = f"claude-code-headless/{args.model}"
     frame["adjudicator"] = adjudicator
+    frame["rubric"] = rubric
     frame["unit"] = "sample"
     frame["sample"] = str(args.sample)
     frame.to_parquet(out / f"verdicts{'_limit' + str(args.limit) if args.limit else ''}.parquet")

@@ -46,14 +46,19 @@ CLUSTER_TYPES = (
     "unclear",              # the evidence does not support a call
 )
 
+# Bumped whenever SYSTEM, INSTRUCTIONS or render change, so verdicts judged
+# under different rubrics are recorded as such and never pooled by accident.
+RUBRIC_VERSION = "2026-09-11-textsim"
+
 SYSTEM = """\
 You are triaging clusters of social media accounts that a statistical detector \
 has found to act together more than chance explains. The detection is sound; \
 what it cannot tell you is WHY they co-act, which is your job.
 
-Judge only from the evidence given. The most diagnostic field is usually what \
-the accounts JOINTLY amplified - that is what the detector actually fired on. \
-What individual members post separately is context, not evidence of \
+Judge only from the evidence given. The most diagnostic evidence is what the \
+accounts did JOINTLY - the posts they amplified together, and the posts several \
+of them wrote in near-identical words. That is what the detector actually fired \
+on. What individual members post separately is context, not evidence of \
 coordination.
 
 Be conservative and be willing to say unclear. A wrong "influence_operation" \
@@ -107,6 +112,9 @@ def render(packet: dict, max_items: int = 6) -> str:
         "",
         "WHAT THEY JOINTLY AMPLIFIED (the co-action the detector found):",
         _fmt_posts(p.get("shared_objects", []), max_items, "object_text", "object_author"),
+        "",
+        "WHAT SEVERAL OF THEM WROTE IN NEAR-IDENTICAL WORDS (also co-action the detector found):",
+        _fmt_posts(p.get("shared_texts", []), max_items, "text", "author_handle"),
         "",
         "WHOSE CONTENT THEY PUSH:",
     ]

@@ -55,6 +55,14 @@ Kenya-relevant; v2 3 of 11 political and 9 of 11 Kenya-relevant. The 2026-09-09
 `kma.dossier` must show text-similarity co-action, because all four of v2's
 unclear verdicts were groups with no co-retweet evidence. See `v2-findings` §8.
 
+*Superseded the same day.* Building that exhibit showed the four groups have no
+co-action to show: at 0.85 most text-trace pairs are unrelated Sheng replies.
+A word-overlap floor fixes the pairs, but then eigenvector centrality hands the
+whole top 500 to one co-retweet block and the real paraphrase campaigns drop
+out. **A2 is blocked on two fixes, not one: the text trace's pair precision and
+the ranking.** Neither result from the size-matched run stands until both are
+done and A2 is redone. See the textsim investigation's `findings.md`.
+
 **A3. Unit of judgement - DECIDED 2026-09-08.**
 
 **Judge the campaign. Score the account.**
