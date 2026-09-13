@@ -24,16 +24,121 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 import duckdb
 import pandas as pd
 
-from kma.db import relevance_source
+from kma.bench import _r2_client
+from kma.db import BUCKET, relevance_source
 
 log = logging.getLogger("kma")
 
 MODEL = os.getenv("KMA_RELEVANCE_MODEL", "kenya-relevance-afroxlmr-2026-09-12")
 THRESHOLD = float(os.getenv("KMA_RELEVANCE_THRESHOLD", "0.5"))
+
+# The weights live in R2 beside the data, not on the HF Hub: there is no HF
+# token on tac2 or in .env, and every host that scores already holds R2
+# credentials. The slug is on every score row, so a file and a score can always
+# be matched up.
+MODEL_PREFIX = "models/relevance"
+CACHE = Path(os.getenv("KMA_MODEL_CACHE", Path.home() / ".cache" / "kma-models"))
+
+
+def model_key(name: str = MODEL) -> str:
+    return f"{MODEL_PREFIX}/{name}"
+
+
+def publish_model(source: Path, name: str = MODEL, bucket: str = BUCKET) -> list[str]:
+    """Upload a trained model directory to R2. Returns the keys written."""
+    client = _r2_client()
+    written = []
+    for path in sorted(p for p in Path(source).iterdir() if p.is_file()):
+        key = f"{model_key(name)}/{path.name}"
+        client.upload_file(str(path), bucket, key)
+        written.append(key)
+        log.info("uploaded %s (%.1f MiB)", key, path.stat().st_size / 2**20)
+    return written
+
+
+def fetch_model(name: str = MODEL, cache: Path | None = None, bucket: str = BUCKET) -> Path:
+    """The model directory, downloaded from R2 once and cached by size.
+
+    Any host with R2 credentials can score; nothing needs the training box.
+    """
+    target = Path(cache or CACHE) / name
+    target.mkdir(parents=True, exist_ok=True)
+    client = _r2_client()
+    prefix = model_key(name)
+    listing = client.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}/").get("Contents", [])
+    if not listing:
+        raise FileNotFoundError(f"no model at r2://{bucket}/{prefix}/; publish_model first")
+    for obj in listing:
+        local = target / obj["Key"].split("/")[-1]
+        if local.exists() and local.stat().st_size == obj["Size"]:
+            continue
+        log.info("downloading %s (%.1f MiB)", obj["Key"], obj["Size"] / 2**20)
+        client.download_file(bucket, obj["Key"], str(local))
+    return target
+
+
+def score_texts(model_dir: Path, texts: list[str], batch: int = 256, max_len: int = 128) -> "np.ndarray":
+    """`p_kenya` per text. CUDA when there is one, CPU otherwise.
+
+    Batches are sorted by length so padding does not dominate, and scores come
+    back in input order. Mentions are stripped first: measured on 1.28M posts,
+    a post with no words of its own rides on the handles it replies to
+    ("@SomeForcePolice [emoji]" scored 0.80), which matters once a score
+    decides what the collector chases.
+    """
+    import numpy as np
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    from kma.coord2 import _MENTION
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+    model = AutoModelForSequenceClassification.from_pretrained(str(model_dir)).to(device).eval()
+
+    cleaned = [_MENTION.sub(" ", t or "") for t in texts]
+    order = np.argsort([len(t) for t in cleaned])[::-1]
+    out = np.empty(len(cleaned), dtype=np.float32)
+    for start in range(0, len(order), batch):
+        index = order[start : start + batch]
+        encoded = tokenizer([cleaned[k] for k in index], truncation=True, max_length=max_len,
+                            padding=True, return_tensors="pt")
+        with torch.no_grad():
+            logits = model(**{k: v.to(device) for k, v in encoded.items()}).logits.float()
+        out[index] = torch.softmax(logits, -1)[:, 1].cpu().numpy()
+    return out
+
+
+def write_scores(
+    con: duckdb.DuckDBPyConnection,
+    scored: pd.DataFrame,
+    model: str = MODEL,
+    platform: str = "x",
+    bucket: str = BUCKET,
+) -> str:
+    """One run of scores to the R2 `relevance/` prefix. Returns the key.
+
+    `scored` needs `platform_post_id` and `p_kenya`. The same row shape every
+    reader expects, written the way `semantic.embed_new` writes embeddings.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    buf = scored[["platform_post_id", "p_kenya"]].assign(model=model, scored_at=now)
+    key = (f"relevance/platform={platform}/model={model}"
+           f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet")
+    con.register("_rel_out", buf)
+    try:
+        con.execute(f"COPY _rel_out TO 'r2://{bucket}/{key}' (FORMAT parquet, COMPRESSION zstd)")
+    finally:
+        con.unregister("_rel_out")
+    log.info("wrote %s (%d posts)", key, len(buf))
+    return key
 
 
 def latest_scores_cte(platform: str = "x", model: str = MODEL) -> str:

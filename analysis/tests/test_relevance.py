@@ -72,6 +72,41 @@ def test_the_threshold_is_the_callers_choice(con):
     assert relevance.buckets(con, POSTS, threshold=0.9).iloc[2] == "offdomain"
 
 
+class _RecordingCon:
+    """Enough connection to see what `write_scores` would send to R2."""
+
+    def __init__(self):
+        self.registered, self.sql = {}, []
+
+    def register(self, name, frame):
+        self.registered[name] = frame
+
+    def execute(self, sql):
+        self.sql.append(sql)
+
+    def unregister(self, name):
+        pass
+
+
+def test_written_scores_carry_the_model_that_produced_them():
+    """A score is only interpretable next to the model and the moment: the
+    threshold is a reader's choice and the model will be retrained."""
+    con = _RecordingCon()
+    scored = pd.DataFrame({"platform_post_id": ["p1", "p2"], "p_kenya": [0.9, 0.1]})
+
+    key = relevance.write_scores(con, scored, model="some-model")
+
+    written = con.registered["_rel_out"]
+    assert list(written.columns) == ["platform_post_id", "p_kenya", "model", "scored_at"]
+    assert set(written["model"]) == {"some-model"}
+    assert key.startswith("relevance/platform=x/model=some-model/dt=")
+    assert key in con.sql[0] and "COMPRESSION zstd" in con.sql[0]
+
+
+def test_the_model_key_is_where_fetch_looks():
+    assert relevance.model_key("m") == "models/relevance/m"
+
+
 def test_no_persisted_scores_is_the_gate_alone(monkeypatch):
     """Posts collected since the last scoring pass are the normal case, and a
     project with no scores at all must still produce a Kenya share."""

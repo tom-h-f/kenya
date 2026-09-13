@@ -26,6 +26,7 @@ from kenya_monitor.config import (
     CLUSTER_MIN_CHANNELS,
     CLUSTER_PROMOTION_ENABLED,
     CLUSTER_MIN_KENYA_SHARE,
+    CLUSTER_RELEVANCE_THRESHOLD,
     KEYWORD_MIN_KENYA_SHARE,
     DYNAMIC_EXPIRY_DAYS,
     DYNAMIC_HASHTAG_MIN_COUNT,
@@ -177,6 +178,8 @@ def cluster_accounts(
     hatespeech_view: str | None = None,
     min_kenya_share: float = CLUSTER_MIN_KENYA_SHARE,
     enabled: bool = CLUSTER_PROMOTION_ENABLED,
+    relevance_view: str | None = None,
+    relevance_threshold: float = CLUSTER_RELEVANCE_THRESHOLD,
 ) -> list[str]:
     """Handles from the most recent persisted coordination run, gated on
     cross-channel corroboration AND on the cluster being about Kenya.
@@ -211,6 +214,27 @@ def cluster_accounts(
         return []
     gate_available = posts_view is not None and hatespeech_view is not None
     if gate_available:
+        # The learned gate where a post has been scored, the keyword `domain`
+        # column where it has not. The keyword one is precise (0.971) and leaky
+        # (recall 0.655), and its misses are plain Kenyan politics that avoids
+        # the anchor vocabulary - exactly the clusters worth promoting.
+        relevance_cte = (
+            f""", lr AS (
+                SELECT platform_post_id, p_kenya FROM {relevance_view}
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform_post_id ORDER BY scored_at DESC
+                ) = 1
+            )"""
+            if relevance_view else ""
+        )
+        relevance_join = (
+            "LEFT JOIN lr ON lr.platform_post_id = lp.platform_post_id" if relevance_view else ""
+        )
+        kenya_call = (
+            f"CASE WHEN lr.p_kenya IS NOT NULL THEN lr.p_kenya >= {float(relevance_threshold)}"
+            " ELSE lh.domain = 'kenya' END"
+            if relevance_view else "lh.domain = 'kenya'"
+        )
         kenya_cte = f"""
             , lp AS (
                 SELECT author_id, platform_post_id FROM {posts_view}
@@ -222,14 +246,15 @@ def cluster_accounts(
                 QUALIFY row_number() OVER (
                     PARTITION BY platform_post_id ORDER BY scored_at DESC
                 ) = 1
-            ), cluster_domain AS (
+            ){relevance_cte}, cluster_domain AS (
                 SELECT c.cluster_id,
                        count(*) AS n_scored,
-                       avg(CASE WHEN lh.domain = 'kenya' THEN 1.0 ELSE 0.0 END)
+                       avg(CASE WHEN {kenya_call} THEN 1.0 ELSE 0.0 END)
                            AS kenya_share
                 FROM latest_run c
                 JOIN lp ON lp.author_id = c.author_id
                 JOIN lh ON lh.platform_post_id = lp.platform_post_id
+                {relevance_join}
                 WHERE lh.domain IS NOT NULL
                 GROUP BY c.cluster_id
             )"""
@@ -455,6 +480,7 @@ def promote(
     hatespeech_view: str | None = None,
     state_path: Path = DYNAMIC_TARGETS_PATH,
     dry_run: bool = False,
+    relevance_view: str | None = None,
 ) -> list[DynamicEntry]:
     """One promotion pass: compute candidates, refresh the state file, return
     the live entries. `dry_run` computes without saving. When `stories_view` is
@@ -465,6 +491,7 @@ def promote(
     accounts = cluster_accounts(
         con, clusters_view, authors_view,
         posts_view=posts_view, hatespeech_view=hatespeech_view,
+        relevance_view=relevance_view,
     )
     sources: dict[str, str] = {}
     if stories_view is not None:
