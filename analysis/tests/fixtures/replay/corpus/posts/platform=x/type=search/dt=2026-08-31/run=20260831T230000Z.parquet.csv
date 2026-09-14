@@ -57,3 +57,15 @@ x,rt-o12-10,a031,,RT o12,2026-08-31 19:00:00+01,,fixture,en,,true,o12,0,300,900,
 x,rt-o12-11,a032,,RT o12,2026-08-31 19:00:00+01,,fixture,en,,true,o12,0,300,900,0,0,,false,o12,,,,,,false,0,2026-09-01 00:00:00+01
 x,rt-o12-12,a033,,RT o12,2026-08-31 19:00:00+01,,fixture,en,,true,o12,0,300,900,0,0,,false,o12,,,,,,false,0,2026-09-01 00:00:00+01
 x,rt-o12-13,a034,,RT o12,2026-08-31 19:00:00+01,,fixture,en,,true,o12,0,300,900,0,0,,false,o12,,,,,,false,0,2026-09-01 00:00:00+01
+x,o01,orig001,,original o01,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,1,0,0,,false,o01,,,,,,false,0,2026-09-01 00:00:00+01
+x,o02,orig002,,original o02,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,2,0,0,,false,o02,,,,,,false,0,2026-09-01 00:00:00+01
+x,o03,orig003,,original o03,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,3,0,0,,false,o03,,,,,,false,0,2026-09-01 00:00:00+01
+x,o04,orig004,,original o04,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,12,0,0,,false,o04,,,,,,false,0,2026-09-01 00:00:00+01
+x,o05,orig005,,original o05,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,27,0,0,,false,o05,,,,,,false,0,2026-09-01 00:00:00+01
+x,o06,orig006,,original o06,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,44,0,0,,false,o06,,,,,,false,0,2026-09-01 00:00:00+01
+x,o07,orig007,,original o07,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,63,0,0,,false,o07,,,,,,false,0,2026-09-01 00:00:00+01
+x,o08,orig008,,original o08,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,81,0,0,,false,o08,,,,,,false,0,2026-09-01 00:00:00+01
+x,o09,orig009,,original o09,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,99,0,0,,false,o09,,,,,,false,0,2026-09-01 00:00:00+01
+x,o10,orig010,,original o10,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,100,0,0,,false,o10,,,,,,false,0,2026-09-01 00:00:00+01
+x,o11,orig011,,original o11,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,242,0,0,,false,o11,,,,,,false,0,2026-09-01 00:00:00+01
+x,o12,orig012,,original o12,2026-08-31 19:00:00+01,,fixture,en,,false,,0,0,900,0,0,,false,o12,,,,,,false,0,2026-09-01 00:00:00+01

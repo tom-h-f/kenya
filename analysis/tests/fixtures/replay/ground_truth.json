@@ -1,7 +1,74 @@
 {
-  "generated_at": "2026-09-08T14:01:03.066845+00:00",
+  "generated_at": "2026-09-13T21:51:41.529912+00:00",
   "generator": "analysis/tests/fixtures/replay/generate_ground_truth.py",
   "selector": "kenya_monitor.runner.hot_objects (retweeted arm)",
+  "toxic_selector": "kenya_monitor.hate_signal.hot_toxic_objects (retweeted arm)",
+  "toxic_params": {
+    "lookback_days": 14,
+    "top_retweeted": 5,
+    "top_conversations": 5,
+    "band_min": 3,
+    "band_max": 100,
+    "refresh_hours": 12
+  },
+  "toxic_scores": [
+    {
+      "id": "o04",
+      "label": "hate",
+      "hate_flag": true,
+      "p_hate": 0.91,
+      "scored_at": "2026-08-31T22:00:00+00:00"
+    },
+    {
+      "id": "o06",
+      "label": "offensive",
+      "hate_flag": false,
+      "p_hate": 0.44,
+      "scored_at": "2026-08-31T22:00:00+00:00"
+    },
+    {
+      "id": "o08",
+      "label": "neither",
+      "hate_flag": false,
+      "p_hate": 0.02,
+      "scored_at": "2026-08-31T22:00:00+00:00"
+    },
+    {
+      "id": "o09",
+      "label": "hate",
+      "hate_flag": true,
+      "p_hate": 0.77,
+      "scored_at": "2026-08-31T22:00:00+00:00"
+    },
+    {
+      "id": "o10",
+      "label": "hate",
+      "hate_flag": true,
+      "p_hate": 0.66,
+      "scored_at": "2026-08-31T22:00:00+00:00"
+    },
+    {
+      "id": "o13",
+      "label": "hate",
+      "hate_flag": true,
+      "p_hate": 0.88,
+      "scored_at": "2026-09-01T02:00:00+00:00"
+    },
+    {
+      "id": "o05",
+      "label": "hate",
+      "hate_flag": true,
+      "p_hate": 0.95,
+      "scored_at": "2026-09-01T04:00:00+00:00"
+    },
+    {
+      "id": "o11",
+      "label": "hate",
+      "hate_flag": true,
+      "p_hate": 0.99,
+      "scored_at": "2026-08-31T22:00:00+00:00"
+    }
+  ],
   "reference": "2026-09-01T00:00:00+00:00",
   "pass_times": [
     "2026-09-01T00:00:00+00:00",
@@ -147,5 +214,18 @@
       "o17",
       "o03"
     ]
+  ],
+  "selected_toxic": [
+    [
+      "o10",
+      "o09",
+      "o06",
+      "o04"
+    ],
+    [
+      "o13",
+      "o04"
+    ],
+    []
   ]
 }

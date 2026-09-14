@@ -24,6 +24,15 @@ import pytest
 
 from kma import bench, replay
 
+
+def _policy_params(cls, recorded: dict) -> dict:
+    """Only the knobs this policy has: the fixture records the generator's
+    call signature, which carries arms this policy does not implement."""
+    import dataclasses
+
+    fields = {f.name for f in dataclasses.fields(cls)}
+    return {k: v for k, v in recorded.items() if k in fields}
+
 UTC = timezone.utc
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "replay"
 
@@ -53,7 +62,7 @@ class LocalR2:
 def _manifest(con: duckdb.DuckDBPyConnection, root: Path) -> pd.DataFrame:
     return bench.snapshot(
         "fixture",
-        prefixes=("posts", "engagements"),
+        prefixes=("posts", "engagements", "hatespeech"),
         con=con,
         client=LocalR2(root),
         uri=lambda key: f"{root}/{key}",
@@ -754,3 +763,43 @@ def test_seed_ledger_prefers_the_recorded_ttl_over_inference(tmp_path):
 
     assert "empty-obj" in seeded, "the recorded ledger must win over inference"
     assert "other-obj" not in seeded, "inference must not be mixed in when the ledger exists"
+
+
+def test_the_toxic_arm_reproduces_the_live_selector(corpus, ground_truth):
+    """The second census arm, ported the way the first one was.
+
+    Steps by hand rather than through `replay()` on purpose: the generator
+    censused only the BASELINE picks, so the TTL the live toxic selector saw is
+    exactly the corpus ledger at each pass. Letting the driver add this arm's
+    own picks to the ledger would score the port against a history the
+    generator never had.
+    """
+    con, _root, manifest = corpus
+    policy = replay.ToxicCensus(**_policy_params(replay.ToxicCensus, ground_truth["toxic_params"]))
+    times = [datetime.fromisoformat(t) for t in ground_truth["pass_times"]]
+
+    for t, expected in zip(times, ground_truth["selected_toxic"], strict=True):
+        ledger = replay.seed_ledger(con, manifest, t)
+        state = replay.state_at(con, manifest, t, censused_at=ledger)
+        got = [r.target for r in policy.candidates(state)]
+        assert got == expected, f"toxic arm diverged at {t.isoformat()}"
+
+
+def test_the_merged_policy_appends_the_toxic_arm_after_the_baseline(corpus, ground_truth):
+    """Order is load-bearing: `collect_snowball` flushes every 25 objects, so a
+    rate-limit abort truncates the appended tail rather than the baseline."""
+    con, _root, manifest = corpus
+    t = datetime.fromisoformat(ground_truth["pass_times"][0])
+    ledger = replay.seed_ledger(con, manifest, t)
+    state = replay.state_at(con, manifest, t, censused_at=ledger)
+
+    baseline = replay.IncumbentCensus(**_policy_params(replay.IncumbentCensus, ground_truth["params"]))
+    base = [r.target for r in baseline.candidates(state)]
+    merged = replay.MergedCensus(
+        baseline=baseline,
+        toxic=replay.ToxicCensus(**_policy_params(replay.ToxicCensus, ground_truth["toxic_params"])),
+    ).candidates(state)
+
+    assert [r.target for r in merged][: len(base)] == base
+    assert len(set(r.target for r in merged)) == len(merged), "no object is censused twice"
+    assert [r.rank for r in merged] == list(range(len(merged))), "ranks stay dense for --budget"

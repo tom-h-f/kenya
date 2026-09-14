@@ -1,0 +1,7 @@
+platform_post_id,label,hate_flag,p_hate,domain,scored_at
+o04,hate,true,0.91,kenya,2026-08-31 23:00:00+01
+o06,offensive,false,0.44,kenya,2026-08-31 23:00:00+01
+o08,neither,false,0.02,kenya,2026-08-31 23:00:00+01
+o09,hate,true,0.77,kenya,2026-08-31 23:00:00+01
+o10,hate,true,0.66,kenya,2026-08-31 23:00:00+01
+o11,hate,true,0.99,kenya,2026-08-31 23:00:00+01

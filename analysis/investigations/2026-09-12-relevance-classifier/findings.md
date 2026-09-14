@@ -83,3 +83,38 @@ than the 91 of the B2 check:
 
 Anything adopting this should think about the first one - a floor on content
 words, or a higher threshold where precision matters.
+
+## The independent human check (the one that counts)
+
+100 fresh posts, none of them trained or labelled on before, stratified 50/50 by
+what the model says, shown blind with English translations
+(`10_human_check.py`, `12_label_page.py`). Tom labelled them 2026-09-13: 50
+kenya, 38 offdomain, 12 unclear. The 88 placeable ones:
+
+| call | TP | FP | FN | precision | recall | precision (corpus-weighted) | recall (corpus-weighted) |
+|---|---|---|---|---|---|---|---|
+| keyword gate | 36 | 1 | 14 | 0.973 | 0.720 | 0.973 | 0.516 |
+| classifier | 45 | 3 | 5 | 0.938 | 0.900 | 0.889 | 0.827 |
+| gate OR model | 45 | 4 | 5 | 0.918 | 0.900 | 0.875 | 0.827 |
+
+**This supersedes the 0.997 / 0.980 recorded above.** That figure came from the
+B2 sets, whose labels a model of the same family produced; on genuinely
+held-out posts judged by a human the classifier is weaker. What survives is the
+reason it was adopted: it roughly doubles corpus-weighted recall, 0.516 to
+0.827, for precision 0.973 to 0.889.
+
+The union with the gate is not worth taking: it adds a false positive and
+recovers nothing, because on this sample the gate's catches are a subset of the
+model's.
+
+**All five misses are posts whose Kenyan-ness lives in a handle**, which the
+scorer strips: `@Ruto_tutam2027 <link>` at 0.09, `RT @LindaMwananchi_: Ni
+Mbaya` at 0.07, `@Naomikibandi Imagine akothee as migoris women rep` at 0.17.
+Stripping mentions removed the handle-riding false positives AND the handle-
+carried true positives; for a Kenya monitor a reply to @Ruto_tutam2027 is about
+Kenya. The fix is not to put raw handles back - that is what scored
+"@SomeForcePolice [emoji]" at 0.80 - but to give the model a FEATURE for the
+mentioned account, such as whether it is a known Kenyan one. Not done.
+
+The three false positives are ordinary: Sheng banter with no politics in it,
+and one post about Zimbabwe.

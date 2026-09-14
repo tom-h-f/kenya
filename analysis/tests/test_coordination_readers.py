@@ -15,6 +15,7 @@ import duckdb
 import pandas as pd
 import pytest
 
+import kma
 from kma import coordination as co
 from kma import db
 
@@ -106,15 +107,20 @@ def test_scorecards_have_their_own_prefix(monkeypatch):
     assert "kind=clusters" not in src
 
 
-def test_sticky_helper_unions_every_run(con):
-    """The defect, pinned so nobody 'fixes' the new helper back into this."""
-    got = db.latest_coordination_clusters(con).df()
+def test_the_sticky_cluster_helper_is_gone(con):
+    """It unioned every run - 44,585 member rows across 47 passes against a true
+    1,043, 42.7x - and `cluster_id` is a per-run Leiden label, so no partition of
+    it reads one run. There was no correct way to call it, so it is not callable."""
+    assert not hasattr(db, "latest_coordination_clusters")
+    assert "latest_coordination_clusters" not in dir(kma)
 
-    assert got["computed_at"].nunique() == 2
-    assert set(got["cluster_id"]) == {0, 7}
-    # `a` appears once per cluster id it was ever assigned.
-    assert (got["author_id"] == "a").sum() == 2
-    assert len(got) > len(db.coordination_run_latest(con, "clusters").df())
+
+def test_the_sticky_edge_helper_is_not_a_package_export(con):
+    """Kept for cross-run archaeology ("was this pair ever validated"), which is
+    the one question it answers correctly, but reachable only as `db.<name>` so
+    it cannot be picked up from `kma import *` by someone wanting current edges."""
+    assert "latest_coordination_edges" not in dir(kma)
+    assert callable(db.latest_coordination_edges)
 
 
 def test_run_latest_edges_drop_a_pair_that_stopped_validating(con):
