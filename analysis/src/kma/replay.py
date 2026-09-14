@@ -1184,6 +1184,13 @@ def observed_selections(
     None, not an empty set, when the snapshot holds no ledger for the window:
     the caller must fall back rather than score every pass against nothing. The
     ledger has only been captured since 2026-09-08.
+
+    Clipped on `captured_at`, selected on `censused_at`. The ledger is written
+    at the END of a pass, so a pass that ran past the start of the next one has
+    its rows clipped out and its selections undercounted - the conservative
+    direction, since it charges the replay rather than crediting it. The
+    per-pass `observed` column is where that would show, as a count far below
+    the `selected_retweeted` the collector recorded.
     """
     src = clipped_source(
         manifest,
