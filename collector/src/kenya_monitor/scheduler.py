@@ -4,7 +4,7 @@ import asyncio
 import logging
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import duckdb
 
@@ -18,6 +18,8 @@ from kenya_monitor.config import (
     CENSUS_TIMELINE_STATE_PATH,
     CYCLE_COOLDOWN_MAX_S,
     CYCLE_COOLDOWN_MIN_S,
+    DEPTH_EVERY_HOURS,
+    DEPTH_IN_CYCLE_ENABLED,
     FOLLOW_CRAWL_MAX_PER_RUN,
     FOLLOW_CRAWL_REFRESH_DAYS,
     FOLLOW_CRAWL_TOP_HATE,
@@ -81,6 +83,22 @@ def _cycle_estimate_s(cycle: int, started_mono: float, default_s: float = 1800.0
     if completed < 1:
         return default_s
     return max(60.0, (time.monotonic() - started_mono) / completed)
+
+
+def _depth_due(latest_fetch: str | None, every_hours: float, now: datetime | None = None) -> bool:
+    """Whether a depth arm is due, read from its OWN ledger.
+
+    Not a cycle counter and not a monotonic timer. `cycle` resets to 0 on every
+    restart, which is how the hate steps went 0 executions across a container
+    lifetime, and a monotonic deadline dies with the process, so under frequent
+    deploys either one can defer a 12-hour pass forever. Both depth ledgers
+    already record when the pass last fetched and they outlive the container,
+    so the cadence holds across restarts. No ledger means the pass has never
+    run, which is due."""
+    if not latest_fetch:
+        return True
+    now = now or datetime.now(timezone.utc)
+    return datetime.fromisoformat(latest_fetch) <= now - timedelta(hours=every_hours)
 
 
 def _adaptive_targets(
@@ -386,10 +404,10 @@ async def run_census_timelines_once(
 async def run_parent_backfill_once(**overrides) -> dict[str, int]:
     """One bounded parent-backfill pass (see parent_backfill.backfill_parents).
 
-    Deliberately NOT in `run_scheduler`'s cycle. The backlog is 167,220 ids at
-    one request each, so a cycle step would quietly become the dominant consumer
-    of pool budget and starve the baseline collection the whole corpus rests on.
-    Run it explicitly, bounded, and watch what it costs before wiring it in."""
+    Runs both on demand and, since 2026-09-14, as the last step of a cycle every
+    DEPTH_EVERY_HOURS - the backlog is 167,220 ids at one request each, which is
+    why it was kept out of the cycle until its cost had been watched, and why it
+    is still gated on a wall-clock cadence rather than run every cycle."""
     from kenya_monitor.parent_backfill import backfill_parents
 
     storage = Storage(R2Config.from_env())
@@ -400,14 +418,17 @@ async def run_parent_backfill_once(**overrides) -> dict[str, int]:
 async def run_deep_timelines_once(**overrides) -> dict[str, int]:
     """One bounded deep-timeline pass (see deep_timelines.collect_deep_timelines).
 
-    Deliberately NOT in `run_scheduler`'s cycle, for the same reason as
-    `run_parent_backfill_once` and one more. The budget reason: each account is
-    ~10 paginated requests, so a cycle step would quietly become the dominant
-    consumer of pool budget and starve the baseline collection the whole corpus
-    rests on. The methodological reason: this pass conditions collection on v2's
-    own output, so it must be an explicit, dated, bounded act that a later
-    analysis can point at - not something the corpus accumulates continuously
-    while nobody is watching which accounts it favours."""
+    Runs both on demand and, since 2026-09-14, as the last step of a cycle every
+    DEPTH_EVERY_HOURS. It was kept out of the cycle for two reasons, and both
+    have answers now. Budget: each account is ~10 paginated requests, so this is
+    gated on a wall-clock cadence and stays behind every baseline step, which is
+    also where the discretionary hate steps sit. Methodology: the pass
+    conditions collection on v2's own output, so it wanted to be an explicit
+    dated act - but every deepened account is recorded to `deep_timelines/` with
+    its pre-treatment state and its posts land in a TARGETED partition, so a
+    continuous pass is still dated and attributable, and the 2026-09-14 ranking
+    check found deepening makes accounts FALL out of the ranking rather than
+    inflating it."""
     from kenya_monitor.deep_timelines import collect_deep_timelines
 
     storage = Storage(R2Config.from_env())
@@ -647,6 +668,22 @@ async def run_scheduler(limit: int) -> None:
                     ("hate_seek", run_hate_seek_once),
                     ("hate_expand", run_hate_expand_once),
                 ]
+            # Depth is the LAST thing in the cycle, after the discretionary
+            # hate steps, for the reason that put those after baseline: when
+            # the pool hits a rate-limit wall it must hit the work that can
+            # wait, never the coverage the whole corpus rests on.
+            def _parents_due() -> bool:
+                from kenya_monitor.parent_backfill import backfill_summary, load_state
+
+                latest = backfill_summary(load_state())["latest_fetch"]
+                return _depth_due(latest, DEPTH_EVERY_HOURS)
+
+            def _accounts_due() -> bool:
+                from kenya_monitor.deep_timelines import load_state, timeline_summary
+
+                latest = timeline_summary(load_state())["latest_fetch"]
+                return _depth_due(latest, DEPTH_EVERY_HOURS)
+
             steps += [
                 ("census_timelines", run_census_timelines_once),
                 ("metrics", run_metrics_once),
@@ -658,6 +695,13 @@ async def run_scheduler(limit: int) -> None:
                     ),
                 ),
             ]
+            if DEPTH_IN_CYCLE_ENABLED:
+                # Two steps rather than one, so an arm that raises does not
+                # take the other arm's pass with it.
+                if _parents_due():
+                    steps.append(("hydrate_parents", run_parent_backfill_once))
+                if _accounts_due():
+                    steps.append(("deep_timelines", run_deep_timelines_once))
             for name, step in steps:
                 try:
                     await step()

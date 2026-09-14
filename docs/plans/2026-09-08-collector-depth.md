@@ -572,3 +572,50 @@ The floor-clearing figure moved from 79,967 of 331,138 to 88,134 of 364,151
 between planning and this pass - partly hydration's new authors, partly
 collection continuing. Any before/after comparison must pin a `bench` snapshot;
 an unpinned read cannot support one.
+
+## Depth as a standing cost (2026-09-14)
+
+Both arms were kept out of `run_scheduler`'s cycle deliberately, and the
+docstrings said why: budget (1 request per parent id, ~10 per account, either
+one able to become the dominant consumer of pool budget) and, for deep
+timelines, methodology - a pass that conditions collection on v2's own output
+wanted to be an explicit, dated, bounded act.
+
+Two things changed.
+
+**Collection runs to August 2027, so a one-off pass is always overtaken.**
+Hydration went 44% -> 49.8% in a bounded pass and 60% was measured unreachable
+as a one-off; the denominator grows with every cycle. Deep-timeline yield
+decays by construction - the strata put the thinnest accounts first, so every
+pass consumes the targets worth having.
+
+**The feedback worry runs the other way.** The ranking check above found
+deepening makes an account FALL out of the ranking. Depth corrects a
+measurement rather than inflating one, so the argument for keeping it a rare
+explicit act is weaker than the argument for keeping coverage level.
+
+Attribution survives regardless: deepened accounts are still recorded to
+`deep_timelines/` with pre-treatment state, and posts still land in TARGETED
+partitions that leave every prevalence denominator.
+
+### The cadence, and why it is not a cycle counter
+
+`DEPTH_IN_CYCLE_ENABLED` (default on) appends two steps to the end of a cycle,
+after the discretionary hate steps, for the reason those sit after baseline:
+when the pool hits a rate-limit wall it must hit the work that can wait.
+
+`DEPTH_EVERY_HOURS` is 12, gated per arm on that arm's own ledger
+(`_depth_due`). Three measurements set this:
+
+- Cycles on pi0 ran 107-283 minutes over 2026-09-13/14 (mean ~230), so 12 hours
+  is about every third cycle - the "every Nth cycle" spirit of the hate steps.
+- Each arm pays a ~21 minute candidate query against live R2 before it fetches
+  anything. A 200-id pass per cycle spends 78% of its wall clock on selection,
+  so fewer, larger passes buy strictly more per request. Sizes stay at the
+  existing per-pass bounds (`PARENT_BACKFILL_LIMIT` 500, `DEEP_TIMELINE_LIMIT`
+  50), which is ~1,000 requests per 12 hours across both arms.
+- Gating on the ledger rather than on `cycle` or a monotonic deadline is not a
+  style choice. `cycle` resets to 0 on every restart - the pi0 logs show it
+  resetting twice in two days - and that is exactly how the hate steps reached
+  0 executions across a container lifetime. Both ledgers already record when
+  the pass last fetched, and they outlive the container.
