@@ -1198,6 +1198,21 @@ def observed_selections(
     can see. This is ground truth: what the collector actually did, read after
     the fact, the same way `census_runs` counters are. The object-level pin to
     the snapshot still holds - nothing outside the manifest is ever read.
+
+    WHAT THIS CANNOT DO, measured 2026-09-14 and the reason C1 closed
+    ================================================================
+    The ledger records BOTH census arms and carries no channel column, so it
+    cannot be ground truth for the retweeted arm alone. Over 10 passes it
+    returns 5,197 objects against `census_runs`' own 2,795 retweeted + 2,500
+    conversations = 5,295. Scoring a retweeted-arm policy against it gives
+    recall 0.095 and precision 0.166 - worse than the engagement ground truth's
+    0.751/0.635, not because the policy is worse but because half the target set
+    is a channel it never selects from.
+
+    Making this usable is a one-line collector change - write the arm beside
+    each `object_id` in `storage.write_census_ttl` - plus weeks of accumulation.
+    It is recorded in `docs/plans/2026-09-08-finishing-the-revamp.md` as the
+    thing that would reopen C1, not as work in flight.
     """
     from kma.bench import pinned_source
 
