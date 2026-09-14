@@ -1218,8 +1218,11 @@ def truncate_to_live(
     replay always fetches all of it, so the tail is scored as replayed-only.
     `census_runs.fetched_retweeted` is the collector's own count of what landed.
 
-    A prefix, not a sample, because both sides order by `repost_count`
-    descending - so the objects a truncated pass did reach are its head.
+    A prefix, not a sample, because the live collector fetches in selection
+    order and the replay builds the same ordered list - baseline by `deg DESC,
+    n_rt_rows DESC, oid`, then the toxic arm appended. So the objects a
+    truncated pass did reach are the head of that list, and cutting the
+    replay's list to the same length compares like with like.
     """
     metrics = census_pass_metrics(con)
     if metrics.empty:
