@@ -233,6 +233,12 @@ CONTROL_WINDOW_CAP = int(os.getenv("CONTROL_WINDOW_CAP", "100"))
 # Windows per pass. 4 x 15 minutes is an hour of sampled time per pass at
 # roughly one request per window page.
 CONTROL_WINDOWS_PER_PASS = int(os.getenv("CONTROL_WINDOWS_PER_PASS", "4"))
+# Include native retweets in the census. True, because the frame should be
+# everything posted in the window and silently dropping a category is the kind
+# of unstated choice this arm exists to avoid. It raises volume, so it also
+# raises the truncation rate - which `control_runs.truncated` measures rather
+# than hides.
+CONTROL_INCLUDE_RETWEETS = os.getenv("CONTROL_INCLUDE_RETWEETS", "1") not in ("0", "false", "")
 # Hours between control passes, gated on the ledger for the reason
 # DEPTH_EVERY_HOURS is: `cycle` resets on every restart.
 CONTROL_EVERY_HOURS = float(os.getenv("CONTROL_EVERY_HOURS", "6"))

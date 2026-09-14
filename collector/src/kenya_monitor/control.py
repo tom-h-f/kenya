@@ -77,6 +77,7 @@ import yaml
 from kenya_monitor.collectors.base import Collector, Post
 from kenya_monitor.config import (
     CONTROL_FRAME_PATH,
+    CONTROL_INCLUDE_RETWEETS,
     CONTROL_STATE_PATH,
     CONTROL_WINDOWS_PER_PASS,
     CONTROL_WINDOW_CAP,
@@ -211,6 +212,7 @@ async def collect_control(
     windows: int = CONTROL_WINDOWS_PER_PASS,
     minutes: int = CONTROL_WINDOW_MINUTES,
     cap: int = CONTROL_WINDOW_CAP,
+    include_retweets: bool = CONTROL_INCLUDE_RETWEETS,
     seed: int | None = None,
     frame: Frame | None = None,
     state_path: Path = CONTROL_STATE_PATH,
@@ -248,6 +250,7 @@ async def collect_control(
                 since=_stamp(start),
                 until=_stamp(end),
                 product=SEARCH_PRODUCT,
+                include_retweets=include_retweets,
                 anchors=list(frame.anchors),
             )
         ]
@@ -265,6 +268,7 @@ async def collect_control(
                 "frame_keyword": frame.keyword,
                 "frame_anchors": " OR ".join(frame.anchors),
                 "cap": int(cap),
+                "include_retweets": bool(include_retweets),
                 "posts": len(got),
                 # The census claim holds only where this is false. A window at
                 # the cap is a sample of an unknown larger set.

@@ -167,6 +167,11 @@ CONTROL_RUN_SCHEMA = pa.schema(
         ("frame_anchors", pa.string()),
         ("frame_terms", pa.int64()),
         ("cap", pa.int64()),
+        # Recorded rather than assumed. Retweets are amplification rather than
+        # authored text, so including or excluding them changes what the
+        # denominator IS - and a rate computed over one is not comparable with
+        # a rate computed over the other.
+        ("include_retweets", pa.bool_()),
         ("posts", pa.int64()),
         # False is the census claim; True says this window may have held more
         # than we took, so it is a ranked sample of an unknown larger set.
