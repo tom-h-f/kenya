@@ -918,3 +918,28 @@ def test_truncating_leaves_a_pass_alone_when_no_run_row_is_near_it():
         replay.census_pass_metrics = original
 
     assert kept == ["a", "b", "c"]
+
+
+def test_observed_selections_sees_a_ledger_captured_after_the_window_ended(corpus):
+    """The bug that made the ledger ground truth a silent no-op.
+
+    A pass's TTL ledger is written at the END of that pass, normally after the
+    next pass has started. Clipping it at the window end therefore dropped the
+    very rows the window was asking about, and `reproduce` fell back to
+    engagement writes on 10 passes of 10 while reporting the same numbers as the
+    baseline - a total fallback that looks exactly like "the switch did nothing".
+    """
+    con, root, _ = corpus
+    start = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=15)
+    _write_census_ttl(con, root, end + timedelta(hours=3), [
+        {
+            "object_id": "selected-in-window",
+            "censused_at": (start + timedelta(minutes=2)).isoformat(),
+            # Captured hours later, which is what the collector really does.
+            "captured_at": (end + timedelta(hours=3)).isoformat(),
+        },
+    ])
+    manifest = _manifest_with_ttl(con, root)
+
+    assert replay.observed_selections(con, manifest, start, end) == {"selected-in-window"}

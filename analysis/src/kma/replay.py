@@ -1185,21 +1185,28 @@ def observed_selections(
     the caller must fall back rather than score every pass against nothing. The
     ledger has only been captured since 2026-09-08.
 
-    Clipped on `captured_at`, selected on `censused_at`. The ledger is written
-    at the END of a pass, so a pass that ran past the start of the next one has
-    its rows clipped out and its selections undercounted - the conservative
-    direction, since it charges the replay rather than crediting it. The
-    per-pass `observed` column is where that would show, as a count far below
-    the `selected_retweeted` the collector recorded.
+    Selected on `censused_at`, and NOT clipped at the pass boundary.
+
+    That is deliberate and it is the difference between this working and not.
+    The ledger recording a pass is written at the END of that pass, normally
+    after the next pass has already started, so clipping `captured_at` at the
+    window end drops the very rows the window is asking about - measured
+    2026-09-14, it fell back on 10 passes of 10 and scored identically to the
+    engagement ground truth, which is what a silent total fallback looks like.
+
+    Clipping is a leakage control and leakage is a property of what the POLICY
+    can see. This is ground truth: what the collector actually did, read after
+    the fact, the same way `census_runs` counters are. The object-level pin to
+    the snapshot still holds - nothing outside the manifest is ever read.
     """
-    src = clipped_source(
-        manifest,
-        "census_ttl",
-        end,
-        column="CAST(captured_at AS TIMESTAMPTZ)",
-        **({"platform": platform} if platform else {}),
-    )
-    if src is None:
+    from kma.bench import pinned_source
+
+    try:
+        src = pinned_source(
+            manifest, "census_ttl", **({"platform": platform} if platform else {})
+        )
+    except ValueError:
+        # The snapshot predates the ledger (captured since 2026-09-08).
         return None
     rows = con.sql(
         f"""

@@ -36,8 +36,13 @@ image = (
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name("kenya-r2")],
-    cpu=4,
-    memory=16384,
+    # Sized from what the work actually uses, not from the laptop failure that
+    # moved it here: the replay peaked around 1.5 GiB locally, and the mac kill
+    # was system memory PRESSURE from other processes, not a large working set.
+    # Asking for 16 GiB left these calls queued for hours waiting on capacity -
+    # an over-request is not free, it is a scheduling penalty.
+    cpu=2,
+    memory=6144,
     timeout=60 * 60 * 4,
 )
 def one(variant: dict) -> dict:

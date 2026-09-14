@@ -1,0 +1,28 @@
+{
+  "baseline@10": {
+    "label": "baseline",
+    "passes": 10,
+    "shift_min": 0.0,
+    "ground_truth": "engagements",
+    "truncate": false,
+    "recall": 0.751,
+    "precision": 0.635,
+    "jaccard": 0.524,
+    "replayed": 2973,
+    "observed": 2514,
+    "seconds": 2506
+  },
+  "ledger@10": {
+    "label": "ledger",
+    "passes": 10,
+    "shift_min": 0.0,
+    "ground_truth": "census_ttl",
+    "truncate": false,
+    "recall": 0.751,
+    "precision": 0.635,
+    "jaccard": 0.524,
+    "replayed": 2973,
+    "observed": 2514,
+    "seconds": 2577
+  }
+}
