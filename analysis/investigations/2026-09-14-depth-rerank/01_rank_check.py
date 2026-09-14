@@ -27,7 +27,10 @@ controls are reported beside it:
     all. A treated exit rate below this is noise.
   - a MATCHED control: untreated accounts drawn from the same before-rank
     bands as the treated ones, so "fell out" is measured against accounts that
-    started where the treated accounts started.
+    started where the treated accounts started. When the depth pass held some
+    of its selection back (`deep_timelines.hold_out`), that holdout is the
+    control and is reported separately - it is the only control drawn from the
+    same population by the same rule.
 """
 
 import argparse
@@ -82,6 +85,13 @@ def main() -> None:
 
     ledger = db.deepened_accounts(con).df()
     ledger["user_id"] = ledger["user_id"].astype(str)
+    holdout = db.held_out_accounts(con).df()
+    holdout["user_id"] = holdout["user_id"].astype(str)
+    held_ids = set(
+        holdout.loc[
+            (holdout["held_out_at"] > t0) & (holdout["held_out_at"] <= t1), "user_id"
+        ]
+    )
     treated = ledger[
         (ledger["first_deepened_at"] > t0) & (ledger["first_deepened_at"] <= t1)
     ]
@@ -93,7 +103,10 @@ def main() -> None:
 
     joined = before.merge(after, on="user_id", how="outer", suffixes=("_before", "_after"))
     joined["treated"] = joined["user_id"].isin(set(treated["user_id"]))
+    joined["held_out"] = joined["user_id"].isin(held_ids)
     joined["prior"] = joined["user_id"].isin(set(earlier["user_id"]))
+    if held_ids:
+        print(f"holdout arm: {len(held_ids):,} accounts selected and deliberately not fetched")
 
     top_before = set(before.loc[before["rank"] <= args.top, "user_id"])
     top_after = set(after.loc[after["rank"] <= args.top, "user_id"])
@@ -109,9 +122,14 @@ def main() -> None:
     pool["band"] = _band(pool["rank_before"], args.band)
 
     was_top = pool[pool["in_top_before"]]
+    arms = [("treated", was_top[was_top["treated"]])]
+    if held_ids:
+        arms.append(("holdout", was_top[was_top["held_out"]]))
+    arms.append(
+        ("untreated", was_top[~was_top["treated"] & ~was_top["held_out"]])
+    )
     rows = []
-    for label, arm in (("treated", was_top[was_top["treated"]]),
-                       ("untreated", was_top[~was_top["treated"]])):
+    for label, arm in arms:
         rows.append({
             "arm": label,
             "in top before": len(arm),
@@ -128,15 +146,15 @@ def main() -> None:
     matched = []
     for band, group in was_top.groupby("band"):
         t = group[group["treated"]]
-        u = group[~group["treated"]]
+        u = group[group["held_out"]] if held_ids else group[~group["treated"]]
         if t.empty:
             continue
         matched.append({
             "before rank": f"{int(band) + 1}-{int(band) + args.band}",
             "treated": len(t),
             "treated kept": f"{t['in_top_after'].mean():.1%}",
-            "untreated": len(u),
-            "untreated kept": f"{u['in_top_after'].mean():.1%}" if len(u) else "-",
+            "control": len(u),
+            "control kept": f"{u['in_top_after'].mean():.1%}" if len(u) else "-",
         })
     if matched:
         print("\nmatched on before-rank band")

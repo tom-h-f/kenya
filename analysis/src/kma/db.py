@@ -766,12 +766,20 @@ def deep_timelines_source(platform: str = "*") -> str:
 
 
 def deepened_accounts(con: duckdb.DuckDBPyConnection, platform: str = "x", before=None):
-    """Accounts deepened at least once, with their first pre-treatment state.
+    """Accounts actually deepened, with their first pre-treatment state.
 
     First rather than last: the covariate the check conditions on is what was
     known before ANY depth was added, and a refresh pass records the account as
-    it stood after the first one."""
-    where = f"WHERE collected_at <= TIMESTAMP '{before}'" if before else ""
+    it stood after the first one.
+
+    Held-back accounts are excluded here and returned by `held_out_accounts`
+    instead. They are in the same prefix because they are the same selection -
+    but an account chosen and deliberately not fetched is the control arm, and
+    counting it as treated would erase the comparison it exists to make."""
+    clauses = ["status <> 'holdout'"]
+    if before:
+        clauses.append(f"collected_at <= TIMESTAMP '{before}'")
+    where = "WHERE " + " AND ".join(clauses)
     return con.sql(
         f"""
         SELECT user_id,
@@ -784,6 +792,28 @@ def deepened_accounts(con: duckdb.DuckDBPyConnection, platform: str = "x", befor
                count(*) AS passes
         FROM {deep_timelines_source(platform)}
         {where}
+        GROUP BY user_id
+        """
+    )
+
+
+def held_out_accounts(con: duckdb.DuckDBPyConnection, platform: str = "x"):
+    """The untreated control arm: accounts a depth pass selected and did not
+    fetch (`deep_timelines.hold_out`).
+
+    They matter more than they look. A pass that deepens its whole target set
+    leaves "the top 500 churned" indistinguishable from "a recomputed ranking
+    churns", and it does - untreated retention between the 2026-09-14 pair of
+    runs was 51.5%."""
+    return con.sql(
+        f"""
+        SELECT user_id,
+               min(collected_at) AS held_out_at,
+               arg_min(rank_value, collected_at) AS rank_value_before,
+               arg_min(stratum, collected_at) AS stratum,
+               arg_min(held_posts_before, collected_at) AS held_posts_before
+        FROM {deep_timelines_source(platform)}
+        WHERE status = 'holdout'
         GROUP BY user_id
         """
     )
