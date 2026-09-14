@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kenya 2027 Monitor: Method Report</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --ink: #17191c;
+  --ink-soft: #5a6068;
+  --rule: #d9d6cf;
+  --ground: #faf8f4;
+  --panel: #ffffff;
+  --accent: #8c2f1f;
+  --ok: #2f6b4f;
+  --serif: "Newsreader", Georgia, serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: #eceae5; --ink-soft: #9ba1a8; --rule: #33373c;
+    --ground: #15171a; --panel: #1c1f23; --accent: #e08b75; --ok: #7fbb9a;
+  }
+}
+:root[data-theme="dark"] {
+  --ink: #eceae5; --ink-soft: #9ba1a8; --rule: #33373c;
+  --ground: #15171a; --panel: #1c1f23; --accent: #e08b75; --ok: #7fbb9a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--ground); color: var(--ink);
+  font-family: var(--serif); font-size: 18px; line-height: 1.55;
+  padding-block: 3rem; padding-left: 1.25rem; padding-right: 1.25rem;
+}
+main { max-width: 46rem; margin: 0 auto; display: flex; flex-direction: column; gap: 3rem; }
+h1 { font-size: 2.2rem; font-weight: 600; line-height: 1.15; margin: 0 0 .5rem; text-wrap: balance; }
+h2 { font-size: 1.35rem; font-weight: 600; margin: 0 0 .6rem; text-wrap: balance; }
+p { margin: 0 0 .9rem; max-width: 62ch; }
+.lede { color: var(--ink-soft); font-size: 1.05rem; }
+.eyebrow {
+  font-family: var(--mono); font-size: .7rem; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--ink-soft); margin: 0 0 .4rem;
+}
+section { border-top: 1px solid var(--rule); padding-top: 1.5rem; }
+table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: .82rem; }
+th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--rule); }
+th { font-weight: 500; color: var(--ink-soft); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.wrap { overflow-x: auto; }
+.prov { font-family: var(--mono); font-size: .72rem; color: var(--ink-soft); margin-top: .7rem; }
+.callout {
+  background: var(--panel); border-left: 3px solid var(--accent);
+  padding: 1rem 1.15rem; margin: 1rem 0 0;
+}
+.callout p:last-child { margin-bottom: 0; }
+.big { font-family: var(--mono); font-size: 2rem; font-weight: 500; letter-spacing: -.02em; }
+.pair { display: flex; flex-wrap: wrap; gap: 2.5rem; margin: 1rem 0; }
+.pair div { min-width: 8rem; }
+.pair .label { font-family: var(--mono); font-size: .7rem; text-transform: uppercase;
+  letter-spacing: .12em; color: var(--ink-soft); }
+.absent { color: var(--ink-soft); }
+.absent strong { color: var(--accent); }
+footer { border-top: 1px solid var(--rule); padding-top: 1.2rem;
+  font-family: var(--mono); font-size: .72rem; color: var(--ink-soft); }
+code { font-family: var(--mono); font-size: .85em; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Kenya 2027 election monitor</p>
+    <h1>What this method can and cannot claim</h1>
+    <p class="lede">Every number here survived an audit asking whether it is an
+    artifact of how the data was collected. The ones that did not survive are
+    named at the bottom rather than quietly left out.</p>
+  </header>
+
+  <section id="stability">
+    <p class="eyebrow">The result that constrains the others</p>
+    <h2>A ranking that does not survive being tested</h2>
+    <p>The detector ranks accounts by centrality. To test whether that ranking is
+    real, we collected the full posting history of a random 80% of the accounts it
+    ranked and left the other 20% untouched, then ranked again.</p>
+    <div class="pair" id="stability-pair"></div>
+    <div class="callout">
+      <p>Accounts that were given history <strong>left the ranking entirely</strong>.
+      The untouched control, drawn from the same list by the same rule, largely
+      stayed. The ranking was measuring how little we knew about an account, not
+      how coordinated it was.</p>
+    </div>
+    <p class="prov" id="stability-prov"></p>
+  </section>
+
+  <section id="benchmark">
+    <p class="eyebrow">Does the implementation work at all</p>
+    <h2>Reproduction against published benchmarks</h2>
+    <p>The same detector run against six published influence-operation datasets,
+    compared with the numbers their authors report. This is the only claim here
+    resting on someone else's ground truth.</p>
+    <div class="wrap"><table id="benchmark-table"></table></div>
+    <p class="prov" id="benchmark-prov"></p>
+  </section>
+
+  <section id="relevance">
+    <p class="eyebrow">How good is the Kenya filter</p>
+    <h2>Filter error, measured by hand</h2>
+    <div class="wrap"><table id="relevance-table"></table></div>
+    <p class="prov" id="relevance-prov"></p>
+  </section>
+
+  <section id="adjudication">
+    <p class="eyebrow">What the detector surfaced</p>
+    <h2>Read blind, by method</h2>
+    <div class="wrap"><table id="adjudication-table"></table></div>
+    <p class="prov" id="adjudication-prov"></p>
+  </section>
+
+  <section id="corpus">
+    <p class="eyebrow">What was collected</p>
+    <h2>Corpus by collection scope</h2>
+    <div class="wrap"><table id="corpus-table"></table></div>
+    <p class="prov" id="corpus-prov"></p>
+  </section>
+
+  <section id="absent">
+    <p class="eyebrow">Deliberately not here</p>
+    <h2>No prevalence rate</h2>
+    <p class="absent" id="absent-text"></p>
+  </section>
+
+  <footer id="footer"></footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function table(el, columns, rows) {
+  const head = "<thead><tr>" + columns.map(c =>
+    `<th class="${c.num ? "num" : ""}">${c.label}</th>`).join("") + "</tr></thead>";
+  const body = "<tbody>" + rows.map(r => "<tr>" + columns.map(c => {
+    const v = r[c.key];
+    return `<td class="${c.num ? "num" : ""}">${v === null || v === undefined ? "-" : v}</td>`;
+  }).join("") + "</tr>").join("") + "</tbody>";
+  el.innerHTML = head + body;
+}
+
+function pct(v) { return v === null || v === undefined ? "-" : (v * 100).toFixed(1) + "%"; }
+
+function render(f) {
+  const s = f.live.ranking_stability;
+  $("stability-pair").innerHTML = `
+    <div><div class="label">Deepened</div>
+      <div class="big">${pct(s.treated.retained)}</div>
+      <div class="label">${s.treated.in_top_after} of ${s.treated.in_top_before} kept</div></div>
+    <div><div class="label">Untouched control</div>
+      <div class="big">${pct(s.holdout.retained)}</div>
+      <div class="label">${s.holdout.in_top_after} of ${s.holdout.in_top_before} kept</div></div>
+    <div><div class="label">Whole-list overlap</div>
+      <div class="big">${pct(s.churn_floor)}</div>
+      <div class="label">between the two runs</div></div>`;
+  $("stability-prov").textContent =
+    `runs ${s.before_run} to ${s.after_run}. ${s.note}`;
+
+  const b = f.recorded.benchmark_reproduction;
+  table($("benchmark-table"),
+    [{key: "country", label: "Dataset"},
+     {key: "published", label: "Published", num: true},
+     {key: "ours", label: "Ours", num: true}], b.rows);
+  $("benchmark-prov").textContent =
+    `${b.within_2sd} of ${b.rows.length} within 2 published SD. ${b.note} Source: ${b.source}, measured ${b.measured}.`;
+
+  const r = f.recorded.relevance_error;
+  table($("relevance-table"),
+    [{key: "method", label: "Method"},
+     {key: "precision", label: "Precision", num: true},
+     {key: "recall", label: "Recall", num: true}], r.rows);
+  $("relevance-prov").textContent =
+    `${r.labels} hand-labelled posts. ${r.note} Source: ${r.source}, measured ${r.measured}.`;
+
+  const a = f.recorded.adjudication;
+  table($("adjudication-table"),
+    [{key: "method", label: "Method"},
+     {key: "cases", label: "Cases", num: true},
+     {key: "political", label: "Political", num: true},
+     {key: "kenya_relevant", label: "Kenya-relevant", num: true}], a.rows);
+  $("adjudication-prov").textContent =
+    `Influence operations found: ${a.influence_operations_found}. ${a.note} Source: ${a.source}, measured ${a.measured}.`;
+
+  const c = f.live.corpus_shape;
+  table($("corpus-table"),
+    [{key: "scope", label: "Scope"}, {key: "posts", label: "Posts", num: true}],
+    Object.entries(c.by_scope).map(([scope, posts]) =>
+      ({scope, posts: posts.toLocaleString()})));
+  $("corpus-prov").textContent = `snapshot ${c.snapshot}. ${c.note}`;
+
+  $("absent-text").innerHTML = "<strong>" + f.absent.prevalence + "</strong>";
+  $("footer").textContent = `Generated ${f.generated_at}. Every figure is stamped with the run or document it came from.`;
+}
+
+fetch("figures.json")
+  .then(r => r.json())
+  .then(render)
+  .catch(e => { $("footer").textContent = "figures.json not found - run `uv run python -m kma.figures` first. " + e; });
+</script>
+</body>
+</html>

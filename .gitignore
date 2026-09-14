@@ -30,3 +30,6 @@ node_modules/
 
 # Claude Code session state and worktrees (worktrees are embedded git repos)
 .claude/
+
+# Generated figures - recomputed by `uv run python -m kma.figures`.
+analysis/figures/figures.json

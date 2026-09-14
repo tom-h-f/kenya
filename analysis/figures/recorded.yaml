@@ -1,0 +1,50 @@
+# Figures that are NOT derivable from a persisted artifact, with their source.
+#
+# Every entry carries where it came from and when, because the whole argument of
+# this project is that a number without its collection context is not a number.
+# `kma.figures` refuses to export an entry missing `source` or `measured`.
+#
+# Keep this short. A number that CAN be computed from R2 belongs in the live
+# half of the exporter, where it is recomputed rather than transcribed - a
+# transcribed number goes stale silently.
+
+benchmark_reproduction:
+  title: Method reproduction against the IOHunter benchmark
+  measured: 2026-09-11
+  source: docs/analysis/v2-findings.md
+  note: >
+    Iran is judged against the reference implementation's own output (71.31),
+    not the published 60.83, because the benchmark disagrees with itself.
+  rows:
+    - {country: UAE, published: 84.66, ours: 84.64}
+    - {country: cuba, published: 57.92, ours: 57.92}
+    - {country: russia, published: 87.65, ours: 87.83}
+    - {country: venezuela, published: 95.05, ours: 95.05}
+    - {country: iran, published: 71.31, ours: 71.43}
+    - {country: china, published: 63.66, ours: 63.67}
+  within_2sd: 6
+
+relevance_error:
+  title: What the Kenya filter gets right and wrong
+  measured: 2026-09-13
+  source: analysis/investigations/2026-09-12-relevance-classifier/findings.md
+  labels: 88
+  note: >
+    Human labels, drawn fresh, judged blind, corpus-weighted. The honest framing
+    is "the filter finds about 83% of Kenyan posts at about 89% precision", not
+    "X% of the corpus is Kenyan".
+  rows:
+    - {method: keyword gate, precision: 0.973, recall: 0.516}
+    - {method: learned classifier, precision: 0.889, recall: 0.827}
+
+adjudication:
+  title: What a blind reader made of what the detector surfaced
+  measured: 2026-09-12
+  source: analysis/investigations/2026-09-12-component-ranking/findings.md
+  note: >
+    Model verdicts, 17 cases per method, read blind. A description of the
+    method's output, never a prevalence rate - there is no denominator.
+  rows:
+    - {method: v2, cases: 17, political: 5, kenya_relevant: 12}
+    - {method: v1, cases: 17, political: 1, kenya_relevant: 3}
+  influence_operations_found: 0
