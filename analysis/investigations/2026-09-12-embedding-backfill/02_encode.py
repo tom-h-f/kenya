@@ -10,6 +10,12 @@ production prefix and have to be interchangeable with the ones already there.
 First re-encodes `check.parquet` and compares with the persisted vectors; it
 refuses to encode the backlog if the worst cosine falls below `--min-cosine`.
 Needs no R2 credentials.
+
+Encodes in chunks and saves each one, for the same reason `03_write.py` records
+its uploads: a run that dies at 90% must cost one chunk rather than the whole
+pass. Two runs were lost this way - the mac's low-memory watchdog killed a
+batch-256 pass, and the retry was abandoned mid-flight - and neither left
+anything behind.
 """
 
 import argparse
@@ -39,6 +45,7 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--limit", type=int, default=0, help="first N pending posts only, for a timing run")
     ap.add_argument("--min-cosine", type=float, default=0.999)
+    ap.add_argument("--chunk", type=int, default=10_000, help="posts per saved part")
     args = ap.parse_args()
 
     # CUDA on the GPU box, MPS on the mac, CPU anywhere else: the vectors go
@@ -63,14 +70,46 @@ def main() -> None:
         pending = pending.head(args.limit)
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
-    start = time.perf_counter()
-    vectors = encode(model, pending["text"].fillna("").tolist(), args.batch)
-    seconds = time.perf_counter() - start
     scope = f"_limit{args.limit}" if args.limit else ""
+    texts = pending["text"].fillna("").tolist()
+    parts_dir = args.out_dir / f"parts{scope}"
+    parts_dir.mkdir(exist_ok=True)
+
+    start = time.perf_counter()
+    encoded = 0
+    paths = []
+    for k, lo in enumerate(range(0, len(texts), args.chunk)):
+        path = parts_dir / f"{k:04d}.npy"
+        paths.append(path)
+        if path.exists():
+            print(f"part {k}: already encoded, skipping", flush=True)
+            continue
+        chunk_start = time.perf_counter()
+        got = encode(model, texts[lo : lo + args.chunk], args.batch)
+        # Write to a temp name and rename, so a kill mid-write cannot leave a
+        # truncated part that the next run would skip as done.
+        # `.tmp.npy`, not `.npy.tmp`: np.save appends `.npy` to any name that
+        # does not already end in it, so the temp file would land somewhere the
+        # rename could not find.
+        tmp = path.with_name(f"{path.stem}.tmp.npy")
+        np.save(tmp, got)
+        tmp.rename(path)
+        encoded += len(got)
+        print(
+            f"part {k}: {len(got):,} posts in {time.perf_counter() - chunk_start:.0f}s "
+            f"-> {path.name}",
+            flush=True,
+        )
+    vectors = np.concatenate([np.load(p) for p in paths]) if paths else np.empty((0, 768))
+    seconds = time.perf_counter() - start
     np.save(args.out_dir / f"vectors{scope}.npy", vectors)
     pending[["platform_post_id"]].to_parquet(args.out_dir / f"vector_ids{scope}.parquet")
     peak = f", peak {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB" if device == "cuda" else ""
-    print(f"encoded {len(pending):,} posts in {seconds:.0f}s ({len(pending) / seconds:,.0f}/s){peak}")
+    rate = f"{encoded / seconds:,.0f}/s" if encoded and seconds else "resumed"
+    print(
+        f"encoded {encoded:,} of {len(pending):,} posts in {seconds:.0f}s ({rate}){peak}; "
+        f"vectors{scope}.npy holds {len(vectors):,}"
+    )
 
 
 if __name__ == "__main__":
