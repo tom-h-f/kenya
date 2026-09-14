@@ -803,3 +803,143 @@ def test_the_merged_policy_appends_the_toxic_arm_after_the_baseline(corpus, grou
     assert [r.target for r in merged][: len(base)] == base
     assert len(set(r.target for r in merged)) == len(merged), "no object is censused twice"
     assert [r.rank for r in merged] == list(range(len(merged))), "ranks stay dense for --budget"
+
+
+# --------------------------------------------------------------------------
+# The three tolerance terms that now have evidence behind them (C1).
+
+
+def _write_census_ttl(
+    con: duckdb.DuckDBPyConnection, root: Path, when: datetime, rows: list[dict]
+) -> None:
+    key = f"census_ttl/platform=x/dt={when:%Y-%m-%d}/run={when:%Y%m%dT%H%M%SZ}.parquet"
+    path = root / key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con.register("_c", pd.DataFrame(rows))
+    con.execute(f"COPY _c TO '{path}' (FORMAT parquet)")
+    con.unregister("_c")
+
+
+def _manifest_with_ttl(con: duckdb.DuckDBPyConnection, root: Path) -> pd.DataFrame:
+    return bench.snapshot(
+        "fixture",
+        prefixes=("posts", "engagements", "hatespeech", "census_ttl"),
+        con=con,
+        client=LocalR2(root),
+        uri=lambda key: f"{root}/{key}",
+        write=False,
+    )
+
+
+def test_observed_selections_sees_an_object_whose_fetch_returned_nothing(corpus):
+    """The point of the ledger. An object selected whose retweeter fetch came
+    back empty writes no engagement row, so `observed_fetches` cannot see it and
+    the replay is charged for selecting it."""
+    con, root, _ = corpus
+    t = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+    _write_census_ttl(con, root, t, [
+        {"object_id": "empty-one", "censused_at": t.isoformat(), "captured_at": t.isoformat()},
+        {"object_id": "wrote-rows", "censused_at": t.isoformat(), "captured_at": t.isoformat()},
+    ])
+    manifest = _manifest_with_ttl(con, root)
+    end = t + timedelta(minutes=30)
+
+    selected = replay.observed_selections(con, manifest, t, end)
+    fetched = replay.observed_fetches(con, manifest, t, end)
+
+    assert selected == {"empty-one", "wrote-rows"}
+    assert "empty-one" not in fetched
+
+
+def test_observed_selections_is_none_when_the_window_has_no_ledger(corpus):
+    """None rather than an empty set: the ledger starts on 2026-09-08, and a
+    caller that read an empty set as ground truth would score every earlier
+    pass against nothing and call the replay perfectly wrong."""
+    con, root, _ = corpus
+    t = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+    _write_census_ttl(con, root, t, [
+        {"object_id": "o1", "censused_at": t.isoformat(), "captured_at": t.isoformat()},
+    ])
+    manifest = _manifest_with_ttl(con, root)
+
+    earlier = t - timedelta(days=1)
+    assert replay.observed_selections(con, manifest, earlier, t - timedelta(hours=1)) is None
+
+
+def test_reproduction_falls_back_when_the_ledger_does_not_cover_a_pass(corpus, ground_truth):
+    """A snapshot with no ledger at all must score exactly as it did before the
+    switch existed, not collapse to zero."""
+    con, _root, manifest = corpus
+    times = [datetime.fromisoformat(t) for t in ground_truth["pass_times"]]
+    policy = replay.IncumbentCensus(
+        band_min=3, band_max=100, lookback_days=2, top_retweeted=5, refresh_hours=12
+    )
+    kwargs = dict(manifest=manifest, times=times, snapshot="fixture", policy=policy)
+
+    plain = replay.reproduce(con, **kwargs)
+    ttl = replay.reproduce(con, ground_truth="census_ttl", **kwargs)
+
+    assert ttl.per_pass.equals(plain.per_pass)
+
+
+def test_truncating_to_the_live_fetch_count_keeps_the_head_of_the_selection():
+    """Both sides order by repost_count descending, so a truncated live pass
+    reached the head of its selection - the prefix, not a sample."""
+    con = duckdb.connect()
+    t = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+    con.execute(
+        "CREATE TABLE _runs AS SELECT ? AS collected_at, 5 AS top_retweeted, "
+        "5 AS selected_retweeted, 2 AS fetched_retweeted, 0 AS skipped_ttl_retweeted, "
+        "0 AS engagement_rows, '' AS code_version",
+        [t],
+    )
+    original = replay.census_pass_metrics
+    replay.census_pass_metrics = lambda _con: con.sql("SELECT * FROM _runs").df().assign(
+        excess=lambda f: f["selected_retweeted"] - f["top_retweeted"]
+    )
+    try:
+        kept = replay.truncate_to_live(con, ["a", "b", "c", "d", "e"], t)
+    finally:
+        replay.census_pass_metrics = original
+
+    assert kept == ["a", "b"]
+
+
+def test_truncating_leaves_a_pass_alone_when_no_run_row_is_near_it():
+    """An unmatched pass is left whole rather than truncated to zero: the
+    conservative direction is the one that does not invent agreement."""
+    con = duckdb.connect()
+    t = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+    original = replay.census_pass_metrics
+    replay.census_pass_metrics = lambda _con: pd.DataFrame()
+    try:
+        kept = replay.truncate_to_live(con, ["a", "b", "c"], t)
+    finally:
+        replay.census_pass_metrics = original
+
+    assert kept == ["a", "b", "c"]
+
+
+def test_observed_selections_sees_a_ledger_captured_after_the_window_ended(corpus):
+    """The bug that made the ledger ground truth a silent no-op.
+
+    A pass's TTL ledger is written at the END of that pass, normally after the
+    next pass has started. Clipping it at the window end therefore dropped the
+    very rows the window was asking about, and `reproduce` fell back to
+    engagement writes on 10 passes of 10 while reporting the same numbers as the
+    baseline - a total fallback that looks exactly like "the switch did nothing".
+    """
+    con, root, _ = corpus
+    start = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=15)
+    _write_census_ttl(con, root, end + timedelta(hours=3), [
+        {
+            "object_id": "selected-in-window",
+            "censused_at": (start + timedelta(minutes=2)).isoformat(),
+            # Captured hours later, which is what the collector really does.
+            "captured_at": (end + timedelta(hours=3)).isoformat(),
+        },
+    ])
+    manifest = _manifest_with_ttl(con, root)
+
+    assert replay.observed_selections(con, manifest, start, end) == {"selected-in-window"}
