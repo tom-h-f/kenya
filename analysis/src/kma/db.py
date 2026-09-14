@@ -708,6 +708,87 @@ def census_runs(con: duckdb.DuckDBPyConnection, platform: str = "x"):
     )
 
 
+def coord2_scores_source(platform: str = "*") -> str:
+    """A read_parquet(...) expression for persisted v2 account scores.
+
+    A SEPARATE prefix from `coordination/` because v1's unit is a cluster and
+    v2's is an account (see `coord2_run.persist`). Every run is one whole
+    ranking, so a read that does not pin `run` unions several rankings and
+    produces an account ordering that was never computed."""
+    glob = f"r2://{BUCKET}/coord2/platform={platform}/kind=scores/dt=*/run=*.parquet"
+    # `filename=true` rather than hive partitioning: `run=` is part of the OBJECT
+    # name, not a directory, so hive partitioning never exposes it - and the run
+    # id is the only thing that identifies one ranking.
+    return (
+        f"(SELECT * EXCLUDE (filename), "
+        f"regexp_extract(filename, 'run=([^/]+)\\.parquet', 1) AS run "
+        f"FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=true, "
+        f"filename=true))"
+    )
+
+
+def coord2_runs(con: duckdb.DuckDBPyConnection, platform: str = "x"):
+    """One row per persisted v2 run: its id, snapshot and account count."""
+    return con.sql(
+        f"""
+        SELECT run, any_value(snapshot) AS snapshot,
+               max(computed_at) AS computed_at, count(*) AS accounts
+        FROM {coord2_scores_source(platform)}
+        GROUP BY run ORDER BY computed_at
+        """
+    )
+
+
+def coord2_scores(con: duckdb.DuckDBPyConnection, run: str, platform: str = "x"):
+    """One v2 ranking, ranked. `run` is required rather than defaulted to the
+    latest: every caller here is comparing two rankings, and a silent "latest"
+    is how a comparison ends up made against itself."""
+    return con.sql(
+        f"""
+        SELECT *, row_number() OVER (ORDER BY centrality DESC) AS rank
+        FROM {coord2_scores_source(platform)}
+        WHERE run = '{run}'
+        """
+    )
+
+
+def deep_timelines_source(platform: str = "*") -> str:
+    """A read_parquet(...) expression for the deep-timeline ledger.
+
+    Written by `kenya_monitor.storage.write_deep_timeline_run`: one row per
+    account deepened, carrying the pre-treatment state (`rank_value`,
+    `stratum`, `held_posts_before`, `held_entities_before`) that makes the
+    artefact check a join on `user_id` rather than archaeology. Deepening an
+    account because v2 surfaced it changes what v2 sees of it, so no v2 run
+    taken after a depth pass should be read without this beside it."""
+    glob = f"r2://{BUCKET}/deep_timelines/platform={platform}/dt=*/run=*.parquet"
+    return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+
+def deepened_accounts(con: duckdb.DuckDBPyConnection, platform: str = "x", before=None):
+    """Accounts deepened at least once, with their first pre-treatment state.
+
+    First rather than last: the covariate the check conditions on is what was
+    known before ANY depth was added, and a refresh pass records the account as
+    it stood after the first one."""
+    where = f"WHERE collected_at <= TIMESTAMP '{before}'" if before else ""
+    return con.sql(
+        f"""
+        SELECT user_id,
+               min(collected_at) AS first_deepened_at,
+               arg_min(rank_value, collected_at) AS rank_value_before,
+               arg_min(stratum, collected_at) AS stratum,
+               arg_min(held_posts_before, collected_at) AS held_posts_before,
+               arg_min(held_entities_before, collected_at) AS held_entities_before,
+               sum(posts_written) AS posts_written,
+               count(*) AS passes
+        FROM {deep_timelines_source(platform)}
+        {where}
+        GROUP BY user_id
+        """
+    )
+
+
 def collection_runs_source(platform: str = "*") -> str:
     """A read_parquet(...) expression for the collector's per-query audit trail.
 
