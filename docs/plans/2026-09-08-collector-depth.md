@@ -614,6 +614,10 @@ when the pool hits a rate-limit wall it must hit the work that can wait.
   so fewer, larger passes buy strictly more per request. Sizes stay at the
   existing per-pass bounds (`PARENT_BACKFILL_LIMIT` 500, `DEEP_TIMELINE_LIMIT`
   50), which is ~1,000 requests per 12 hours across both arms.
+- Measured on the 500-account pass of 2026-09-14: selection 22 minutes,
+  fetching 5.9 accounts per minute (about 10 seconds per account at depth 200).
+  So a 50-account pass is 22 minutes of selection and 8 of fetching - 73% of its
+  wall clock on selection even at this size, and worse at any smaller one.
 - Gating on the ledger rather than on `cycle` or a monotonic deadline is not a
   style choice. `cycle` resets to 0 on every restart - the pi0 logs show it
   resetting twice in two days - and that is exactly how the hate steps reached

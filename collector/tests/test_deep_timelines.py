@@ -1038,3 +1038,80 @@ def test_depth_caps_the_targets_own_posts_only(monkeypatch):
     ctx = [p for p in got if p.author_id != "42"]
     assert len(own) == 10, "own posts must be capped at the requested depth"
     assert len(ctx) == 50, "context posts are free and must not be dropped"
+
+
+# --------------------------------------------------------------------------
+# The control arm. A pass that covers its whole target set leaves the ranking
+# check with nothing to compare against.
+
+
+def _targets(n: int) -> list[DeepTarget]:
+    return [
+        DeepTarget(
+            user_id=str(i),
+            rank_value=1.0 - i / 1000,
+            rank_metric="centrality",
+            source=SOURCE_SCORES,
+            source_run="run=x",
+            held_posts=2 + i,
+            held_entities=2,
+            stratum=1,
+        )
+        for i in range(n)
+    ]
+
+
+def test_the_holdout_splits_the_selection_and_keeps_every_account():
+    from kenya_monitor.deep_timelines import hold_out
+
+    treated, held = hold_out(_targets(100), 0.2, seed=0)
+
+    assert len(held) == 20
+    assert len(treated) == 80
+    assert {t.user_id for t in treated} | {t.user_id for t in held} == {
+        str(i) for i in range(100)
+    }
+
+
+def test_the_holdout_is_reproducible_from_its_seed():
+    from kenya_monitor.deep_timelines import hold_out
+
+    first = hold_out(_targets(50), 0.2, seed=7)[1]
+    again = hold_out(_targets(50), 0.2, seed=7)[1]
+    other = hold_out(_targets(50), 0.2, seed=8)[1]
+
+    assert [t.user_id for t in first] == [t.user_id for t in again]
+    assert [t.user_id for t in first] != [t.user_id for t in other]
+
+
+def test_the_holdout_is_drawn_from_the_whole_ranking_not_its_tail():
+    """The strata put the thinnest accounts first, so a tail slice would make
+    the control the accounts least like the treated ones."""
+    from kenya_monitor.deep_timelines import hold_out
+
+    held = hold_out(_targets(100), 0.2, seed=0)[1]
+    positions = [int(t.user_id) for t in held]
+
+    assert min(positions) < 50 and max(positions) >= 50
+
+
+def test_no_holdout_leaves_the_selection_whole():
+    from kenya_monitor.deep_timelines import hold_out
+
+    treated, held = hold_out(_targets(10), 0.0, seed=0)
+
+    assert held == []
+    assert len(treated) == 10
+
+
+def test_holdout_rows_record_pre_treatment_state_and_no_posts():
+    """A held-back account was selected and deliberately not fetched, which is
+    a different outcome from one that was fetched and returned nothing."""
+    from kenya_monitor.deep_timelines import STATUS_HOLDOUT, holdout_rows
+
+    rows = holdout_rows(_targets(2), depth=200)
+
+    assert [r["status"] for r in rows] == [STATUS_HOLDOUT, STATUS_HOLDOUT]
+    assert [r["posts_written"] for r in rows] == [0, 0]
+    assert rows[0]["held_posts_before"] == 2
+    assert rows[0]["rank_metric"] == "centrality"

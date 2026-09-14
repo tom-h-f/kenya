@@ -165,6 +165,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -796,6 +797,64 @@ def _log_coverage(targets: Sequence[DeepTarget], stats: dict) -> None:
     )
 
 
+STATUS_HOLDOUT = "holdout"
+
+
+def hold_out(
+    targets: Sequence[DeepTarget], fraction: float, seed: int
+) -> tuple[list[DeepTarget], list[DeepTarget]]:
+    """Split a ranked target list into a treated arm and an untreated control.
+
+    A pass that deepens its WHOLE target set leaves the check with no control.
+    The 2026-09-14 ranking check could compare treated accounts against
+    untreated ones only because the pass covered 100 of the top 500; at 500 of
+    500 the same comparison has nothing to stand against, and "the top 500
+    churned" is indistinguishable from "a recomputed ranking churns", which it
+    does - untreated retention was 51.5% over the same pair of runs.
+
+    Uniform at random over the whole ranked list, seeded so the split is
+    reproducible and so it can be stated in advance. NOT a tail slice: the
+    strata put the thinnest accounts first, so holding back the tail would
+    make the control the accounts least like the treated ones.
+    """
+    if not 0.0 < fraction < 1.0:
+        return list(targets), []
+    ordered = list(targets)
+    n = round(len(ordered) * fraction)
+    if not n:
+        return ordered, []
+    held = set(random.Random(seed).sample(range(len(ordered)), n))
+    return (
+        [t for i, t in enumerate(ordered) if i not in held],
+        [t for i, t in enumerate(ordered) if i in held],
+    )
+
+
+def holdout_rows(held: Sequence[DeepTarget], depth: int) -> list[dict]:
+    """Control-arm rows for `deep_timelines/`, so the split is recorded where
+    the treated set is and the check stays a join.
+
+    `posts_written` is 0 and `status` is `holdout`: these accounts were
+    selected and deliberately not fetched, which is a different thing from an
+    account that was fetched and returned nothing."""
+    return [
+        {
+            "user_id": t.user_id,
+            "source": t.source,
+            "source_run": t.source_run,
+            "rank_metric": t.rank_metric,
+            "rank_value": t.rank_value,
+            "stratum": t.stratum,
+            "held_posts_before": t.held_posts,
+            "held_entities_before": t.held_entities,
+            "depth": int(depth),
+            "posts_written": 0,
+            "status": STATUS_HOLDOUT,
+        }
+        for t in held
+    ]
+
+
 async def collect_deep_timelines(
     collector: Collector,
     storage: Storage,
@@ -809,6 +868,8 @@ async def collect_deep_timelines(
     flush_every: int = DEEP_TIMELINE_FLUSH_EVERY,
     min_kenya_share: float | None = None,
     targets: list[DeepTarget] | None = None,
+    holdout: float = 0.0,
+    holdout_seed: int = 0,
     stats: dict | None = None,
 ) -> dict[str, int]:
     """One bounded pass: deepen up to `limit` accounts to `depth` posts each.
@@ -838,10 +899,24 @@ async def collect_deep_timelines(
             stats=stats,
         )
     targets = targets[: max(0, int(limit))]
+    targets, held = hold_out(targets, holdout, holdout_seed)
+    if held:
+        # Written before the first fetch, not at the end: the control arm has
+        # to exist in the record even if the pass aborts halfway, or the split
+        # cannot be stated after the fact.
+        key = storage.write_deep_timeline_run(
+            holdout_rows(held, depth), platform=collector.platform
+        )
+        log.info(
+            "deep timelines: holding back %d of %d account(s) as an untreated control -> %s",
+            len(held), len(held) + len(targets), key,
+        )
+        stats["holdout"] = len(held)
     _log_coverage(targets, stats)
 
     counts = {
         "selected": len(targets),
+        "holdout": len(held),
         "deepened": 0,
         "no_posts": 0,
         "failed": 0,

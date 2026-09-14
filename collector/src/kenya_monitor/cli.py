@@ -332,6 +332,12 @@ def deep_timelines_cmd(
         "--min-kenya-share",
         help="drop targets below this Kenya share (opt-in, not the default)",
     ),
+    holdout: float = typer.Option(
+        0.0,
+        "--holdout",
+        help="fraction of the selection to leave UNTREATED as a control arm",
+    ),
+    holdout_seed: int = typer.Option(0, "--holdout-seed", help="seed for the holdout split"),
 ) -> None:
     """Deepen the timelines of the accounts v2 surfaced.
 
@@ -471,7 +477,13 @@ def deep_timelines_cmd(
     from kenya_monitor.scheduler import run_deep_timelines_once
 
     counts = asyncio.run(
-        run_deep_timelines_once(limit=n, depth=d, min_kenya_share=min_kenya_share)
+        run_deep_timelines_once(
+            limit=n,
+            depth=d,
+            min_kenya_share=min_kenya_share,
+            holdout=holdout,
+            holdout_seed=holdout_seed,
+        )
     )
     typer.echo(f"deep-timelines: {counts}")
 
