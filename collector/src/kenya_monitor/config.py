@@ -193,6 +193,30 @@ DEEP_TIMELINE_FALLBACK_TARGETS = int(os.getenv("DEEP_TIMELINE_FALLBACK_TARGETS",
 # thing they exist to avoid.
 DEEP_TIMELINE_THIN_POSTS = int(os.getenv("DEEP_TIMELINE_THIN_POSTS", "20"))
 
+# Depth as a standing cost rather than a campaign (scheduler.run_scheduler).
+#
+# Both depth passes were kept out of the cycle deliberately: at ~1 request per
+# parent id and ~10 per account they can become the dominant consumer of pool
+# budget, and the deep-timeline pass conditions collection on v2's own output,
+# which wanted to be an explicit dated act. Two things changed. Collection now
+# runs to August 2027, so a one-off backfill is always overtaken - hydration
+# reached 49.8% coverage in a bounded pass and 60% was measured unreachable as
+# a one-off, while the denominator grows with every cycle. And the 2026-09-14
+# ranking check found deepening makes an account FALL out of v2's ranking
+# (100 of 120 left the top 500), so the feedback-inflation worry the explicit
+# act was protecting against runs the other way: depth corrects the ranking
+# rather than inflating it. Attribution survives either way, because every
+# deepened account is still recorded to `deep_timelines/` with its
+# pre-treatment state and its posts still land in a TARGETED partition.
+DEPTH_IN_CYCLE_ENABLED = os.getenv("DEPTH_IN_CYCLE_ENABLED", "1") not in ("0", "false", "")
+# Hours between depth passes, per arm. Cycles on pi0 measured 107-283 minutes
+# over 2026-09-13/14 (mean ~230), so 12 hours is about every third cycle - the
+# same "every Nth cycle" spirit as the hate steps. It is not shorter because
+# each arm pays a ~21 minute candidate query against live R2 before it fetches
+# anything: at one pass per cycle a 200-id backfill spends 78% of its wall
+# clock on selection, so fewer, larger passes buy strictly more per request.
+DEPTH_EVERY_HOURS = float(os.getenv("DEPTH_EVERY_HOURS", "12"))
+
 # DuckDB sizes its budget from the host, not the container cgroup, so on pi0 it
 # plans against ~4GB while `mem_limit: 1g` kills it long before that. Bounded so
 # a large scan spills to disk instead of taking the collector down.
