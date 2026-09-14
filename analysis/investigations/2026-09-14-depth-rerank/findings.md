@@ -43,7 +43,47 @@ The treated window is taken from the two runs' SNAPSHOTS, not their clocks. The
 before-run was computed after the depth pass had finished and was still blind to
 it, because its snapshot predated the new partition.
 
-## This run
+## The pass
 
-(pending: the 500-account pass with the holdout, embeddings, snapshot, trace,
-rank, check)
+`monitor deep-timelines --limit 500 --holdout 0.2 --holdout-seed 0`, 2026-09-14.
+
+| | |
+|---|---|
+| selected | 487 (the ledger blocked 13 of the top 500, already deepened) |
+| holdout | **97** |
+| treated | 390 |
+| deepened | 384 |
+| no_posts | 6 |
+| failed | 0 |
+| posts written | **99,066** |
+| authors written | 6,193 |
+| floor_cleared | 0 |
+
+**The terminal-status rate holds at scale.** `no_posts` is 6 of 390 (1.5%)
+against 1 of 120 (0.8%) on the bounded pass, and `failed` is still 0. A by-id
+timeline fetch cannot distinguish suspended from protected from empty and all
+three are recorded terminal, so a high rate here would mean accounts written off
+permanently on soft failures. It is not high.
+
+`floor_cleared` is 0 again, as predicted: the activity floor runs before
+centrality, so every account in a persisted `kind=scores` run already clears it.
+What the pass buys is 254 posts per account of behavioural history for accounts
+previously ranked on 2 to 19 observations.
+
+**Timings, which are the numbers the per-cycle depth budget needs.** Selection
+took 22 minutes (10:27 to 10:49 UTC) against the ~21 minutes the parent-backfill
+pass measured, so the candidate query cost is stable and is paid once per pass
+whatever the limit. Fetching took 65 minutes for 384 accounts - **5.9 accounts
+per minute**, or about 10 seconds per account at depth 200.
+
+At that rate a 50-account in-cycle pass is 22 minutes of selection plus 8
+minutes of fetching: 73% of its wall clock on selection, which is the argument
+for the 12-hour cadence rather than a per-cycle one.
+
+## The first attempt, and what killed it
+
+Three heavy R2 readers at once - two replay reproductions on the mac and the
+depth pass on pi0 - and all three died within minutes of each other on DNS and
+connection failures (`Could not resolve hostname` on pi0, `Could not connect to
+server` on the mac). Resolution was healthy again immediately afterwards. Run
+one heavy R2 job at a time; the bucket is not the bottleneck, the resolver is.
