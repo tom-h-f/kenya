@@ -61,6 +61,37 @@ The honest conclusion is that hydration is not a campaign with an end, it is a
 standing cost. A small per-cycle budget inside the collector's own loop would
 let coverage track collection; a one-off backfill is always overtaken by it.
 
+## Task 2 run at scale, 2026-09-14
+
+Targets were drawn from a FRESH v2 run first
+(`coord2/kind=scores/dt=2026-09-14/run=20260914T025108Z.parquet`, the fixed
+pipeline: mention-stripped and floored text trace, 100% embedding coverage,
+learned relevance gate). The previous persisted run was 2026-09-08 and predates
+every one of those fixes, so deepening its ranking would have spent the budget
+on accounts the old method surfaced. That run's top 500 sits at Kenya share mean
+0.926 / median 1.000, against 0.404 under the keyword gate, and its median
+account holds 3 posts - the thinness this task exists to fix.
+
+100 accounts at depth 200: **99 deepened, 1 with no posts, 0 failed**, 27,044
+posts. Across all 120 accounts deepened to date:
+
+| | before | after |
+|---|---|---|
+| posts held (mean) | 4.1 | 200.8 |
+| distinct co-retweet entities (mean) | 2.2 | 153.2 |
+| clearing the 2-entity activity floor | 103 | 114 |
+
+Entity count per account rose about 70x, which is the quantity v2 is actually
+short of: 54.8% of co-retweet users had exactly one entity and the floor
+discarded 58% of accounts. `floor_cleared` reads 0 in the pass summary because
+these accounts already held two posts; the gain is history, not eligibility.
+
+**Still owed: the ranking check.** The plan requires any v2 re-run afterwards to
+report whether deepened accounts rose in rank, and `deep_timelines/` records
+each one's pre-treatment state so that stays a join. It needs a fresh snapshot
+and a text-trace GPU pass on it, because the deepened rows land in
+`posts/type=deep_timeline`, which the current pinned snapshot does not hold.
+
 ## The constraint that must not be missed
 
 **`hydrated` is a BASELINE type** (`kma.db.BASELINE_TYPES`). So is `search`,
