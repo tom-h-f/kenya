@@ -25,10 +25,57 @@ image = (
         "scipy>=1.13",
         "duckdb>=1.1",
         "python-dotenv>=1.0",
+        # duckdb's timestamp casts reach for pytz; pandas no longer pulls it in.
+        "pytz",
     )
     .env({"PYTHONPATH": "/root/src"})
     .add_local_dir("src", remote_path="/root/src", ignore=["**/__pycache__/**", "*.pyc"])
 )
+
+
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name("kenya-r2")],
+    cpu=4,
+    memory=16384,
+    timeout=60 * 60 * 4,
+)
+def one(variant: dict) -> dict:
+    """One variant, so the sweep can fan out instead of running serially.
+
+    Each variant is an independent replay of the same passes - nothing is shared
+    between them but the snapshot - so running them side by side turns a
+    multi-hour serial sweep into one variant's wall clock. The serial `sweep`
+    below stays for the case where the shift that wins has to pick the shift
+    that "all three" uses.
+    """
+    import logging
+    from datetime import timedelta
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    from kma import bench, replay
+    from kma.db import connect
+
+    con = connect()
+    manifest = bench.load(variant["snapshot"], con=con)
+    times = replay.census_pass_times(manifest)[-variant["passes"]:]
+    times = [t - timedelta(minutes=variant["shift_min"]) for t in times]
+    rep = replay.reproduce(
+        con, manifest=manifest, times=times, snapshot=variant["snapshot"],
+        policy=replay.MergedCensus(),
+        ground_truth=variant["ground_truth"], truncate=variant["truncate"],
+    )
+    out = {
+        **{k: variant[k] for k in ("label", "shift_min", "ground_truth", "truncate")},
+        "recall": round(rep.recall, 3),
+        "precision": round(rep.precision, 3),
+        "jaccard": round(rep.jaccard, 3),
+        "replayed": int(rep.per_pass["replayed"].sum()),
+        "observed": int(rep.per_pass["observed"].sum()),
+    }
+    print(out, flush=True)
+    return out
 
 
 @app.function(
