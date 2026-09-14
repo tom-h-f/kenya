@@ -192,6 +192,39 @@ Three ways out, and the first is the honest one:
   against a two-armed incumbent. The replay harness then cannot be used to
   score candidate collection policies, which is what it exists for.
 
+*Done 2026-09-13: the toxic arm is ported* (`replay.ToxicCensus`,
+`replay.MergedCensus`, `--arms merged`). Tested the way the baseline port is -
+the fixture generator now drives the LIVE `hate_signal.hot_toxic_objects` over
+a synthetic corpus carrying originals and hate scores, and the tests assert the
+port reproduces its picks pass by pass, including that it skips a hub above the
+band ceiling despite p_hate 0.99 and cannot see a post scored after the pass.
+
+On the same 25 recent merged passes:
+
+| policy | recall | precision | Jaccard |
+|---|---|---|---|
+| baseline only | 0.548 | 0.607 | 0.404 |
+| both arms | **0.641** | 0.587 | 0.442 |
+
+**Necessary, not sufficient.** Modelling the second arm is worth 0.093 of
+recall and the harness can now score the passes the collector actually runs,
+but 0.641 is a long way from 0.95. Tie-breaking was ruled out as a cause: at
+the pass measured, the toxic arm had 152 candidates against a 250 cap, so it
+takes everything it finds and never reaches a cut.
+
+What is left to try, in the order the tolerance list suggests:
+
+- **Pass timing.** `census_pass_times` dates a pass by its FIRST engagement
+  write, minutes after selection ran, so the replay stands late and sees posts
+  the real selector could not. `census_runs` rows carry their own timestamp and
+  would date a pass directly.
+- **Rate-limit truncation.** A truncated live pass fetched a prefix of its
+  selection; the replay always fetches all of it. `census_runs.fetched_retweeted`
+  records what really landed and could drive `budget` per pass.
+- **Empty fetches.** An object whose fetch returned no retweeters writes no
+  engagement row and is scored as not-fetched. `census_ttl/` records selection
+  independently of outcome and now covers every pass since 2026-09-08.
+
 **C2. Bulk depth passes.** Both are bounded-tested only: 200 parents of 167,220,
 and 20 accounts of 500. Hydration is worth ~3,700 fetches to take `fast_retweet`
 coverage past 60%; deep timelines is ~5,000 requests for the whole persisted
