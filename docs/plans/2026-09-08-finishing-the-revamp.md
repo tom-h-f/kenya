@@ -225,6 +225,29 @@ What is left to try, in the order the tolerance list suggests:
   engagement row and is scored as not-fetched. `census_ttl/` records selection
   independently of outcome and now covers every pass since 2026-09-08.
 
+**C1 IS CLOSED (2026-09-14): policy replay is indicative, not exact.**
+
+All three remaining terms were instrumented and measured, and all three are shut
+to measurement with the evidence that exists. Truncation is worth single-digit
+percentage points (`fetched/selected` runs 0.68-1.00, mostly above 0.96).
+Pass timing is recorded nowhere - `census_runs.collected_at` is stamped when a
+pass FINISHES, so it is later than the engagement write, not earlier. And the
+empty-fetch term rests on `census_ttl`, which records BOTH census arms with no
+channel column: over 10 passes it returns 5,197 objects against the collector's
+own 2,795 retweeted + 2,500 conversations, so scoring the retweeted arm against
+it gives recall 0.095 against the engagement baseline's 0.751.
+
+The harness keeps its one correctness property - no leakage - and stays useful
+for comparing candidate policies on direction and magnitude against a frozen
+snapshot. It is not evidence that a policy would have fetched specific objects.
+
+**What would reopen it: one field.** Write the arm beside `object_id` in
+`storage.write_census_ttl`. Everything else is downstream of that missing
+column, and it needs weeks of accumulation afterwards - the same shape as this
+item's original premise, which waiting already falsified once.
+
+Full results: `analysis/investigations/2026-09-14-c1-tolerance/findings.md`.
+
 *Instrumented 2026-09-14.* All three now have switches on `reproduce`, so each
 is a measurement rather than an argument: `--shift-minutes` stands earlier than
 the first engagement write, `--ground-truth census_ttl` scores against what the
