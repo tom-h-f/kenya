@@ -87,3 +87,79 @@ depth pass on pi0 - and all three died within minutes of each other on DNS and
 connection failures (`Could not resolve hostname` on pi0, `Could not connect to
 server` on the mac). Resolution was healthy again immediately afterwards. Run
 one heavy R2 job at a time; the bucket is not the bottleneck, the resolver is.
+
+## The answer
+
+Snapshot `2026-09-14-deep500` (28,292 objects), 91,983 posts embedded on the mac
+at 335/s with cosine 1.000000 against production, text trace 111,222 edges over
+27,024 users (against 109,479 / 26,579 before), v2 run
+`coord2/kind=scores/dt=2026-09-14/run=20260914T150111Z`.
+
+| arm | in top 500 before | in top 500 after | retained |
+|---|---|---|---|
+| treated (deepened) | 390 | **0** | **0.0%** |
+| holdout (selected, not fetched) | 97 | 22 | 22.7% |
+| untreated | 12 | 3 | 25.0% |
+
+Matched on before-rank band, treated retention is 0.0% in every one of the five
+bands. The holdout - drawn from the same ranked selection by the same rule,
+differing only in having been fetched - kept 22.7%.
+
+**The top 500 does not survive deepening.** The earlier 100-account result was
+not a fluke of that sample: at four times the scale, with a proper control, the
+effect is total.
+
+### What this means, and it is not "deepen everything"
+
+The accounts v2 ranks highest are the ones it knows least about, and giving them
+history removes them. An account holding two posts that both touch viral objects
+has a one-hot co-action vector, so its cosine against every other toucher is 1.0
+whatever TF-IDF does. Two hundred posts of real behaviour make it read as
+ordinary, which it is.
+
+So deepening is not a coverage improvement that happens to move the ranking. It
+is a destructive test, and the ranking fails it. **v2's centrality over this
+corpus ranks sparsity, not coordination**, for as long as the activity floor
+sits at 2 entities.
+
+### The ranking's head is its least stable part
+
+The control arm shows this independently of any treatment:
+
+| before rank | control retained |
+|---|---|
+| 1-100 | 5.6% |
+| 101-200 | 9.5% |
+| 201-300 | 4.5% |
+| 301-400 | 50.0% |
+| 401-500 | 50.0% |
+
+Untreated accounts in the top 300 churn out at about ten times the rate of
+untreated accounts in the bottom 200. The part of the ranking anyone would act
+on is the part that does not hold still.
+
+### The recommendation: a stability criterion, not a triage budget
+
+The user's own test was "if the top 500 survives deepening, it is real; if it
+churns again, the method needs a stability criterion rather than a triage
+budget." It churned, so:
+
+- **Raise the activity floor to where the ranking is stable.** `MIN_ENTITIES` is
+  2, which is the value that admits the one-hot pathology. The floor should be
+  set empirically - re-run at 5, 10, 20 and measure holdout retention at each -
+  rather than left at the smallest number that is not 1.
+- **Report rank agreement under a depth perturbation beside any ranking.** The
+  holdout makes this cheap and repeatable: deepen a random share of the
+  selection, re-rank, and publish what fraction of the untreated arm held its
+  place. A ranking whose control retention is 22.7% should not be presented as
+  a finding.
+- **Do not deepen the whole target set again.** It consumes the candidates the
+  next measurement needs, and the 30-day refresh TTL means the arm cannot be
+  rebuilt for a month.
+
+### What it does NOT overturn
+
+The A2 adjudications remain valid as "what the method surfaces", which is how
+they are reported. The benchmark reproduction is untouched - on the IO datasets
+the operations' accounts sit in a dense core with real history, which is
+precisely the condition this corpus fails.
