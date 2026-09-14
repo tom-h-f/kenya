@@ -222,8 +222,36 @@ def test_scope_predicate_rejects_unknown_scope():
 
 def test_scope_type_registries_are_disjoint_and_complete():
     assert set(db.BASELINE_TYPES) & set(db.TARGETED_TYPES) == set()
-    assert set(db.KNOWN_TYPES) == set(db.BASELINE_TYPES) | set(db.TARGETED_TYPES)
-    assert db.scope_predicate("all") == "TRUE"
+    assert set(db.CONTROL_TYPES) & set(db.BASELINE_TYPES + db.TARGETED_TYPES) == set()
+    assert set(db.KNOWN_TYPES) == (
+        set(db.BASELINE_TYPES) | set(db.TARGETED_TYPES) | set(db.CONTROL_TYPES)
+    )
+
+
+def test_all_still_means_what_it_meant_before_the_control_arm():
+    """Adding a partition must not change what an existing number means. `all`
+    is the monitor's own collection; the control arm is reachable only by name."""
+    admitted = db.scope_predicate("all").split("THEN TRUE")[0]
+
+    for kind in db.BASELINE_TYPES + db.TARGETED_TYPES:
+        assert f"'{kind}'" in admitted
+    for kind in db.CONTROL_TYPES:
+        assert f"'{kind}'" not in admitted
+
+
+def test_control_posts_are_excluded_from_both_prevalence_scopes(con):
+    con.execute("CREATE TABLE _t (first_type VARCHAR)")
+    con.execute("INSERT INTO _t VALUES ('control'), ('search'), ('hate_search')")
+
+    def kept(scope):
+        return con.sql(
+            f"SELECT first_type FROM _t WHERE {db.scope_predicate(scope)}"
+        ).fetchall()
+
+    assert kept("baseline") == [("search",)]
+    assert kept("targeted") == [("hate_search",)]
+    assert kept("control") == [("control",)]
+    assert sorted(kept("all")) == [("hate_search",), ("search",)]
 
 
 # --- timeline leak correction ------------------------------------------------

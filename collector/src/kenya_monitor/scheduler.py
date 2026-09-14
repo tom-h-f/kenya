@@ -16,6 +16,9 @@ from kenya_monitor.config import (
     CENSUS_TIMELINE_ACCOUNTS,
     CENSUS_TIMELINE_LIMIT,
     CENSUS_TIMELINE_STATE_PATH,
+    CONTROL_ENABLED,
+    CONTROL_EVERY_HOURS,
+    CONTROL_STATE_PATH,
     CYCLE_COOLDOWN_MAX_S,
     CYCLE_COOLDOWN_MIN_S,
     DEPTH_EVERY_HOURS,
@@ -436,6 +439,20 @@ async def run_deep_timelines_once(**overrides) -> dict[str, int]:
     return await collect_deep_timelines(collector, storage, **overrides)
 
 
+async def run_control_once(**overrides) -> dict[str, int]:
+    """One bounded control-arm pass (see control.collect_control).
+
+    In the cycle from the start, unlike the depth passes: a one-off pass samples
+    the last fortnight and nothing else, because X search reaches 14 days. The
+    arm is worth something only if it accumulates alongside the collection it is
+    the control for."""
+    from kenya_monitor.control import collect_control
+
+    storage = Storage(R2Config.from_env())
+    collector = await build_x_collector(load_accounts())
+    return await collect_control(collector, storage, **overrides)
+
+
 async def run_snowball_once(**overrides) -> dict[str, int]:
     """One snowball pass over hot objects (see runner.collect_snowball).
 
@@ -659,19 +676,13 @@ async def run_scheduler(limit: int) -> None:
             # so adding `census_timelines` after snowball silently pushed them
             # past it - the ordering guarantee above depended on an index that
             # nothing was protecting.
-            steps = [
-                ("posts", _posts),
-                ("snowball", run_snowball_once),
-            ]
-            if hate_due:
-                steps += [
-                    ("hate_seek", run_hate_seek_once),
-                    ("hate_expand", run_hate_expand_once),
-                ]
-            # Depth is the LAST thing in the cycle, after the discretionary
-            # hate steps, for the reason that put those after baseline: when
-            # the pool hits a rate-limit wall it must hit the work that can
-            # wait, never the coverage the whole corpus rests on.
+            def _control_due() -> bool:
+                from kenya_monitor.control import load_state
+
+                state = load_state(CONTROL_STATE_PATH)
+                latest = max((v.get("sampled_at") for v in state.values()), default=None)
+                return _depth_due(latest, CONTROL_EVERY_HOURS)
+
             def _parents_due() -> bool:
                 from kenya_monitor.parent_backfill import backfill_summary, load_state
 
@@ -684,6 +695,21 @@ async def run_scheduler(limit: int) -> None:
                 latest = timeline_summary(load_state())["latest_fetch"]
                 return _depth_due(latest, DEPTH_EVERY_HOURS)
 
+            steps = [
+                ("posts", _posts),
+                ("snowball", run_snowball_once),
+            ]
+            # The control arm goes ahead of the discretionary hate steps and
+            # behind baseline coverage. A gap in it cannot be filled later - X
+            # search reaches 14 days and the horizon closes over an unsampled
+            # window permanently - which is not true of anything below it here.
+            if CONTROL_ENABLED and _control_due():
+                steps.append(("control", run_control_once))
+            if hate_due:
+                steps += [
+                    ("hate_seek", run_hate_seek_once),
+                    ("hate_expand", run_hate_expand_once),
+                ]
             steps += [
                 ("census_timelines", run_census_timelines_once),
                 ("metrics", run_metrics_once),
@@ -695,6 +721,12 @@ async def run_scheduler(limit: int) -> None:
                     ),
                 ),
             ]
+            # Depth is the LAST thing in the cycle, after the discretionary
+            # hate steps, for the reason that put those after baseline: when
+            # the pool hits a rate-limit wall it must hit the work that can
+            # wait, never the coverage the whole corpus rests on. Unlike the
+            # control arm, a depth pass deferred by a wall is only deferred -
+            # its targets are still there next cycle.
             if DEPTH_IN_CYCLE_ENABLED:
                 # Two steps rather than one, so an arm that raises does not
                 # take the other arm's pass with it.

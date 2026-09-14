@@ -114,8 +114,26 @@ TARGETED_TYPES = (
     # in rank, joining `deep_timelines/` on `user_id`.
     "deep_timeline",
 )
-KNOWN_TYPES = BASELINE_TYPES + TARGETED_TYPES
-SCOPES = ("all", "baseline", "targeted")
+# The control arm (`kenya_monitor.control`): windows of time sampled at random
+# from a pre-registered frame, censused whole. In NEITHER of the two scopes
+# above, and that is the whole point. Not baseline, because unioning it into the
+# existing denominator would repeat the 2026-08-06 composition break that made
+# the raw toxicity series unpublishable. Not targeted, because nothing about a
+# post decides whether it is collected except the minute it was posted in -
+# which is the only reason a rate computed over it has a denominator at all.
+CONTROL_TYPES = ("control",)
+KNOWN_TYPES = BASELINE_TYPES + TARGETED_TYPES + CONTROL_TYPES
+# `all` is every post the monitor collected FOR ITSELF - baseline plus targeted,
+# exactly what it meant before the control arm existed. Adding a partition must
+# not change what an existing number means, so the control arm is reachable only
+# by naming it.
+SCOPES = ("all", "baseline", "targeted", "control")
+_SCOPE_TYPES = {
+    "all": BASELINE_TYPES + TARGETED_TYPES,
+    "baseline": BASELINE_TYPES,
+    "targeted": TARGETED_TYPES,
+    "control": CONTROL_TYPES,
+}
 
 
 # The curated target list lives on the collector side. Read as DATA, not code -
@@ -206,15 +224,14 @@ def scope_predicate(scope: str = "baseline", col: str = "first_type") -> str:
     """
     if scope not in SCOPES:
         raise ValueError(f"unknown scope {scope!r} (expected one of {SCOPES})")
-    if scope == "all":
-        return "TRUE"
-    wanted = BASELINE_TYPES if scope == "baseline" else TARGETED_TYPES
-    other = TARGETED_TYPES if scope == "baseline" else BASELINE_TYPES
+    wanted = _SCOPE_TYPES[scope]
+    other = tuple(t for t in KNOWN_TYPES if t not in wanted)
     return f"""CASE
         WHEN {col} IN ({_sql_list(wanted)}) THEN TRUE
         WHEN {col} IN ({_sql_list(other)}) THEN FALSE
         ELSE error('unknown post type ' || coalesce({col}, 'NULL')
-                   || ' - add it to kma.db.BASELINE_TYPES or TARGETED_TYPES')
+                   || ' - add it to kma.db.BASELINE_TYPES, TARGETED_TYPES '
+                   || 'or CONTROL_TYPES')
     END"""
 
 

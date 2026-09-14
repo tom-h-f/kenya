@@ -1,0 +1,35 @@
+# The control arm's sampling frame. See docs/plans/2026-09-14-control-arm.md.
+#
+# PRE-REGISTERED. These terms are fixed before any rate is computed from them
+# and must never be tuned on an outcome: the whole value of the arm is that
+# what enters it was decided without reference to what it would show. Changing
+# this file starts a NEW frame, and rates either side of the change are not
+# comparable - record the change and the date if it ever happens.
+#
+# Institutions and offices, not campaign slogans or candidate names. A frame
+# built from campaign language would over-represent campaign talk, which is
+# exactly the bias `targets.yaml` already has and this arm exists to avoid.
+#
+# The anchors carry the "Kenyan" half. Parliament, Senate and Governor are not
+# Kenya-specific words, and the platform `lang` field is useless for Swahili
+# here (see collectors.x.build_query), so scope comes from the conjoined
+# anchor group or it does not come at all.
+x:
+  terms:
+    - IEBC
+    - Bunge
+    - Parliament
+    - Senate
+    - "National Assembly"
+    - Governor
+    - Senator
+    - "county government"
+    - "by-election"
+    - "voter registration"
+  anchors:
+    - Kenya
+    - Kenyan
+    - Nairobi
+    - Mombasa
+    - Kisumu
+    - Eldoret

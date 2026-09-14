@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 
 import typer
 
@@ -317,6 +318,83 @@ def hydrate_parents_cmd(
 
     counts = asyncio.run(run_parent_backfill_once(limit=n, band_only=band_only))
     typer.echo(f"hydrate-parents: {counts}")
+
+
+@app.command("control")
+def control_cmd(
+    windows: int = typer.Option(None, help="windows to census this pass (default from env)"),
+    minutes: int = typer.Option(None, help="window width in minutes (default from env)"),
+    cap: int = typer.Option(None, help="posts per window (default from env)"),
+    seed: int = typer.Option(None, "--seed", help="fix the draw; default is the pass clock"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the windows that would be sampled; makes no requests"
+    ),
+    status: bool = typer.Option(False, "--status", help="print sampling coverage and exit"),
+) -> None:
+    """Census a random sample of time windows of the pre-registered frame.
+
+    The control arm. Everything else this collector holds was collected because
+    something about it looked interesting, so no rate computed over it has a
+    denominator. Here nothing about a post decides whether it is collected
+    except the minute it was posted in.
+
+    Search results are ranked, so the first K of a query are not a random K -
+    but a window narrow enough that its frame posts fit under the cap returns
+    the whole window, which is a census rather than a sample. Windows that come
+    back at the cap are recorded `truncated` and do not support that claim.
+
+    The frame lives in `config/control_frame.yaml` and is PRE-REGISTERED: it is
+    fixed before any rate is computed from it, and tuning it on an outcome
+    destroys the only property the arm has.
+    """
+    from kenya_monitor import control as ctl
+    from kenya_monitor.config import (
+        CONTROL_WINDOW_CAP,
+        CONTROL_WINDOW_MINUTES,
+        CONTROL_WINDOWS_PER_PASS,
+    )
+
+    n = windows or CONTROL_WINDOWS_PER_PASS
+    m = minutes or CONTROL_WINDOW_MINUTES
+    c = cap or CONTROL_WINDOW_CAP
+    state = ctl.load_state()
+
+    if status:
+        population = ctl.window_population(minutes=m)
+        sampled = sum(1 for w in population if ctl.window_key(w) in state)
+        posts = sum(int(v.get("posts") or 0) for v in state.values())
+        truncated = sum(1 for v in state.values() if v.get("truncated"))
+        typer.echo(
+            f"windows sampled: {len(state)} all time, {sampled} of {len(population)} "
+            f"inside the current {ctl.HORIZON_DAYS}-day horizon"
+        )
+        typer.echo(f"posts collected: {posts}")
+        typer.echo(
+            f"truncated windows: {truncated} of {len(state)} - these are ranked samples, "
+            "not censuses, and the census claim does not cover them"
+        )
+        return
+
+    if dry_run:
+        population = ctl.window_population(minutes=m)
+        chosen = ctl.sample_windows(
+            population, n, seed=seed or 0, done=list(state)
+        )
+        frame = ctl.load_frame()
+        typer.echo(f"frame: {frame.keyword}")
+        typer.echo(f"anchors: {' OR '.join(frame.anchors)}")
+        typer.echo(
+            f"{len(chosen)} of {len(population)} window(s) in the horizon "
+            f"({len(state)} already sampled). Nothing requested."
+        )
+        for start in chosen:
+            typer.echo(f"  {ctl._stamp(start)} .. {ctl._stamp(start + timedelta(minutes=m))}")
+        return
+
+    from kenya_monitor.scheduler import run_control_once
+
+    counts = asyncio.run(run_control_once(windows=n, minutes=m, cap=c, seed=seed))
+    typer.echo(f"control: {counts}")
 
 
 @app.command("deep-timelines")
