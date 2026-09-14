@@ -86,11 +86,46 @@ short of: 54.8% of co-retweet users had exactly one entity and the floor
 discarded 58% of accounts. `floor_cleared` reads 0 in the pass summary because
 these accounts already held two posts; the gain is history, not eligibility.
 
-**Still owed: the ranking check.** The plan requires any v2 re-run afterwards to
-report whether deepened accounts rose in rank, and `deep_timelines/` records
-each one's pre-treatment state so that stays a join. It needs a fresh snapshot
-and a text-trace GPU pass on it, because the deepened rows land in
-`posts/type=deep_timeline`, which the current pinned snapshot does not hold.
+### The ranking check, and it inverts this task's premise
+
+Run 2026-09-14 end to end: 72,296 new posts embedded (on the mac, MPS, 345/s,
+vectors verified identical to production's), snapshot `2026-09-14-deepened`
+holding the `deep_timeline` and `parent_backfill` partitions, a text trace built
+on it (622,500 eligible posts, 109,479 edges over 26,579 users, against
+485,285 / 82,667 / 20,575 before), then a v2 pass
+(`coord2/kind=scores/dt=2026-09-14/run=20260914T090118Z.parquet`).
+
+Joining that against the `deep_timelines/` ledger:
+
+| | |
+|---|---|
+| deepened accounts | 120 |
+| in the top 500 BEFORE deepening | 100 |
+| in the top 500 AFTER | **1** |
+| that one account's rank | 18 -> 424 |
+| top-500 churn between the two runs | 207 of 500 shared |
+
+**Deepening an account makes it fall out of the ranking.** The churn floor is
+293 of 500, so 99 of 100 leaving is far past noise.
+
+This is the opposite of what the task assumed, and it is the more useful
+answer. v2 was not short of history on these accounts by accident: they ranked
+BECAUSE they were thin. An account holding one post that touches a viral object
+has a one-hot co-action vector, so its cosine against every other toucher is
+1.0 whatever TF-IDF does - the single-action pathology the activity floor was
+added for, surviving at floor 2. Give it 200 posts of real behaviour and it
+reads as ordinary, which it is.
+
+So the depth work does not "improve coverage for v2" so much as **correct a
+measurement**: the previous rankings were inflated by sparsity, and the
+accounts most confidently surfaced were the ones we knew least about. Two
+consequences worth taking seriously:
+
+- Any v2 ranking over a corpus this sparse should be read as provisional until
+  its top accounts have been deepened. That is a standing cost, like hydration.
+- The A2 adjudications were run on groups drawn from such rankings. They remain
+  valid as "what the method surfaces", which is how they are reported, but the
+  membership of those groups would move under deepening.
 
 ## The constraint that must not be missed
 

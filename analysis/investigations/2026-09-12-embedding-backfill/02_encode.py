@@ -41,7 +41,13 @@ def main() -> None:
     ap.add_argument("--min-cosine", type=float, default=0.999)
     args = ap.parse_args()
 
-    model = SentenceTransformer(MODEL, device="cuda")
+    # CUDA on the GPU box, MPS on the mac, CPU anywhere else: the vectors go
+    # into the production prefix either way, and the check below is what proves
+    # the device did not change them.
+    device = ("cuda" if torch.cuda.is_available()
+              else "mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"device: {device}", flush=True)
+    model = SentenceTransformer(MODEL, device=device)
     check = pd.read_parquet(args.out_dir / "check.parquet")
     got = encode(model, check["text"].fillna("").tolist(), args.batch)
     stored = np.vstack(check["embedding"].to_numpy()).astype(np.float32)
@@ -55,15 +61,16 @@ def main() -> None:
     pending = pd.read_parquet(args.out_dir / "pending.parquet")
     if args.limit:
         pending = pending.head(args.limit)
-    torch.cuda.reset_peak_memory_stats()
+    if device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
     start = time.perf_counter()
     vectors = encode(model, pending["text"].fillna("").tolist(), args.batch)
     seconds = time.perf_counter() - start
     scope = f"_limit{args.limit}" if args.limit else ""
     np.save(args.out_dir / f"vectors{scope}.npy", vectors)
     pending[["platform_post_id"]].to_parquet(args.out_dir / f"vector_ids{scope}.parquet")
-    print(f"encoded {len(pending):,} posts in {seconds:.0f}s ({len(pending) / seconds:,.0f}/s), "
-          f"peak {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB")
+    peak = f", peak {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB" if device == "cuda" else ""
+    print(f"encoded {len(pending):,} posts in {seconds:.0f}s ({len(pending) / seconds:,.0f}/s){peak}")
 
 
 if __name__ == "__main__":
