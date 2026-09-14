@@ -193,6 +193,27 @@ DEEP_TIMELINE_FALLBACK_TARGETS = int(os.getenv("DEEP_TIMELINE_FALLBACK_TARGETS",
 # thing they exist to avoid.
 DEEP_TIMELINE_THIN_POSTS = int(os.getenv("DEEP_TIMELINE_THIN_POSTS", "20"))
 
+# The control arm (kenya_monitor.control): a sample of Kenyan political
+# discourse drawn by sampling TIME rather than by choosing what to look at.
+# See docs/plans/2026-09-14-control-arm.md.
+CONTROL_ENABLED = os.getenv("CONTROL_ENABLED", "1") not in ("0", "false", "")
+# Window width. The design rests on a window being narrow enough that its frame
+# posts fit under the cap - at which point search returns the whole window and
+# the result is a census rather than a ranked sample. Narrower is safer and
+# costs more passes to cover the same time; this is the number to re-measure
+# against `truncated` in `control_runs/` rather than to reason about.
+CONTROL_WINDOW_MINUTES = int(os.getenv("CONTROL_WINDOW_MINUTES", "15"))
+# Posts per window. Equal to SEARCH_WINDOW_LIMIT's order rather than larger: a
+# window that reaches the cap is recorded truncated and stops supporting the
+# census claim, so the cap is a detector as much as a budget.
+CONTROL_WINDOW_CAP = int(os.getenv("CONTROL_WINDOW_CAP", "100"))
+# Windows per pass. 4 x 15 minutes is an hour of sampled time per pass at
+# roughly one request per window page.
+CONTROL_WINDOWS_PER_PASS = int(os.getenv("CONTROL_WINDOWS_PER_PASS", "4"))
+# Hours between control passes, gated on the ledger for the reason
+# DEPTH_EVERY_HOURS is: `cycle` resets on every restart.
+CONTROL_EVERY_HOURS = float(os.getenv("CONTROL_EVERY_HOURS", "6"))
+
 # DuckDB sizes its budget from the host, not the container cgroup, so on pi0 it
 # plans against ~4GB while `mem_limit: 1g` kills it long before that. Bounded so
 # a large scan spills to disk instead of taking the collector down.
@@ -326,6 +347,12 @@ FOLLOW_CRAWL_STATE_PATH = Path(os.getenv("FOLLOW_CRAWL_STATE_PATH", STATE_DIR / 
 HATE_SEEK_STATE_PATH = Path(os.getenv("HATE_SEEK_STATE_PATH", STATE_DIR / "hate_seek.json"))
 PARENT_BACKFILL_STATE_PATH = Path(
     os.getenv("PARENT_BACKFILL_STATE_PATH", STATE_DIR / "parent_backfill.json")
+)
+CONTROL_STATE_PATH = Path(
+    os.getenv("CONTROL_STATE_PATH", STATE_DIR / "control.json")
+)
+CONTROL_FRAME_PATH = Path(
+    os.getenv("CONTROL_FRAME_PATH", APP_ROOT / "config" / "control_frame.yaml")
 )
 DEEP_TIMELINE_STATE_PATH = Path(
     os.getenv("DEEP_TIMELINE_STATE_PATH", STATE_DIR / "deep_timeline.json")

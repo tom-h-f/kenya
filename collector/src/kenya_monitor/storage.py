@@ -149,6 +149,35 @@ CENSUS_TTL_SCHEMA = pa.schema(
     ]
 )
 
+# One row per SAMPLED WINDOW of the control arm, whether or not it held any
+# frame post. A window with nothing in it is an observation; dropping it would
+# bias every rate computed from the arm upward, which is the one failure this
+# arm exists to avoid.
+CONTROL_RUN_SCHEMA = pa.schema(
+    [
+        ("run_id", pa.string()),
+        ("platform", pa.string()),
+        ("window_start", pa.timestamp("us", tz="UTC")),
+        ("window_end", pa.timestamp("us", tz="UTC")),
+        ("window_minutes", pa.int64()),
+        # The frame as it stood for this window, recorded rather than referenced.
+        # The frame file is pre-registered but not immutable, and a rate is only
+        # comparable to another computed on the same frame.
+        ("frame_keyword", pa.string()),
+        ("frame_anchors", pa.string()),
+        ("frame_terms", pa.int64()),
+        ("cap", pa.int64()),
+        ("posts", pa.int64()),
+        # False is the census claim; True says this window may have held more
+        # than we took, so it is a ranked sample of an unknown larger set.
+        ("truncated", pa.bool_()),
+        ("seed", pa.int64()),
+        ("population", pa.int64()),
+        ("code_version", pa.string()),
+        ("collected_at", pa.timestamp("us", tz="UTC")),
+    ]
+)
+
 CENSUS_RUN_SCHEMA = pa.schema(
     [
         ("run_id", pa.string()),
@@ -464,6 +493,49 @@ class Storage:
     def census_runs_view(self, platform: str = "*") -> str:
         """Per-pass census counters (supply, selection, degree distribution)."""
         glob = self._uri(f"census_runs/platform={platform}/dt=*/run=*.parquet")
+        return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+    def write_control_run(
+        self, rows: Sequence[dict], platform: str = "x", now: datetime | None = None
+    ) -> str | None:
+        """One row per sampled control window -> control_runs/ prefix.
+
+        Written even when a window returned nothing, unlike the post writers:
+        the denominator of the control arm is sampled WINDOWS, so a window with
+        no frame posts is data and a missing row is a hole in the sample."""
+        if not rows:
+            return None
+        now = now or datetime.now(timezone.utc)
+        rid = run_id(now)
+        blank = {f.name: None for f in CONTROL_RUN_SCHEMA}
+        unknown = sorted({k for r in rows for k in r} - set(blank))
+        if unknown:
+            log.warning(
+                "control_runs: %d field(s) not in CONTROL_RUN_SCHEMA, dropped: %s",
+                len(unknown),
+                ", ".join(unknown),
+            )
+        table = pa.Table.from_pylist(
+            [
+                {
+                    **blank,
+                    **{k: v for k, v in r.items() if k in blank},
+                    "run_id": rid,
+                    "platform": platform,
+                    "code_version": os.getenv("GIT_SHA", ""),
+                    "collected_at": now,
+                }
+                for r in rows
+            ],
+            schema=CONTROL_RUN_SCHEMA,
+        )
+        key = f"control_runs/platform={platform}/dt={_dt_partition(now)}/run={rid}.parquet"
+        self._copy_table(table, key)
+        return key
+
+    def control_runs_view(self, platform: str = "*") -> str:
+        """The sampled windows: the control arm's denominator."""
+        glob = self._uri(f"control_runs/platform={platform}/dt=*/run=*.parquet")
         return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
 
     def write_deep_timeline_run(
