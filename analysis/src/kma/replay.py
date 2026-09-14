@@ -1165,6 +1165,78 @@ def observed_fetches(
     return {str(r[0]) for r in rows if r[0] is not None}
 
 
+def observed_selections(
+    con: duckdb.DuckDBPyConnection,
+    manifest: pd.DataFrame,
+    start: datetime,
+    end: datetime,
+    *,
+    platform: str | None = "x",
+) -> set[str] | None:
+    """Objects the collector SELECTED in [start, end), from its own TTL ledger.
+
+    `observed_fetches` can only see objects that produced an engagement row, so
+    an object selected whose fetch returned no retweeters is scored as
+    not-selected and counts against the replay through no fault of the replay.
+    `census_ttl/` records selection independently of outcome, which is the whole
+    reason it was captured (storage.write_census_ttl).
+
+    None, not an empty set, when the snapshot holds no ledger for the window:
+    the caller must fall back rather than score every pass against nothing. The
+    ledger has only been captured since 2026-09-08.
+    """
+    src = clipped_source(
+        manifest,
+        "census_ttl",
+        end,
+        column="CAST(captured_at AS TIMESTAMPTZ)",
+        **({"platform": platform} if platform else {}),
+    )
+    if src is None:
+        return None
+    rows = con.sql(
+        f"""
+        SELECT DISTINCT object_id FROM {src}
+        WHERE CAST(censused_at AS TIMESTAMPTZ) >= TIMESTAMPTZ '{_iso(start)}'
+          AND CAST(censused_at AS TIMESTAMPTZ) <  TIMESTAMPTZ '{_iso(end)}'
+        """
+    ).fetchall()
+    found = {str(r[0]) for r in rows if r[0] is not None}
+    return found or None
+
+
+def truncate_to_live(
+    con: duckdb.DuckDBPyConnection,
+    targets: Sequence[str],
+    t: datetime,
+    *,
+    window_minutes: int = PASS_GAP_MINUTES,
+) -> list[str]:
+    """The prefix of a replayed selection the live pass had budget to fetch.
+
+    A pass truncated by a rate limit fetched some of what it selected; the
+    replay always fetches all of it, so the tail is scored as replayed-only.
+    `census_runs.fetched_retweeted` is the collector's own count of what landed.
+
+    A prefix, not a sample, because both sides order by `repost_count`
+    descending - so the objects a truncated pass did reach are its head.
+    """
+    metrics = census_pass_metrics(con)
+    if metrics.empty:
+        return list(targets)
+    stamps = pd.to_datetime(metrics["collected_at"], utc=True)
+    target = pd.Timestamp(t)
+    target = target.tz_convert("UTC") if target.tz else target.tz_localize("UTC")
+    delta = (stamps - target).abs()
+    nearest = int(delta.values.argmin())
+    if delta.iloc[nearest] > timedelta(minutes=window_minutes):
+        return list(targets)
+    fetched = metrics.iloc[nearest]["fetched_retweeted"]
+    if pd.isna(fetched):
+        return list(targets)
+    return list(targets)[: int(fetched)]
+
+
 def reproduce(
     con: duckdb.DuckDBPyConnection,
     *,
@@ -1174,6 +1246,8 @@ def reproduce(
     policy: Policy | None = None,
     platform: str | None = "x",
     audit: bool = True,
+    ground_truth: str = "engagements",
+    truncate: bool = False,
 ) -> Reproduction:
     """Replay the incumbent and compare, pass by pass, against the census that ran.
 
@@ -1200,6 +1274,14 @@ def reproduce(
        replay therefore stands a few minutes late and can see posts the real
        selector could not. Pass earlier times to close it; the snapshot cannot
        recover the true selection instant, because nothing records it.
+
+    Terms 3 and 4 have switches, because the evidence that closes them now
+    exists. `ground_truth="census_ttl"` scores against what the collector
+    recorded SELECTING rather than what left an engagement row, which removes
+    term 4 for every pass the ledger covers (2026-09-08 onward). `truncate=True`
+    cuts each replayed selection to the live pass's `fetched_retweeted`, which
+    removes term 3. Both default off so the headline number stays comparable
+    with everything recorded before them.
     """
     policy = policy or IncumbentCensus()
     ordered = sorted(times)
@@ -1217,9 +1299,19 @@ def reproduce(
     # cannot say when it ended.
     bounds = list(ordered[1:]) + [ordered[-1] + timedelta(minutes=PASS_GAP_MINUTES)]
     rows = []
+    fell_back = 0
     for step, end in zip(result.steps, bounds):
-        replayed = set(step.targets)
-        observed = observed_fetches(con, manifest, step.t, end, platform=platform)
+        targets = step.targets
+        if truncate:
+            targets = truncate_to_live(con, targets, step.t)
+        replayed = set(targets)
+        observed = None
+        if ground_truth == "census_ttl":
+            observed = observed_selections(con, manifest, step.t, end, platform=platform)
+            if observed is None:
+                fell_back += 1
+        if observed is None:
+            observed = observed_fetches(con, manifest, step.t, end, platform=platform)
         rows.append(
             {
                 "t": step.t,
@@ -1229,6 +1321,12 @@ def reproduce(
                 "replayed_only": len(replayed - observed),
                 "observed_only": len(observed - replayed),
             }
+        )
+    if fell_back:
+        log.warning(
+            "ground_truth=census_ttl: %d of %d passes had no ledger in the snapshot and "
+            "were scored against engagement writes instead",
+            fell_back, len(rows),
         )
     return Reproduction(snapshot=snapshot, policy=policy.name, per_pass=pd.DataFrame(rows))
 
@@ -1265,6 +1363,26 @@ def main() -> None:
         action="store_true",
         help="replay only passes where the baseline arm selected alone (see clean_pass_times)",
     )
+    ap.add_argument(
+        "--shift-minutes",
+        type=float,
+        default=0.0,
+        help=(
+            "stand this many minutes EARLIER than the first engagement write of each pass; "
+            "selection ran before that write and nothing records when (tolerance term 6)"
+        ),
+    )
+    ap.add_argument(
+        "--ground-truth",
+        choices=("engagements", "census_ttl"),
+        default="engagements",
+        help="what counts as censused: engagement writes, or the collector's own TTL ledger",
+    )
+    ap.add_argument(
+        "--truncate",
+        action="store_true",
+        help="cut each replayed selection to the live pass's fetched_retweeted (tolerance term 3)",
+    )
     args = ap.parse_args()
 
     con = connect()
@@ -1282,11 +1400,22 @@ def main() -> None:
                 "so a one-arm port cannot be compared per id here"
             )
     times = times[-args.passes :]
+    if args.shift_minutes:
+        times = [t - timedelta(minutes=args.shift_minutes) for t in times]
+        print(f"standing {args.shift_minutes:g} minutes earlier than the first engagement write")
     print(f"replaying {len(times)} passes, {_iso(times[0])} .. {_iso(times[-1])}")
 
     if args.reproduce:
         policy = MergedCensus() if args.arms == "merged" else IncumbentCensus()
-        rep = reproduce(con, manifest=manifest, times=times, snapshot=args.snapshot, policy=policy)
+        rep = reproduce(
+            con,
+            manifest=manifest,
+            times=times,
+            snapshot=args.snapshot,
+            policy=policy,
+            ground_truth=args.ground_truth,
+            truncate=args.truncate,
+        )
         print(rep.per_pass.to_string(index=False))
         agree = selection_agreement(con, rep.per_pass)
         if not agree.empty:
