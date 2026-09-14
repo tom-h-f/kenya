@@ -676,19 +676,6 @@ async def run_scheduler(limit: int) -> None:
             # so adding `census_timelines` after snowball silently pushed them
             # past it - the ordering guarantee above depended on an index that
             # nothing was protecting.
-            steps = [
-                ("posts", _posts),
-                ("snowball", run_snowball_once),
-            ]
-            if hate_due:
-                steps += [
-                    ("hate_seek", run_hate_seek_once),
-                    ("hate_expand", run_hate_expand_once),
-                ]
-            # Depth is the LAST thing in the cycle, after the discretionary
-            # hate steps, for the reason that put those after baseline: when
-            # the pool hits a rate-limit wall it must hit the work that can
-            # wait, never the coverage the whole corpus rests on.
             def _control_due() -> bool:
                 from kenya_monitor.control import load_state
 
@@ -708,6 +695,21 @@ async def run_scheduler(limit: int) -> None:
                 latest = timeline_summary(load_state())["latest_fetch"]
                 return _depth_due(latest, DEPTH_EVERY_HOURS)
 
+            steps = [
+                ("posts", _posts),
+                ("snowball", run_snowball_once),
+            ]
+            # The control arm goes ahead of the discretionary hate steps and
+            # behind baseline coverage. A gap in it cannot be filled later - X
+            # search reaches 14 days and the horizon closes over an unsampled
+            # window permanently - which is not true of anything below it here.
+            if CONTROL_ENABLED and _control_due():
+                steps.append(("control", run_control_once))
+            if hate_due:
+                steps += [
+                    ("hate_seek", run_hate_seek_once),
+                    ("hate_expand", run_hate_expand_once),
+                ]
             steps += [
                 ("census_timelines", run_census_timelines_once),
                 ("metrics", run_metrics_once),
@@ -719,12 +721,12 @@ async def run_scheduler(limit: int) -> None:
                     ),
                 ),
             ]
-            # After the baseline steps and before the depth arms. A gap in the
-            # control arm cannot be filled later - the 14-day search horizon
-            # closes over it - so it does not sit behind discretionary work,
-            # but it must not outrank baseline coverage either.
-            if CONTROL_ENABLED and _control_due():
-                steps.append(("control", run_control_once))
+            # Depth is the LAST thing in the cycle, after the discretionary
+            # hate steps, for the reason that put those after baseline: when
+            # the pool hits a rate-limit wall it must hit the work that can
+            # wait, never the coverage the whole corpus rests on. Unlike the
+            # control arm, a depth pass deferred by a wall is only deferred -
+            # its targets are still there next cycle.
             if DEPTH_IN_CYCLE_ENABLED:
                 # Two steps rather than one, so an arm that raises does not
                 # take the other arm's pass with it.
