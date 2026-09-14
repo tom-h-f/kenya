@@ -53,13 +53,19 @@ toxicity series unpublishable. Not targeted: it is the opposite of targeted.
 A reader that unions it into either scope has destroyed the only thing it is
 for, which is why it needs its own scope rather than a flag.
 
-THE HORIZON
-===========
-X search reaches 14 days (`collectors.x.MAX_AGE_DAYS`), so the window population
-is a rolling 14 days and coverage of the collection period accumulates only by
-running continuously. A one-off pass samples the last fortnight and nothing
-else. That is the same lesson depth collection learned: this is a standing cost,
-not a campaign.
+THE HORIZON, WHICH IS SHORTER THAN THE SEARCH HORIZON
+=====================================================
+X search accepts queries back to 14 days, but it does not RETURN comparable
+results that far back - see `HORIZON_DAYS` for the measurement. The window
+population is therefore a rolling 7 days, and coverage of the collection period
+accumulates only by running continuously. A one-off pass samples the last week
+and nothing else. That is the same lesson depth collection learned: this is a
+standing cost, not a campaign.
+
+Window age is recoverable from every row (`window_start` against
+`collected_at`), so an analysis can condition on it rather than trust this
+boundary. Do condition on it: even inside the band, age 1 returned about twice
+what ages 2-7 did.
 """
 
 from __future__ import annotations
@@ -90,10 +96,25 @@ log = logging.getLogger("kenya_monitor")
 
 TARGET_TYPE = "control"
 
-# X search reaches this far back. Duplicated from `collectors.x` rather than
-# imported, because the window population is a claim about the frame and has to
-# be readable without the collector.
-HORIZON_DAYS = 14
+# How far back a window can be sampled and still be a census.
+#
+# NOT `collectors.x.MAX_AGE_DAYS`, which is 14. Measured 2026-09-14 by running
+# the frame query over the SAME 15-minute slot (12:00-12:15 UTC) at every age
+# from 1 to 13 days, so time of day, query and cap are all held fixed and only
+# age varies:
+#
+#   age 1..7 days:  72, 20, 24, 33, 23, 34, 18   (mean ~32)
+#   age 8..13 days:  2,  3,  3,  5,  5,  4       (mean ~4)
+#
+# A ~9x cliff between day 7 and day 8. That is X's search index thinning, not
+# Kenyan posting volume - a window at 18:15 Nairobi time returned 3 posts at
+# age 8 and 39 at age 4. Sampling uniformly over 14 days would therefore make
+# every rate a function of how old the window happened to be, which is exactly
+# the confound the arm exists to remove.
+#
+# 7 rather than 8 because the cliff is measured between them and the
+# conservative side of a measured boundary is the one inside it.
+HORIZON_DAYS = 7
 
 # The last window before now is deliberately excluded: a window that has not
 # finished cannot be censused, and one that finished seconds ago may not be
