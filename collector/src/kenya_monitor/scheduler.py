@@ -16,6 +16,9 @@ from kenya_monitor.config import (
     CENSUS_TIMELINE_ACCOUNTS,
     CENSUS_TIMELINE_LIMIT,
     CENSUS_TIMELINE_STATE_PATH,
+    CONTROL_ENABLED,
+    CONTROL_EVERY_HOURS,
+    CONTROL_STATE_PATH,
     CYCLE_COOLDOWN_MAX_S,
     CYCLE_COOLDOWN_MIN_S,
     DEPTH_EVERY_HOURS,
@@ -436,6 +439,20 @@ async def run_deep_timelines_once(**overrides) -> dict[str, int]:
     return await collect_deep_timelines(collector, storage, **overrides)
 
 
+async def run_control_once(**overrides) -> dict[str, int]:
+    """One bounded control-arm pass (see control.collect_control).
+
+    In the cycle from the start, unlike the depth passes: a one-off pass samples
+    the last fortnight and nothing else, because X search reaches 14 days. The
+    arm is worth something only if it accumulates alongside the collection it is
+    the control for."""
+    from kenya_monitor.control import collect_control
+
+    storage = Storage(R2Config.from_env())
+    collector = await build_x_collector(load_accounts())
+    return await collect_control(collector, storage, **overrides)
+
+
 async def run_snowball_once(**overrides) -> dict[str, int]:
     """One snowball pass over hot objects (see runner.collect_snowball).
 
@@ -672,6 +689,13 @@ async def run_scheduler(limit: int) -> None:
             # hate steps, for the reason that put those after baseline: when
             # the pool hits a rate-limit wall it must hit the work that can
             # wait, never the coverage the whole corpus rests on.
+            def _control_due() -> bool:
+                from kenya_monitor.control import load_state
+
+                state = load_state(CONTROL_STATE_PATH)
+                latest = max((v.get("sampled_at") for v in state.values()), default=None)
+                return _depth_due(latest, CONTROL_EVERY_HOURS)
+
             def _parents_due() -> bool:
                 from kenya_monitor.parent_backfill import backfill_summary, load_state
 
@@ -695,6 +719,12 @@ async def run_scheduler(limit: int) -> None:
                     ),
                 ),
             ]
+            # After the baseline steps and before the depth arms. A gap in the
+            # control arm cannot be filled later - the 14-day search horizon
+            # closes over it - so it does not sit behind discretionary work,
+            # but it must not outrank baseline coverage either.
+            if CONTROL_ENABLED and _control_due():
+                steps.append(("control", run_control_once))
             if DEPTH_IN_CYCLE_ENABLED:
                 # Two steps rather than one, so an arm that raises does not
                 # take the other arm's pass with it.

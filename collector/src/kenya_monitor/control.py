@@ -109,7 +109,13 @@ class Frame:
 
     @property
     def keyword(self) -> str:
-        return " OR ".join(self.terms)
+        """The OR-group, with multi-word terms quoted.
+
+        Unquoted, `county government` inside an OR-group is two terms with an
+        implicit AND between them, which binds tighter than the OR - so the
+        phrase silently becomes a different, narrower query than the one the
+        frame file declares."""
+        return " OR ".join(f'"{t}"' if " " in t else t for t in self.terms)
 
 
 def load_frame(path: Path = CONTROL_FRAME_PATH, platform: str = "x") -> Frame:
