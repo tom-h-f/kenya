@@ -725,6 +725,58 @@ def census_runs(con: duckdb.DuckDBPyConnection, platform: str = "x"):
     )
 
 
+def deletion_rates(
+    con: duckdb.DuckDBPyConnection, platform: str = "x", min_checked: int = 3
+):
+    """Per-author deletion rate from the metrics re-check series.
+
+    `metrics/` carries one row per re-check since 2026-09-15, with `status`
+    recording whether the post was still there. Rows written before that have
+    no status and are excluded rather than counted as present - a NULL means
+    "this predates the column", not "the post existed".
+
+    `absence_cause` separates a deleted post from a gone account. Both are
+    concealment signals and they are not the same one, so they are returned
+    apart rather than summed.
+
+    THE BIAS THAT MUST TRAVEL WITH THIS. `collect_metrics` samples the top 5%
+    of posts by engagement, so this is the deletion rate among HIGH-ENGAGEMENT
+    posts, not among posts. Quoting it as a corpus rate is the same error that
+    made the raw toxicity series unpublishable. The unbiased version is the
+    same computation restricted to `posts/type=control`, which is sampled by
+    time rather than by engagement.
+    """
+    return con.sql(
+        f"""
+        WITH checked AS (
+            SELECT platform_post_id, status, absence_cause
+            FROM {metrics_source(platform)}
+            WHERE status IS NOT NULL
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY collected_at DESC) = 1
+        ),
+        joined AS (
+            SELECT p.author_id, c.status, c.absence_cause
+            FROM checked c
+            JOIN (
+                SELECT platform_post_id, any_value(author_id) AS author_id
+                FROM {posts_source(platform)} GROUP BY 1
+            ) p USING (platform_post_id)
+        )
+        SELECT author_id,
+               count(*) AS checked,
+               count(*) FILTER (status = 'absent') AS absent,
+               count(*) FILTER (absence_cause = 'post_deleted') AS deleted,
+               count(*) FILTER (absence_cause = 'author_gone') AS author_gone,
+               count(*) FILTER (status = 'absent') / count(*)::DOUBLE AS absent_rate
+        FROM joined
+        GROUP BY author_id
+        HAVING count(*) >= {int(min_checked)}
+        ORDER BY absent_rate DESC, checked DESC
+        """
+    )
+
+
 def coord2_scores_source(platform: str = "*") -> str:
     """A read_parquet(...) expression for persisted v2 account scores.
 

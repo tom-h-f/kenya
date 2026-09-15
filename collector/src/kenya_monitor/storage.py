@@ -66,6 +66,12 @@ METRIC_SCHEMA = pa.schema(
         ("repost_count", pa.int64()),
         ("quote_count", pa.int64()),
         ("view_count", pa.int64()),
+        # A re-check that found nothing is data, not a gap. Before 2026-09-15
+        # `refresh_metrics` skipped these, so a reader could not tell "never
+        # checked" from "checked and gone" - and deletion is the concealment
+        # signal this project can actually reach.
+        ("status", pa.string()),
+        ("absence_cause", pa.string()),
         ("collected_at", pa.timestamp("us", tz="UTC")),
     ]
 )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 
 import os
 from datetime import datetime, timedelta, timezone
@@ -13,7 +14,7 @@ import duckdb
 from twscrape import API
 
 from kenya_monitor import census
-from kenya_monitor.collectors.base import Collector, Engagement, FollowEdge, Post
+from kenya_monitor.collectors.base import STATUS_ABSENT, Collector, Engagement, FollowEdge, Post
 from kenya_monitor.collectors.x import Window, XCollector, build_api, sync_accounts
 from kenya_monitor.config import (
     CENSUS_OVER_BAND_WARN,
@@ -1030,25 +1031,37 @@ async def collect_metrics(
                 PARTITION BY platform_post_id ORDER BY collected_at DESC
             ) = 1
         )
-        SELECT platform_post_id FROM latest
+        SELECT platform_post_id, author_id FROM latest
         WHERE engagement >= (SELECT quantile_cont(engagement, {threshold}) FROM latest)
         ORDER BY engagement DESC
         LIMIT {max_posts}
         """
     ).fetchall()
     ids = [r[0] for r in rows]
+    # Carried so an absent post can be resolved to a deleted post or a gone
+    # account, which absence alone cannot distinguish.
+    authors = {str(r[0]): str(r[1]) for r in rows if r[1] is not None}
     if not ids:
         log.info("metrics: no candidates in last %dd", since_days)
-        return {"metrics": 0}
+        return {"metrics": 0, "absent": 0}
 
-    snapshots = [m async for m in collector.refresh_metrics(ids)]
+    snapshots = [m async for m in collector.refresh_metrics(ids, authors=authors)]
+    absent = [m for m in snapshots if m.status == STATUS_ABSENT]
     key = storage.write_metrics(snapshots)
     if key:
         log.info(
-            "metrics: refreshed top %.0f%% (%d posts) of last %dd -> %s",
+            "metrics: refreshed top %.0f%% (%d posts, %d absent) of last %dd -> %s",
             top_pct * 100,
             len(snapshots),
+            len(absent),
             since_days,
             key,
         )
-    return {"metrics": len(snapshots)}
+    if absent:
+        causes = Counter(m.absence_cause for m in absent)
+        log.info(
+            "metrics: %d of %d re-checked posts are gone (%s)",
+            len(absent), len(snapshots),
+            ", ".join(f"{k}={v}" for k, v in sorted(causes.items())),
+        )
+    return {"metrics": len(snapshots), "absent": len(absent)}

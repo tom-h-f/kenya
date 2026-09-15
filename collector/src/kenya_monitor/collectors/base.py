@@ -50,8 +50,34 @@ class Post:
         return asdict(self)
 
 
+# A re-checked post is present, or it is absent. Absence is recorded; its CAUSE
+# is resolved separately, because the four causes are not interchangeable.
+STATUS_PRESENT = "present"
+STATUS_ABSENT = "absent"
+
+# Resolved by looking the AUTHOR up after the post came back empty.
+CAUSE_POST_DELETED = "post_deleted"   # author is fine, the post is not
+CAUSE_AUTHOR_GONE = "author_gone"     # suspended, deleted or protected
+CAUSE_UNRESOLVED = "unresolved"       # we did not or could not check
+
+
 @dataclass
 class MetricSnapshot:
+    """One re-check of a post we already hold.
+
+    `status` is the reason this class is not just counters. A re-check that
+    finds nothing is an OBSERVATION - the strongest concealment signal this
+    collector can reach, because Kenya's documented disinformation-for-hire
+    pattern ends in deletion - and before 2026-09-15 it was discarded at the
+    point of collection (`if tw is None: continue`).
+
+    `absence_cause` exists because absence alone conflates four different
+    things: the post was deleted, the author was suspended, the author went
+    protected, or our own request failed. A column that silently means all four
+    would look like evidence without being any, which is the trap
+    `deep_timelines.no_posts` documents. Unresolved stays unresolved.
+    """
+
     platform: str
     platform_post_id: str
     like_count: int = 0
@@ -59,6 +85,8 @@ class MetricSnapshot:
     repost_count: int = 0
     quote_count: int = 0
     view_count: int = 0
+    status: str = STATUS_PRESENT
+    absence_cause: str | None = None
     collected_at: datetime = field(default_factory=_now)
 
     def as_row(self) -> dict:

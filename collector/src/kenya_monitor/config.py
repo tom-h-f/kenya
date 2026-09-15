@@ -216,6 +216,15 @@ DEPTH_IN_CYCLE_ENABLED = os.getenv("DEPTH_IN_CYCLE_ENABLED", "1") not in ("0", "
 # anything: at one pass per cycle a 200-id backfill spends 78% of its wall
 # clock on selection, so fewer, larger passes buy strictly more per request.
 DEPTH_EVERY_HOURS = float(os.getenv("DEPTH_EVERY_HOURS", "12"))
+# Deletion tracking (docs/plans/2026-09-15-deletion-tracking.md).
+#
+# An absent post costs one extra request to resolve: looking the author up
+# separates "the post was deleted" from "the account was suspended". Both are
+# concealment signals and they are not the same signal, so the default is to
+# spend the request. Turn it off and absence is still recorded, just as
+# `unresolved` - never silently attributed to deletion.
+METRICS_RESOLVE_ABSENCE = os.getenv("METRICS_RESOLVE_ABSENCE", "1") not in ("0", "false", "")
+
 # The control arm (kenya_monitor.control): a sample of Kenyan political
 # discourse drawn by sampling TIME rather than by choosing what to look at.
 # See docs/plans/2026-09-14-control-arm.md.

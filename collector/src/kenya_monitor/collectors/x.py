@@ -8,7 +8,15 @@ from pathlib import Path
 from twscrape import API
 from twscrape.models import Tweet
 
+import logging
+
+from kenya_monitor.config import METRICS_RESOLVE_ABSENCE
 from kenya_monitor.collectors.base import (
+    CAUSE_AUTHOR_GONE,
+    CAUSE_POST_DELETED,
+    CAUSE_UNRESOLVED,
+    STATUS_ABSENT,
+    STATUS_PRESENT,
     Author,
     Collector,
     Engagement,
@@ -21,6 +29,8 @@ from kenya_monitor.collectors.base import (
 from kenya_monitor.accounts import configure_pool, sync_accounts  # noqa: F401
 from kenya_monitor.config import APP_ROOT
 from kenya_monitor.twscrape_compat import install as _install_twscrape_compat
+
+log = logging.getLogger("kenya_monitor")
 
 _install_twscrape_compat()
 
@@ -299,19 +309,56 @@ class XCollector(Collector):
             self._authors[str(u.id)] = self._to_author(u)
             yield FollowEdge(platform=self.platform, follower_id=uid, followed_id=str(u.id))
 
-    async def refresh_metrics(self, post_ids: list[str]) -> AsyncIterator[MetricSnapshot]:
+    async def refresh_metrics(
+        self,
+        post_ids: list[str],
+        authors: dict[str, str] | None = None,
+        resolve_absence: bool = METRICS_RESOLVE_ABSENCE,
+    ) -> AsyncIterator[MetricSnapshot]:
+        """Re-check held posts, and RECORD the ones that have gone.
+
+        `authors` maps post id to author id. When supplied and
+        `resolve_absence` is on, an absent post costs one extra request to look
+        its author up, which separates a deleted post from a suspended account -
+        two different signals that absence alone conflates.
+
+        A raised request is never recorded as absence. That would manufacture
+        deletions out of our own rate limiting, which is the failure mode this
+        whole column exists to avoid.
+        """
+        authors = authors or {}
         for pid in post_ids:
-            tw = await self.api.tweet_details(int(pid))
-            if tw is None:
+            try:
+                tw = await self.api.tweet_details(int(pid))
+            except Exception:
+                log.exception("metrics: request failed for %s; not recorded", pid)
                 continue
+            if tw is not None:
+                yield MetricSnapshot(
+                    platform=self.platform,
+                    platform_post_id=str(tw.id),
+                    like_count=tw.likeCount or 0,
+                    reply_count=tw.replyCount or 0,
+                    repost_count=tw.retweetCount or 0,
+                    quote_count=tw.quoteCount or 0,
+                    view_count=tw.viewCount or 0,
+                    status=STATUS_PRESENT,
+                )
+                continue
+
+            cause = CAUSE_UNRESOLVED
+            author_id = authors.get(str(pid))
+            if resolve_absence and author_id:
+                try:
+                    user = await self.api.user_by_id(int(author_id))
+                    cause = CAUSE_POST_DELETED if user is not None else CAUSE_AUTHOR_GONE
+                except Exception:
+                    log.exception("metrics: author lookup failed for %s", author_id)
             yield MetricSnapshot(
                 platform=self.platform,
-                platform_post_id=str(tw.id),
-                like_count=tw.likeCount or 0,
-                reply_count=tw.replyCount or 0,
-                repost_count=tw.retweetCount or 0,
-                quote_count=tw.quoteCount or 0,
-                view_count=tw.viewCount or 0,
+                platform_post_id=str(pid),
+                status=STATUS_ABSENT,
+                absence_cause=cause,
             )
 
     def _to_author(self, u) -> Author:
