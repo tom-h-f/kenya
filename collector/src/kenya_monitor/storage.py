@@ -153,6 +153,32 @@ CENSUS_TTL_SCHEMA = pa.schema(
 # frame post. A window with nothing in it is an observation; dropping it would
 # bias every rate computed from the arm upward, which is the one failure this
 # arm exists to avoid.
+# One row per tag CONSIDERED by trend discovery, censused or not. The series of
+# what emerged cannot be reconstructed later - the 7-day search window closes
+# over it - so a tag we decided to skip is recorded beside one we chased.
+TREND_CANDIDATE_SCHEMA = pa.schema(
+    [
+        ("run_id", pa.string()),
+        ("platform", pa.string()),
+        ("tag", pa.string()),
+        ("recent_windows", pa.int64()),
+        ("prior_windows", pa.int64()),
+        ("recent_rate", pa.float64()),
+        ("prior_rate", pa.float64()),
+        ("emergence", pa.float64()),
+        ("posts", pa.int64()),
+        ("authors", pa.int64()),
+        # Recorded, never selected on - see trend_discovery's module docstring.
+        ("posts_per_author", pa.float64()),
+        ("first_seen", pa.timestamp("us", tz="UTC")),
+        ("last_seen", pa.timestamp("us", tz="UTC")),
+        ("censused", pa.bool_()),
+        ("collected_posts", pa.int64()),
+        ("code_version", pa.string()),
+        ("collected_at", pa.timestamp("us", tz="UTC")),
+    ]
+)
+
 CONTROL_RUN_SCHEMA = pa.schema(
     [
         ("run_id", pa.string()),
@@ -499,6 +525,58 @@ class Storage:
         """Per-pass census counters (supply, selection, degree distribution)."""
         glob = self._uri(f"census_runs/platform={platform}/dt=*/run=*.parquet")
         return f"read_parquet('{glob}', union_by_name=true, hive_partitioning=true)"
+
+    def write_trend_candidates(
+        self, rows: Sequence[dict], platform: str = "x", now: datetime | None = None
+    ) -> str | None:
+        """Every tag trend discovery considered -> trend_candidates/ prefix.
+
+        Written whether or not the tag was censused, for the same reason the
+        control arm records empty windows: the rows we skipped are what make the
+        selection rule auditable after the fact."""
+        if not rows:
+            return None
+        now = now or datetime.now(timezone.utc)
+        rid = run_id(now)
+        blank = {f.name: None for f in TREND_CANDIDATE_SCHEMA}
+        unknown = sorted({k for r in rows for k in r} - set(blank))
+        if unknown:
+            log.warning(
+                "trend_candidates: %d field(s) not in schema, dropped: %s",
+                len(unknown), ", ".join(unknown),
+            )
+        table = pa.Table.from_pylist(
+            [
+                {
+                    **blank,
+                    **{k: v for k, v in r.items() if k in blank},
+                    "run_id": rid,
+                    "platform": platform,
+                    "code_version": os.getenv("GIT_SHA", ""),
+                    "collected_at": now,
+                }
+                for r in rows
+            ],
+            schema=TREND_CANDIDATE_SCHEMA,
+        )
+        key = f"trend_candidates/platform={platform}/dt={_dt_partition(now)}/run={rid}.parquet"
+        self._copy_table(table, key)
+        return key
+
+    def control_posts_view(self, platform: str = "*") -> str:
+        """Control-arm posts joined to the window they were sampled from.
+
+        Trend discovery normalises by SAMPLED WINDOW, so it needs the window a
+        post came from, which lives in `control_runs/` rather than on the post.
+        """
+        posts = self._uri(f"posts/platform={platform}/type=control/dt=*/run=*.parquet")
+        runs = self._uri(f"control_runs/platform={platform}/dt=*/run=*.parquet")
+        return f"""
+            SELECT r.window_start, p.text, p.hashtags, p.author_id, p.created_at
+            FROM read_parquet('{posts}', union_by_name=true, hive_partitioning=true) p
+            JOIN read_parquet('{runs}', union_by_name=true, hive_partitioning=true) r
+              ON p.created_at >= r.window_start AND p.created_at < r.window_end
+        """
 
     def write_control_run(
         self, rows: Sequence[dict], platform: str = "x", now: datetime | None = None

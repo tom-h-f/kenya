@@ -216,6 +216,15 @@ DEPTH_IN_CYCLE_ENABLED = os.getenv("DEPTH_IN_CYCLE_ENABLED", "1") not in ("0", "
 # anything: at one pass per cycle a 200-id backfill spends 78% of its wall
 # clock on selection, so fewer, larger passes buy strictly more per request.
 DEPTH_EVERY_HOURS = float(os.getenv("DEPTH_EVERY_HOURS", "12"))
+# Trend discovery over the control arm (kenya_monitor.trend_discovery).
+# Behind the control arm in the cycle, and less often than it: discovery is only
+# as good as the sample it reads, so running more often than the arm collects
+# just re-finds the same tags.
+TRENDS_ENABLED = os.getenv("TRENDS_ENABLED", "1") not in ("0", "false", "")
+TRENDS_EVERY_HOURS = float(os.getenv("TRENDS_EVERY_HOURS", "12"))
+TRENDS_LIMIT = int(os.getenv("TRENDS_LIMIT", "3"))          # tags censused per pass
+TRENDS_PER_TAG = int(os.getenv("TRENDS_PER_TAG", "100"))    # posts per tag
+
 # The control arm (kenya_monitor.control): a sample of Kenyan political
 # discourse drawn by sampling TIME rather than by choosing what to look at.
 # See docs/plans/2026-09-14-control-arm.md.
@@ -376,6 +385,9 @@ FOLLOW_CRAWL_STATE_PATH = Path(os.getenv("FOLLOW_CRAWL_STATE_PATH", STATE_DIR / 
 HATE_SEEK_STATE_PATH = Path(os.getenv("HATE_SEEK_STATE_PATH", STATE_DIR / "hate_seek.json"))
 PARENT_BACKFILL_STATE_PATH = Path(
     os.getenv("PARENT_BACKFILL_STATE_PATH", STATE_DIR / "parent_backfill.json")
+)
+TRENDS_STATE_PATH = Path(
+    os.getenv("TRENDS_STATE_PATH", STATE_DIR / "trends.json")
 )
 CONTROL_STATE_PATH = Path(
     os.getenv("CONTROL_STATE_PATH", STATE_DIR / "control.json")

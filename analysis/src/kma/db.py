@@ -113,6 +113,13 @@ TARGETED_TYPES = (
     # re-run after a bulk pass must report whether deep-timelined accounts rose
     # in rank, joining `deep_timelines/` on `user_id`.
     "deep_timeline",
+    # Posts collected for a hashtag that trend discovery found emerging in the
+    # control arm (`kenya_monitor.trend_discovery`). Targeted: the tag was
+    # chosen because it was rising, so these posts oversample whatever is being
+    # pushed right now, which is the point and also why they can never sit in a
+    # prevalence denominator. The control arm stays the denominator; this is
+    # what it points at.
+    "trend",
 )
 # The control arm (`kenya_monitor.control`): windows of time sampled at random
 # from a pre-registered frame, censused whole. In NEITHER of the two scopes
