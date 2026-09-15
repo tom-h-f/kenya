@@ -53,9 +53,22 @@ class RunResult:
 
 
 def build_networks(
-    con: duckdb.DuckDBPyConnection, view: str, *, traces: dict | None = None
+    con: duckdb.DuckDBPyConnection,
+    view: str,
+    *,
+    traces: dict | None = None,
+    min_entities: int = coord2.MIN_ENTITIES_PER_USER,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
-    """Every bipartite trace, from corpus rows to a filtered similarity network."""
+    """Every bipartite trace, from corpus rows to a filtered similarity network.
+
+    `min_entities` is the activity floor, and it is exposed here because the
+    2026-09-14 depth test made it the parameter that matters most: at 2, an
+    account with two posts touching viral objects has a one-hot co-action vector
+    whose cosine against every other toucher is 1.0 whatever TF-IDF does, and
+    deepening such accounts removed 390 of 390 from the top 500. Sweeping it is
+    how the floor gets set by measurement rather than by being the smallest
+    number that is not 1.
+    """
     wanted = traces or BIPARTITE_TRACES
     networks: dict[str, pd.DataFrame] = {}
     sizes = []
@@ -67,7 +80,9 @@ def build_networks(
             log.info("%s: no trace rows", name)
             sizes.append({"trace": name, "trace_rows": 0, "users": 0, "edges": 0})
             continue
-        edges = coord2.similarity_network(rows, percentile=percentile)
+        edges = coord2.similarity_network(
+            rows, percentile=percentile, min_entities=min_entities
+        )
         networks[name] = edges
         users = len(set(edges["source"]) | set(edges["target"])) if not edges.empty else 0
         sizes.append(
@@ -158,6 +173,9 @@ def run(
     top: int = 500,
     text_threshold: float | None = 0.85,
     text_overlap: float | None = coord2.TEXT_MIN_OVERLAP,
+    min_entities: int = coord2.MIN_ENTITIES_PER_USER,
+    since: str | None = None,
+    until: str | None = None,
     con: duckdb.DuckDBPyConnection | None = None,
 ) -> RunResult:
     """One v2 pass over a pinned snapshot: traces, fusion, centrality, relevance.
@@ -173,8 +191,16 @@ def run(
     view = coord2.posts_view(source)
     if days:
         view = f"SELECT * FROM ({view}) WHERE created_at >= now() - INTERVAL {int(days)} DAY"
+    # An explicit window, for detecting campaigns as events rather than as a
+    # three-month average. `days` is relative to now and so cannot address a
+    # window in the past; these can, which is what makes a per-window series
+    # possible.
+    if since:
+        view = f"SELECT * FROM ({view}) WHERE created_at >= TIMESTAMPTZ '{since}'"
+    if until:
+        view = f"SELECT * FROM ({view}) WHERE created_at < TIMESTAMPTZ '{until}'"
 
-    networks, sizes = build_networks(con, view)
+    networks, sizes = build_networks(con, view, min_entities=min_entities)
 
     if text_threshold is not None:
         edges = apply_text_floor(con, load_textsim(con, snapshot, text_threshold, text_overlap), view)
@@ -208,13 +234,19 @@ def main() -> None:
     ap.add_argument("--text-overlap", type=float, default=coord2.TEXT_MIN_OVERLAP,
                     help="word-overlap floor the text trace was built with; 0 for none")
     ap.add_argument("--no-text", action="store_true", help="skip the text-similarity trace")
+    ap.add_argument("--min-entities", type=int, default=coord2.MIN_ENTITIES_PER_USER,
+                    help="activity floor; the 2026-09-14 depth test made this the "
+                         "parameter that decides whether the ranking is real")
+    ap.add_argument("--since", help="window start (ISO, UTC), for event detection")
+    ap.add_argument("--until", help="window end (ISO, UTC)")
     ap.add_argument("--persist", action="store_true", help="write the run to R2")
     args = ap.parse_args()
 
     threshold = None if args.no_text else args.text_threshold
     overlap = args.text_overlap or None
     result = run(args.snapshot, days=args.days or None, top=args.top, text_threshold=threshold,
-                 text_overlap=overlap)
+                 text_overlap=overlap, min_entities=args.min_entities,
+                 since=args.since, until=args.until)
 
     print(result.trace_sizes.to_string(index=False))
     print()
@@ -228,7 +260,9 @@ def main() -> None:
         con = connect()
         print("\npersisted:", persist(con, result.scores, snapshot=args.snapshot,
                                       trace_sizes=result.trace_sizes,
-                                      text_threshold=threshold, text_overlap=overlap))
+                                      text_threshold=threshold, text_overlap=overlap,
+                                      min_entities=args.min_entities,
+                                      since=args.since, until=args.until))
 
 
 if __name__ == "__main__":
@@ -243,6 +277,9 @@ def persist(
     trace_sizes: pd.DataFrame,
     text_threshold: float | None = None,
     text_overlap: float | None = None,
+    min_entities: int = coord2.MIN_ENTITIES_PER_USER,
+    since: str | None = None,
+    until: str | None = None,
     platform: str = "x",
 ) -> str:
     """Write one v2 pass under its own R2 prefix.
@@ -263,7 +300,11 @@ def persist(
     buf["computed_at"] = now
     buf["text_threshold"] = text_threshold
     buf["text_overlap"] = text_overlap
-    buf["min_entities"] = coord2.MIN_ENTITIES_PER_USER
+    buf["min_entities"] = min_entities
+    # A windowed run is a different object from a whole-snapshot one and must
+    # not be comparable to it by accident.
+    buf["window_since"] = since
+    buf["window_until"] = until
     for _, row in trace_sizes.iterrows():
         buf[f"edges_{row['trace']}"] = int(row["edges"])
 
