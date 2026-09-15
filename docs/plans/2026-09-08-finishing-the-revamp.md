@@ -149,6 +149,13 @@ labels and 0.606 against the model's on the same posts. See `v2-findings` §6.
 reference is a divergence. Seed, convergence settings and isolated-node handling
 are all ruled out. Any Iran figure from this pipeline is suspect until explained.
 
+*Explained and CLOSED 2026-09-11.* The benchmark disagrees with itself, not with
+us: IOHunter's own code on its own release reproduces the paper to the decimal
+for russia, venezuela and china, and gives Iran **71.31 +/- 0.76** against the
+published 60.83. Ours is 71.43. The published Iran figure is the outlier, so
+Iran is judged against the reference implementation's output everywhere in this
+project. See `docs/analysis/v2-findings.md` section 3.
+
 ---
 
 ## P2: instruments that need time rather than work
