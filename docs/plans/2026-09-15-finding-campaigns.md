@@ -31,6 +31,47 @@ Two further facts set the order below:
 Ordered by value over cost. Routes 1-3 are independent and can run in parallel;
 route 4 is downstream of the control arm accumulating.
 
+Each route has its own plan, and the reconnaissance behind them was measured on
+2026-09-15 rather than assumed:
+
+| route | plan | status after measurement |
+|---|---|---|
+| 1. Deletions | `2026-09-15-deletion-tracking.md` | **cheapest**; the signal is already collected and discarded |
+| 2. Trends | `2026-09-15-trend-collection.md` | **redesigned**; original premise measured dead, replacement already produced a result |
+| 3. Windowed detection | `2026-09-15-windowed-detection.md` | **viable**; daily windowing holds 701 accounts |
+| 4. Control as null | `2026-09-15-control-as-null.md` | accumulating; 28 windows, 0 truncated |
+
+## What the reconnaissance changed
+
+**Route 2's premise was wrong and is now replaced.** twscrape's `trends()`
+fails against the live pool - `GenericTimelineById` returns `(-1) Internal
+server error` under HTTP 200, for both `trending` and `news`. That is X
+rejecting the operation, not a locale problem, so no change of account fixes it.
+
+The replacement is better. The control arm samples Kenyan political discourse
+exogenously, and hashtag frequency over it discovers campaign tags directly. It
+already has: in 502 randomly sampled posts, `#LindaMwananchiNairobi` appears 24
+times from 11 authors (4.8% of the sample), and at least 2 of the 7 repeated
+tags - `#KaNairoTunamuOk`, `#NairobiNaFei` - are outside our 34-term keyword
+list. Discovery needs no new endpoint and gets better for free as route 4
+accumulates.
+
+**Route 3 is viable, which was not obvious.** The fear was that daily windows
+would leave too few accounts above the activity floor. Measured over the last 60
+days of snapshot `2026-09-14-deep500`:
+
+| window | >= 2 entities | >= 5 | >= 10 |
+|---|---|---|---|
+| per day | **701** | 310 | 179 |
+| per week | 2,855 | 1,397 | 941 |
+
+Daily holds at floors 2 and 5; floor 10 needs weekly. That sets the
+window/floor trade concretely rather than by argument.
+
+**Route 1 is cheaper than it looked.** `XCollector.refresh_metrics` already
+calls `tweet_details` on ~400 held posts several times a day and does
+`if tw is None: continue`. We are observing disappearances and discarding them.
+
 ---
 
 ## Route 1: track deletions
@@ -241,20 +282,21 @@ phenomenon when a campaign does start.
 
 ## Unresolved questions
 
-1. **Route 2 is blocked on one measurement.** Do our pool accounts see Kenyan
-   trends? If not, is setting account locale acceptable, or does that risk the
-   accounts? I would test before writing any code.
-2. **Route 1's absent-vs-deleted resolution costs a request per absent post**
-   (checking the author). Acceptable, or should absence stay unresolved and be
-   reported as "absent" with the ambiguity stated?
-3. **Trend selection rule.** What decides which trends get censused - top N by
-   volume, everything above a volume floor, or a Kenya-relevance filter using
-   the existing classifier? All three are defensible; the choice must be fixed
-   in advance and it changes what the arm means.
-4. **Route 3's window width.** Daily is the right unit for campaigns but may
-   leave too few accounts above the activity floor. Do you want the measurement
-   that decides it (accounts clearing `MIN_ENTITIES` per day/week) before the
-   detector work, or build weekly and narrow later?
-5. **Priority against the `MIN_ENTITIES` sweep.** The sweep is the prerequisite
-   for trusting any ranking. Should it come before all four, or does route 1
-   (which needs no ranking at all) go first in parallel?
+Questions 1 and 4 from the first draft are answered above and removed. What is
+left is decisions, not measurements - each is in its own plan too.
+
+1. **Trend selection rule** (route 2). Emergence, volume floor, or author
+   concentration? Recommendation: emergence, with concentration recorded beside
+   it but not used to select, so concentration stays usable as evidence rather
+   than becoming the selection criterion.
+2. **Absent-vs-deleted resolution** (route 1) costs one request per absent post
+   to check the author. Acceptable, or should absence stay unresolved and be
+   reported with the ambiguity stated?
+3. **Window width** (route 3). Daily at floor 2-5, or weekly at floor 10? The
+   population table above is the trade; the `MIN_ENTITIES` sweep decides which
+   floor is defensible.
+4. **Order of work.** Route 1 is the only one that needs no ranking at all, so
+   it can run in parallel with the `MIN_ENTITIES` sweep. Routes 2-4 are all
+   improved by the control arm growing, which argues for raising
+   `CONTROL_WINDOWS_PER_PASS` early since it is a one-line change that makes
+   three routes better.
