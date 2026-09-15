@@ -230,9 +230,20 @@ CONTROL_WINDOW_MINUTES = int(os.getenv("CONTROL_WINDOW_MINUTES", "15"))
 # window that reaches the cap is recorded truncated and stops supporting the
 # census claim, so the cap is a detector as much as a budget.
 CONTROL_WINDOW_CAP = int(os.getenv("CONTROL_WINDOW_CAP", "100"))
-# Windows per pass. 4 x 15 minutes is an hour of sampled time per pass at
-# roughly one request per window page.
-CONTROL_WINDOWS_PER_PASS = int(os.getenv("CONTROL_WINDOWS_PER_PASS", "4"))
+# Windows per pass. Raised from 4 to 8 on 2026-09-15.
+#
+# The arm is far cheaper per window than budgeted: 0 of 28 windows truncated and
+# the busiest returned 71 of a 100 cap, so the cap is not the limit and each
+# window is about one request. Meanwhile three separate things are waiting on
+# this sample growing - the prevalence denominator, hashtag discovery
+# (`trend_discovery`), and the null model (`kma.nullmodel`) - and a 99th
+# percentile claim needs ~1,522 control observations against the 502 held on
+# 2026-09-15.
+#
+# Not raised further than doubling in one step: more windows per pass is more
+# pool budget spent ahead of baseline coverage, and the truncation rate should
+# be re-read at 8 before it goes higher.
+CONTROL_WINDOWS_PER_PASS = int(os.getenv("CONTROL_WINDOWS_PER_PASS", "8"))
 # Include native retweets in the census. True, because the frame should be
 # everything posted in the window and silently dropping a category is the kind
 # of unstated choice this arm exists to avoid. It raises volume, so it also
