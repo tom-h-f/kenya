@@ -19,6 +19,8 @@ from kenya_monitor.config import (
     CONTROL_ENABLED,
     CONTROL_EVERY_HOURS,
     CONTROL_STATE_PATH,
+    TRENDS_ENABLED,
+    TRENDS_EVERY_HOURS,
     CYCLE_COOLDOWN_MAX_S,
     CYCLE_COOLDOWN_MIN_S,
     DEPTH_EVERY_HOURS,
@@ -439,6 +441,19 @@ async def run_deep_timelines_once(**overrides) -> dict[str, int]:
     return await collect_deep_timelines(collector, storage, **overrides)
 
 
+async def run_trends_once(**overrides) -> dict[str, int]:
+    """One bounded trend-discovery pass (see trend_discovery.collect_trends).
+
+    In the cycle behind the control arm it reads from: discovery is only as good
+    as the sample it discovers in, and a pass that runs before the arm has
+    sampled anything new finds the same tags again."""
+    from kenya_monitor.trend_discovery import collect_trends
+
+    storage = Storage(R2Config.from_env())
+    collector = await build_x_collector(load_accounts())
+    return await collect_trends(collector, storage, **overrides)
+
+
 async def run_control_once(**overrides) -> dict[str, int]:
     """One bounded control-arm pass (see control.collect_control).
 
@@ -683,6 +698,11 @@ async def run_scheduler(limit: int) -> None:
                 latest = max((v.get("sampled_at") for v in state.values()), default=None)
                 return _depth_due(latest, CONTROL_EVERY_HOURS)
 
+            def _trends_due() -> bool:
+                from kenya_monitor.trend_discovery import load_state
+
+                return _depth_due(load_state().get("last_run"), TRENDS_EVERY_HOURS)
+
             def _parents_due() -> bool:
                 from kenya_monitor.parent_backfill import backfill_summary, load_state
 
@@ -705,6 +725,11 @@ async def run_scheduler(limit: int) -> None:
             # window permanently - which is not true of anything below it here.
             if CONTROL_ENABLED and _control_due():
                 steps.append(("control", run_control_once))
+            # Behind the control arm, never ahead: discovery reads what that
+            # pass just collected, and running first would re-find last
+            # cycle's tags.
+            if TRENDS_ENABLED and _trends_due():
+                steps.append(("trends", run_trends_once))
             if hate_due:
                 steps += [
                     ("hate_seek", run_hate_seek_once),
