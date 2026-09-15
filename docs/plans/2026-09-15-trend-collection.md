@@ -130,3 +130,34 @@ denominator and the discovery surface.
    artefact of our own list. Control-only is cleaner and slower.
 3. Re-test `trends()` after a twscrape upgrade? If it ever works it is strictly
    better for discovery than sampling, because it sees the whole platform.
+
+## Built and run live, 2026-09-15
+
+`kenya_monitor.trend_discovery`, `trend_candidates/`, `posts/type=trend`, and a
+cycle step behind the control arm (`TRENDS_EVERY_HOURS` 12).
+
+First live pass, `run_trends_once(limit=2, per_tag=40)`:
+
+```
+trend discovery: 4 candidate(s) from 4 recent and 23 prior windows
+trend: #lindamwananchinairobi emergence inf (36 posts, 14 authors, 2.6 per author) -> 43 collected
+trend: #nairobinasifuna       emergence inf ( 8 posts,  8 authors, 1.0 per author) -> 42 collected
+{'candidates': 4, 'censused': 2, 'posts': 85, 'authors': 55}
+```
+
+**The selection rule behaved as designed, and the separation it was built to
+preserve showed up immediately.** Both tags emerged identically - no prior
+windows, so emergence is infinite for both - and emergence alone chose them.
+Author concentration, which is recorded and deliberately never used to select,
+then separates them cleanly: 2.6 posts per author against 1.0.
+
+That is the whole argument for the split. Had concentration done the selecting,
+2.6 would be a property of the selection rule and worthless as evidence. Because
+emergence selected, concentration is an independent observation about a tag that
+timing found - which is what makes it usable.
+
+One caution on reading it: at 4 recent windows the prior is thin, so "emergence
+inf" currently means "not seen in the 23 prior windows", which is a weaker
+statement than it will be once the control arm has more history. The number to
+watch as the arm grows is how many candidates a pass returns; 4 from 4 windows
+is a rate that will not hold.
