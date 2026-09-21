@@ -84,27 +84,44 @@ def _struct(cols: tuple[str, ...]) -> str:
 def _beh_sql(posts_view: str, window: str) -> str:
     """Per-author volume and duplicate-text ratio.
 
-    `text` enters here and never leaves: it is dropped before the profile join,
-    which is what keeps the wide column out of every later stage. Two aggregate
-    stages instead of `count(DISTINCT lower(trim(text)))` - the inner group
-    collapses repeats, the outer counts them. Identical result, and no
-    per-author hash set of full post text.
+    Text never enters as text. It is hashed at the scan and only the hash is
+    carried, because the ratio needs equality classes and nothing else: two
+    posts are duplicates if their hashes match. That is an 8-byte grouping key
+    against a whole post body, and the post-level relation is the widest thing
+    this stage builds.
+
+    The latest-snapshot dedup stays `arg_max(struct, collected_at)`, and the
+    struct stays atomic: a post's text can differ between collections, so the
+    author and the text have to come from the same winning row. Only its width
+    changes, from a post body to a hash, and that is the whole fix - the
+    aggregate state held one full body per distinct post, in a temp relation
+    that counts against `memory_limit` and cannot spill.
+
+    A NULL text hashes to NULL rather than to a value, so a post whose newest
+    snapshot has no text is still dropped after the dedup, not before it.
+
+    Two aggregate stages instead of `count(DISTINCT ...)` - the inner group
+    collapses repeats, the outer counts them - so no per-author hash set is
+    built either.
     """
     return f"""
     SELECT author_id,
         sum(n) AS n_posts,
         1.0 - count(*) * 1.0 / sum(n) AS duplicate_text_ratio
     FROM (
-        SELECT r.author_id AS author_id, lower(trim(r.text)) AS t, count(*) AS n
+        SELECT r.author_id AS author_id, r.t AS t, count(*) AS n
         FROM (
             SELECT platform, platform_post_id,
-                   arg_max(struct_pack(author_id := author_id, text := text),
-                           collected_at) AS r
+                   arg_max(struct_pack(
+                       author_id := author_id,
+                       t := CASE WHEN text IS NULL THEN NULL
+                                 ELSE hash(lower(trim(text))) END
+                   ), collected_at) AS r
             FROM {posts_view}
             {window}
             GROUP BY platform, platform_post_id
         )
-        WHERE r.text IS NOT NULL
+        WHERE r.t IS NOT NULL
         GROUP BY 1, 2
     )
     WHERE author_id IS NOT NULL
@@ -206,6 +223,12 @@ def materialise(
     con.execute(f"CREATE OR REPLACE TEMP TABLE {_BEH} AS {_beh_sql(posts_view, window)}")
     con.execute(f"CREATE OR REPLACE TEMP TABLE {_PROF} AS {_prof_sql(authors_view, _BEH)}")
     con.execute(f"CREATE OR REPLACE TEMP TABLE {table} AS {_score_sql(_PROF, _BEH)}")
+    # The two inputs are read once, by the score, and a temp table counts
+    # against `memory_limit` for as long as it exists. Holding the profile
+    # table - which carries a bio per author - for the rest of the cycle takes
+    # that budget away from every later step on this connection.
+    con.execute(f"DROP TABLE IF EXISTS {_PROF}")
+    con.execute(f"DROP TABLE IF EXISTS {_BEH}")
     _BUILT[key] = time.monotonic()
     return table
 

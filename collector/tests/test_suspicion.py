@@ -186,3 +186,45 @@ def test_materialise_is_reused_within_the_cache_window():
 
     materialise(con, "authors_tbl", "posts_tbl", max_age_minutes=0)
     assert con.sql("SELECT count(*) FROM _susp_scored").fetchone()[0] == 1
+
+
+def test_a_post_whose_newest_snapshot_lost_its_text_is_not_counted():
+    """Text is hashed at the scan now. A NULL has to stay NULL through the
+    dedup, or a post whose newest collection has no text would fall back to an
+    older one's - which is the same silent substitution the struct exists to
+    stop."""
+    today = date.today()
+    older, newer = NOW - timedelta(hours=2), NOW
+    authors = _authors(["a1"], ["acct"], [NOW])
+    posts = _posts(
+        ["p1", "p1", "p2"], ["a1", "a1", "a1"],
+        ["had text", None, "had text"],
+        [today, today, today], [older, newer, newer],
+    )
+    con = duckdb.connect()
+    con.register("authors_tbl", authors)
+    con.register("posts_tbl", posts)
+    from kenya_monitor.suspicion import materialise
+
+    table = materialise(con, "authors_tbl", "posts_tbl")
+    ratio = con.sql(f"SELECT duplicate_text_ratio FROM {table}").fetchone()[0]
+    # Only p2 survives, so nothing is a duplicate of anything. Falling back to
+    # p1's older text would make the two posts a matching pair: 1 - 1/2.
+    assert ratio == 0.0
+
+
+def test_the_stage_inputs_do_not_outlive_the_score():
+    """The behaviour and profile tables are temp tables, so they hold
+    `memory_limit` budget until dropped. The follow crawl OOMed on this
+    connection at 572 MiB of 600 MB."""
+    today = date.today()
+    authors = _authors(["a1"], ["acct"], [NOW])
+    posts = _posts(["p1"], ["a1"], ["hello"], [today], [NOW])
+    con = duckdb.connect()
+    con.register("authors_tbl", authors)
+    con.register("posts_tbl", posts)
+    from kenya_monitor.suspicion import _BEH, _PROF, materialise
+
+    materialise(con, "authors_tbl", "posts_tbl")
+    live = {r[0] for r in con.sql("SELECT table_name FROM duckdb_tables()").fetchall()}
+    assert _BEH not in live and _PROF not in live
