@@ -29,6 +29,7 @@ so one unbounded query took out hate seeding and its fallback together.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 
 import duckdb
 
@@ -99,6 +100,14 @@ def _beh_sql(posts_view: str, window: str) -> str:
 
     A NULL text hashes to NULL rather than to a value, so a post whose newest
     snapshot has no text is still dropped after the dedup, not before it.
+
+    Measured on pi0 2026-09-21 against the live corpus, 30-day window, 600MB
+    limit, 2 threads, file cache off for both: hashed completed in 1,249s over
+    405,168 authors at a 564 MB peak RSS, nothing spilled; the same query
+    carrying the text died at 1,232s on the production error - `failed to
+    allocate data of size 256.0 KiB (572.1 MiB/572.2 MiB used)` - after
+    spilling 148 MB. The arena holding the aggregate states was 106 MB hashed
+    against 354 MB carrying text.
 
     Two aggregate stages instead of `count(DISTINCT ...)` - the inner group
     collapses repeats, the outer counts them - so no per-author hash set is
@@ -187,6 +196,38 @@ def _score_sql(prof_table: str = _PROF, beh_table: str = _BEH) -> str:
     """
 
 
+@contextmanager
+def _no_file_cache(con: duckdb.DuckDBPyConnection):
+    """Scan the corpus without keeping the bytes it read.
+
+    DuckDB caches fetched file blocks inside `memory_limit`, which pays for
+    itself when queries revisit the same files and does not here: these two
+    stages read a 30-day glob once. Headroom, not the fix - the fix is the hash
+    in `_beh_sql`. Measured on pi0 2026-09-21, 30-day window, 600MB limit, 2
+    threads: uncached the stage completed in 1,249s at a 564 MB peak RSS, with
+    DuckDB's own accounting peaking at 270 MB of its 572 MiB budget and nothing
+    spilled. The same run cached was 100-150 MB higher at every sample and was
+    stopped at 20 minutes rather than run to an answer, so the cost of the
+    cache here is bounded but not exactly known.
+
+    Scoped rather than set on the connection: other steps reread the same
+    partitions within a cycle and the cache is worth having for them. Best
+    effort, like `Storage._tune` - a setting that does not exist in this DuckDB
+    build must not stop the ranking."""
+    try:
+        con.execute("SET enable_external_file_cache=false")
+    except duckdb.Error:
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            con.execute("RESET enable_external_file_cache")
+        except duckdb.Error:
+            pass
+
+
 def materialise(
     con: duckdb.DuckDBPyConnection,
     authors_view: str,
@@ -220,8 +261,9 @@ def materialise(
         if "dt" in cols
         else ""
     )
-    con.execute(f"CREATE OR REPLACE TEMP TABLE {_BEH} AS {_beh_sql(posts_view, window)}")
-    con.execute(f"CREATE OR REPLACE TEMP TABLE {_PROF} AS {_prof_sql(authors_view, _BEH)}")
+    with _no_file_cache(con):
+        con.execute(f"CREATE OR REPLACE TEMP TABLE {_BEH} AS {_beh_sql(posts_view, window)}")
+        con.execute(f"CREATE OR REPLACE TEMP TABLE {_PROF} AS {_prof_sql(authors_view, _BEH)}")
     con.execute(f"CREATE OR REPLACE TEMP TABLE {table} AS {_score_sql(_PROF, _BEH)}")
     # The two inputs are read once, by the score, and a temp table counts
     # against `memory_limit` for as long as it exists. Holding the profile
