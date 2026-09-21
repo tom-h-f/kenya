@@ -9,6 +9,7 @@ never becomes a deletion, and a cause is never attributed without checking.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 
@@ -120,3 +121,63 @@ def test_a_present_post_carries_no_absence_cause():
 
     assert got[0].status == STATUS_PRESENT
     assert got[0].absence_cause is None
+
+
+def test_the_candidate_query_carries_the_author_of_every_post():
+    """The author is what resolves an absence to a deletion or a suspension, so
+    `collect_metrics` selects it alongside the post id. Run against DuckDB
+    rather than a stub: the column was missing from the CTE for six days, which
+    a mocked storage cannot catch."""
+    import duckdb
+    import pyarrow as pa
+
+    from kenya_monitor.runner import collect_metrics
+
+    now = datetime.now(timezone.utc)
+    posts = pa.table(
+        {
+            "platform": pa.array(["x", "x"], type=pa.string()),
+            "platform_post_id": pa.array(["p1", "p2"], type=pa.string()),
+            "author_id": pa.array(["a1", "a2"], type=pa.string()),
+            "like_count": pa.array([100, 1], type=pa.int64()),
+            "quote_count": pa.array([0, 0], type=pa.int64()),
+            "repost_count": pa.array([0, 0], type=pa.int64()),
+            "collected_at": pa.array([now, now], type=pa.timestamp("us", tz="UTC")),
+        }
+    )
+    con = duckdb.connect()
+    con.register("posts_tbl", posts)
+
+    class _Storage:
+        def posts_view(self, platform="*", target_type="*"):
+            return "posts_tbl"
+
+        def query(self, sql):
+            return con.sql(sql)
+
+        def write_metrics(self, snapshots):
+            return None
+
+    class _Collector:
+        platform = "x"
+
+        def __init__(self):
+            self.authors = None
+
+        async def refresh_metrics(self, ids, authors=None, **kw):
+            self.authors = authors
+            for pid in ids:
+                yield _Snapshot(pid)
+
+    collector = _Collector()
+    counts = asyncio.run(collect_metrics(collector, _Storage(), top_pct=1.0))
+
+    assert counts["metrics"] == 2
+    assert collector.authors == {"p1": "a1", "p2": "a2"}
+
+
+class _Snapshot:
+    def __init__(self, pid):
+        self.platform_post_id = pid
+        self.status = STATUS_PRESENT
+        self.absence_cause = None

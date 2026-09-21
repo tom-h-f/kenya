@@ -1024,6 +1024,7 @@ async def collect_metrics(
         f"""
         WITH latest AS (
             SELECT platform_post_id,
+                   author_id,
                    (like_count + quote_count + repost_count) AS engagement
             FROM {source}
             WHERE collected_at > now() - INTERVAL {since_days} DAY
