@@ -36,7 +36,7 @@ communities by membership, and a truncated membership reads as churn.
 
 `kma.leads` matches each current community to its highest-Jaccard predecessor.
 From the measurement in
-`analysis/investigations/2026-09-22-leads-thresholds/findings.md`:
+`analysis/investigations/2026-09-22-leads-thresholds/01_jitter.py` (numbers in the `kma.leads` docstring):
 
 - **new**: best Jaccard < 0.2
 - **changed**: Jaccard < 0.5, or at least 5 accounts joined and they are at

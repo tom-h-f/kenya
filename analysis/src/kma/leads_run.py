@@ -3,6 +3,7 @@
     uv run kma-leads                          # dry run: prints the queue
     uv run kma-leads --source v1              # the same, on v1's clusters
     uv run kma-leads show <run_id> <candidate_id>
+    uv run kma-leads --source v1 --judge --max-judged 5 --persist   # local, needs a key
 
 The judging pass itself runs on Modal (`modal_leads.py`), because the reader
 needs `ANTHROPIC_API_KEY` and that key stays off tf1 and pi0. This module is
@@ -38,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -259,23 +261,27 @@ def members(
 def trend_authors(con: duckdb.DuckDBPyConnection, tag: str) -> list[str]:
     """Authors who used `tag` in the trend census or the control arm."""
     tag = tag.lower().lstrip("#").replace("'", "")
-    types = "{" + ",".join(TREND_MEMBER_TYPES) + "}"
-    glob = f"r2://{BUCKET}/posts/platform={PLATFORM}/type={types}/dt=*/run=*.parquet"
-    try:
-        rows = con.sql(
-            f"""
-            SELECT DISTINCT author_id
-            FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=true)
-            WHERE dt >= current_date - INTERVAL {TREND_MEMBER_DAYS} DAY
-              AND author_id IS NOT NULL
-              AND (list_contains(list_transform(hashtags, h -> lower(h)), '{tag}')
-                   OR lower(text) LIKE '%#{tag}%')
-            """
-        ).fetchall()
-    except duckdb.Error:
-        log.exception("could not resolve members of #%s", tag)
-        return []
-    return [str(r[0]) for r in rows]
+    found: set[str] = set()
+    # One type at a time: DuckDB globs do not expand `{a,b}`, and a type with
+    # no partitions yet must not cost the other its members.
+    for kind in TREND_MEMBER_TYPES:
+        glob = f"r2://{BUCKET}/posts/platform={PLATFORM}/type={kind}/dt=*/run=*.parquet"
+        try:
+            rows = con.sql(
+                f"""
+                SELECT DISTINCT author_id
+                FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=true)
+                WHERE dt >= current_date - INTERVAL {TREND_MEMBER_DAYS} DAY
+                  AND author_id IS NOT NULL
+                  AND (list_contains(list_transform(hashtags, h -> lower(h)), '{tag}')
+                       OR lower(text) LIKE '%#{tag}%')
+                """
+            ).fetchall()
+        except duckdb.Error:
+            log.exception("could not read %s posts for #%s", kind, tag)
+            continue
+        found.update(str(r[0]) for r in rows)
+    return sorted(found)
 
 
 def worth_a_look(verdict: dict, status: str) -> bool:
@@ -476,13 +482,29 @@ def main() -> None:
     ap.add_argument("--source", choices=("v2", "v1"), default="v2",
                     help="v1 reads coordination clusters as a stand-in listing")
     ap.add_argument("--limit", type=int, default=leads.MAX_CANDIDATES)
+    ap.add_argument("--judge", action="store_true",
+                    help="call the reader locally; needs ANTHROPIC_API_KEY in the environment")
+    ap.add_argument("--max-judged", type=int, default=0, help="hard cap on reader calls, 0 for none")
+    ap.add_argument("--persist", action="store_true", help="write queue, dossiers and verdicts to R2")
+    ap.add_argument("--mode", choices=(MODE_PRODUCTION, MODE_VALIDATION), default=MODE_VALIDATION,
+                    help="validation verdicts are never sent by the poller")
     args = ap.parse_args()
 
     con = connect()
     if args.cmd == "show":
         print(show(con, args.run_id, args.candidate_id))
         return
-    print(json.dumps(execute(con, source=args.source, limit=args.limit), indent=2, default=str))
+    judge = None
+    if args.judge:
+        from kma import adjudicate
+
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            raise SystemExit("--judge needs ANTHROPIC_API_KEY in the environment")
+        judge = adjudicate.judge_all
+    print(json.dumps(execute(con, source=args.source, limit=args.limit, judge=judge,
+                             persist=args.persist, mode=args.mode,
+                             max_judged=args.max_judged or None),
+                     indent=2, default=str))
 
 
 if __name__ == "__main__":

@@ -29,8 +29,16 @@ Three outcomes per current community, from its best match:
   campaign, now twice as big" is exactly what a reader should see again.
 - **same** - everything else, and not re-judged.
 
-The thresholds are set from measured run-to-run jitter on unchanged data; see
-`analysis/investigations/2026-09-22-leads-thresholds/findings.md`.
+The thresholds are set from measured run-to-run jitter, by
+`analysis/investigations/2026-09-22-leads-thresholds/01_jitter.py` over 30 v1
+runs (2026-09-12 to 2026-09-22; no daily v2 series existed yet, so re-measure
+on v2 after two weeks of it). Best-match Jaccard across consecutive runs is
+bimodal - 1,563 of 2,694 communities at >= 0.8, 502 below 0.2, a valley of 234
+between 0.2 and 0.5, and a bump of 204 at 0.5-0.6 that is small communities
+swapping one member. New below 0.2 sits in the valley floor; changed below 0.5
+sits under the one-swap bump. At these cuts a consecutive run flags a median 13
+new and 8 changed of 74 communities; moving changed to 0.7 doubles the changed
+flags to 16 by pulling in the jitter. No run pair turned over more than 44%.
 
 ## Trend tags
 
