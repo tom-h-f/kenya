@@ -53,10 +53,18 @@ def load_ops(path: Path) -> pd.DataFrame:
     return out[out["created_at"] > pd.Timestamp("2006-03-01", tz="UTC")].reset_index(drop=True)
 
 
-def load_kenya(path: Path) -> pd.DataFrame:
+def load_kenya(path: Path, sample: int | None = None, seed: int = 20260922) -> pd.DataFrame:
+    """The control population: accounts this collector has seen, latest profile.
+
+    Subsampled by default to keep the run inside a few GB on a shared machine.
+    The draw is uniform over accounts, so month depth thins evenly and the
+    matching below is unaffected except in the earliest months."""
     frame = pd.read_parquet(path, columns=["created_at", "bio"])
     frame["created_at"] = pd.to_datetime(frame["created_at"], utc=True, errors="coerce")
-    return frame.dropna(subset=["created_at"]).reset_index(drop=True)
+    frame = frame.dropna(subset=["created_at"])
+    if sample and sample < len(frame):
+        frame = frame.sample(sample, random_state=seed)
+    return frame.reset_index(drop=True)
 
 
 def cohens_d(a: np.ndarray, b: np.ndarray) -> float | None:
@@ -124,19 +132,20 @@ def main() -> None:
     parser.add_argument("--iran", type=Path, required=True)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--kenya", type=Path, required=True)
+    parser.add_argument("--sample", type=int, default=400_000)
     parser.add_argument("--out", type=Path, default=Path(__file__).parent / "out")
     args = parser.parse_args()
     args.out.mkdir(exist_ok=True)
 
     t0 = time.monotonic()
-    kenya = load_kenya(args.kenya)
+    kenya = load_kenya(args.kenya, args.sample)
     pool = concealment.month_pool(kenya)
     campaigns = {
         "ira": load_ops(args.ira),
         "iran": load_ops(args.iran),
         "archive_mixed": load_ops(args.archive),
     }
-    print(f"kenya pool {len(kenya):,} accounts over {len(pool)} months; "
+    print(f"kenya pool {len(kenya):,} sampled accounts over {len(pool)} months; "
           + ", ".join(f"{k} {len(v):,}" for k, v in campaigns.items()), flush=True)
 
     rng = np.random.default_rng(20260922)

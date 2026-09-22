@@ -20,15 +20,52 @@ month-matched null holds era fixed, so what survives is clumping finer than a
 month - accounts created on the same days - which is what a batch of
 provisioned accounts leaves and a community does not.
 
-WHAT WAS VALIDATED AND WHAT WAS NOT, measured 2026-09-22 (see
-`analysis/investigations/2026-09-22-concealment/findings.md`):
+MEASURED 2026-09-22, AND NOTHING PASSED. Both testable features were run
+against X's attributed IRA (3,836 accounts) and Iran (770) releases, with
+controls drawn from 400,000 accounts of this corpus matched on creation month,
+500 group pairs per cell (`investigations/2026-09-22-concealment/validate.py`,
+`out/results.json`). The keep rule, fixed before the run, was Cohen's d >= 0.5
+AND AUC >= 0.70 on both campaigns at group size 25:
 
-- `creation_burst` and `bio_duplication` were tested on X's attributed IRA and
-  Iran operations against month-matched groups of Kenyan-corpus accounts.
-  Kept or dropped per the effect sizes recorded there.
-- Handle/bio change and avatar reuse CANNOT be validated: the IO archive holds
-  one profile snapshot per account and no image field. They are measured on the
-  Kenya corpus for feasibility only and are not scored.
+    feature           campaign  k=25 d   k=25 AUC   k=50 d   k=50 AUC
+    creation_burst    IRA       0.522    0.616      0.846    0.707
+    creation_burst    Iran      0.428    0.601      0.700    0.653
+    bio_duplication   IRA      -0.074    0.496     -0.151    0.486
+    bio_duplication   Iran      0.031    0.500      0.184    0.515
+
+So `KEPT` is empty and no dossier carries a concealment section yet.
+
+`creation_burst` points the right way every time and strengthens with group
+size, so it is a real but weak effect, not noise. It is not strong enough to
+put in front of a reader: at k=25 an operation group clears z 2 on 16% of draws
+(IRA) against 5% for random Kenyan groups, which is three false alarms for
+every eight hits.
+
+`bio_duplication` is refuted, and in the interesting direction: matched Kenyan
+controls duplicate bios slightly MORE than IRA accounts do. An operation buys
+personas; ordinary accounts leave the same stock phrases. Do not rebuild it -
+this is the self-amplification result again (OBJECTIVES A3).
+
+Two limits on the above, both of which would raise the effect rather than lower
+it, so re-testing is worthwhile before the feature is abandoned:
+
+- Groups are drawn at RANDOM from a campaign, so a 73-account batch created on
+  2014-05-30 rarely contributes two members to one group of 25. Real detected
+  communities are not random subsets; if co-action tracks provisioning, they
+  are batch-aligned and would score far higher. Testing that needs operation
+  groups defined by co-action, which needs `ioa_tweets.csv` (113.7 GB) and so
+  needs Modal.
+- The control pool is this corpus, which contains coordinated accounts of its
+  own, biasing every effect toward zero.
+
+CANNOT BE VALIDATED AT ALL, and therefore not scored: handle change, bio change
+and avatar reuse. Every operation dataset available carries one profile
+snapshot per account and no avatar field. Their feasibility on this corpus was
+measured the same day over 90 days of author snapshots (10,946,134 snapshots,
+2,703,056 accounts): 9,585 accounts changed handle, 59,381 changed bio, 53,255
+changed avatar - and avatar REUSE is not measurable at all, because 0 accounts
+share a non-default `profile_image_url` (X serves a per-account URL, so
+matching images would need the image bytes, not the link).
 """
 
 from __future__ import annotations
