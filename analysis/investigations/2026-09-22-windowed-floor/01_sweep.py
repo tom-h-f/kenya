@@ -113,7 +113,7 @@ def smoke(burn_in: int):
 def main() -> None:
     logging.basicConfig(level=logging.WARNING)
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["extract", "sweep"])
+    ap.add_argument("stage", choices=["extract", "sweep", "point"])
     ap.add_argument("--snapshot", default="2026-09-14-deep500")
     ap.add_argument("--days", type=int, default=60)
     ap.add_argument("--cache", type=Path, required=True)
@@ -123,11 +123,17 @@ def main() -> None:
     ap.add_argument("--burn-in", type=int, default=100)
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--out", type=Path, default=HERE / "sweep_results.csv")
+    ap.add_argument("--call", help="one grid point as JSON, for the point stage")
     args = ap.parse_args()
 
     if args.stage == "extract":
         print(json.dumps(extract(args.snapshot, args.days, args.cache, args.memory, args.threads),
                          indent=2))
+        return
+
+    if args.stage == "point":
+        # One point per process, so its peak RSS can be measured on its own.
+        print(json.dumps(point(str(args.cache), **json.loads(args.call))), flush=True)
         return
 
     calls = smoke(args.burn_in) if args.smoke else list(grid(args.burn_in))

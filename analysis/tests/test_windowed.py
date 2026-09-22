@@ -132,3 +132,11 @@ def test_burst_scores_come_from_the_windowed_centrality():
     got = result.burst.set_index("user_id")
     assert (got.loc[[f"c{u}" for u in range(5)], "windows"] == 2).all()
     assert np.isclose(got.loc["c0", "peak_share"], 0.5, atol=0.05)
+
+
+def test_curveball_leaves_a_single_user_window_alone():
+    """A window whose trace holds one user - fast_retweet often does - has no
+    one to trade with. It is returned as is rather than raising."""
+    rows = _rows([("solo", "a"), ("solo", "b")])
+    got = windowed.curveball(rows, burn_in=100, seed=0)
+    assert sorted(got["entity"]) == ["a", "b"]

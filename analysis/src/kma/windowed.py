@@ -334,6 +334,9 @@ def curveball(rows: pd.DataFrame, *, burn_in: int = 100, seed: int = 0) -> pd.Da
     if distinct.empty:
         return distinct
     sets = {u: set(g) for u, g in distinct.groupby("user_id")["entity"]}
+    # One user has nobody to trade with; its incidence is already its own null.
+    if len(sets) < 2:
+        return distinct.reset_index(drop=True)
     rng = np.random.default_rng(seed)
     _curveball_trade(sets, burn_in * len(sets), rng)
     return pd.DataFrame(
