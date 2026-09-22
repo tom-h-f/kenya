@@ -1,0 +1,248 @@
+{
+ "UAE": {
+  "nodes": 9391,
+  "positives": 3349,
+  "traces": {
+   "coRT": {
+    "op_touched": 0.757,
+    "op_op_density": 0.0528,
+    "bg_density": 0.000692,
+    "op_op_deg": 176.73,
+    "op_bg_deg": 0.75
+   },
+   "coURL": {
+    "op_touched": 0.9,
+    "op_op_density": 0.0493,
+    "bg_density": 0.0024,
+    "op_op_deg": 165.15,
+    "op_bg_deg": 23.02
+   },
+   "hashSeq": {
+    "op_touched": 0.443,
+    "op_op_density": 0.0044,
+    "bg_density": 4e-06,
+    "op_op_deg": 14.81,
+    "op_bg_deg": 0.0
+   },
+   "fastRT": {
+    "op_touched": 0.006,
+    "op_op_density": 0.0,
+    "bg_density": 0.0,
+    "op_op_deg": 0.02,
+    "op_bg_deg": 0.0
+   },
+   "tweetSim": {
+    "op_touched": 0.996,
+    "op_op_density": 0.2984,
+    "bg_density": 0.00582,
+    "op_op_deg": 999.14,
+    "op_bg_deg": 65.46
+   }
+  }
+ },
+ "cuba": {
+  "nodes": 20247,
+  "positives": 461,
+  "traces": {
+   "coRT": {
+    "op_touched": 0.931,
+    "op_op_density": 0.6535,
+    "bg_density": 4.2e-05,
+    "op_op_deg": 300.59,
+    "op_bg_deg": 1.84
+   },
+   "coURL": {
+    "op_touched": 0.92,
+    "op_op_density": 0.508,
+    "bg_density": 0.022247,
+    "op_op_deg": 233.67,
+    "op_bg_deg": 284.27
+   },
+   "hashSeq": {
+    "op_touched": 0.299,
+    "op_op_density": 0.0018,
+    "bg_density": 3.2e-05,
+    "op_op_deg": 0.85,
+    "op_bg_deg": 0.07
+   },
+   "fastRT": {
+    "op_touched": 0.098,
+    "op_op_density": 0.0011,
+    "bg_density": 1e-06,
+    "op_op_deg": 0.52,
+    "op_bg_deg": 0.02
+   },
+   "tweetSim": {
+    "op_touched": 1.0,
+    "op_op_density": 0.7518,
+    "bg_density": 0.000493,
+    "op_op_deg": 345.81,
+    "op_bg_deg": 193.29
+   }
+  }
+ },
+ "russia": {
+  "nodes": 716,
+  "positives": 275,
+  "traces": {
+   "coRT": {
+    "op_touched": 0.375,
+    "op_op_density": 0.0301,
+    "bg_density": 0.001783,
+    "op_op_deg": 8.25,
+    "op_bg_deg": 0.11
+   },
+   "coURL": {
+    "op_touched": 0.862,
+    "op_op_density": 0.2299,
+    "bg_density": 0.007153,
+    "op_op_deg": 63.0,
+    "op_bg_deg": 0.83
+   },
+   "hashSeq": {
+    "op_touched": 0.131,
+    "op_op_density": 0.001,
+    "bg_density": 0.0,
+    "op_op_deg": 0.28,
+    "op_bg_deg": 0.0
+   },
+   "fastRT": {
+    "op_touched": 0.022,
+    "op_op_density": 0.0002,
+    "bg_density": 0.0,
+    "op_op_deg": 0.04,
+    "op_bg_deg": 0.0
+   },
+   "tweetSim": {
+    "op_touched": 0.0,
+    "op_op_density": 0.0,
+    "bg_density": 0.0,
+    "op_op_deg": 0.0,
+    "op_bg_deg": 0.0
+   }
+  }
+ },
+ "venezuela": {
+  "nodes": 5021,
+  "positives": 533,
+  "traces": {
+   "coRT": {
+    "op_touched": 0.026,
+    "op_op_density": 0.0003,
+    "bg_density": 0.001444,
+    "op_op_deg": 0.17,
+    "op_bg_deg": 0.02
+   },
+   "coURL": {
+    "op_touched": 0.992,
+    "op_op_density": 0.1774,
+    "bg_density": 0.001597,
+    "op_op_deg": 94.35,
+    "op_bg_deg": 3.34
+   },
+   "hashSeq": {
+    "op_touched": 0.077,
+    "op_op_density": 0.0006,
+    "bg_density": 0.0,
+    "op_op_deg": 0.31,
+    "op_bg_deg": 0.0
+   },
+   "fastRT": {
+    "op_touched": 0.0,
+    "op_op_density": 0.0,
+    "bg_density": 7e-06,
+    "op_op_deg": 0.0,
+    "op_bg_deg": 0.0
+   },
+   "tweetSim": {
+    "op_touched": 0.0,
+    "op_op_density": 0.0,
+    "bg_density": 0.0,
+    "op_op_deg": 0.0,
+    "op_bg_deg": 0.0
+   }
+  }
+ },
+ "iran": {
+  "nodes": 14486,
+  "positives": 4659,
+  "traces": {
+   "coRT": {
+    "op_touched": 0.599,
+    "op_op_density": 0.0239,
+    "bg_density": 0.000179,
+    "op_op_deg": 111.28,
+    "op_bg_deg": 0.44
+   },
+   "coURL": {
+    "op_touched": 0.599,
+    "op_op_density": 0.0172,
+    "bg_density": 0.001194,
+    "op_op_deg": 80.13,
+    "op_bg_deg": 4.71
+   },
+   "hashSeq": {
+    "op_touched": 0.101,
+    "op_op_density": 0.0002,
+    "bg_density": 0.0,
+    "op_op_deg": 1.02,
+    "op_bg_deg": 0.0
+   },
+   "fastRT": {
+    "op_touched": 0.027,
+    "op_op_density": 0.0001,
+    "bg_density": 1e-06,
+    "op_op_deg": 0.41,
+    "op_bg_deg": 0.0
+   },
+   "tweetSim": {
+    "op_touched": 0.0,
+    "op_op_density": 0.0,
+    "bg_density": 0.0,
+    "op_op_deg": 0.0,
+    "op_bg_deg": 0.0
+   }
+  }
+ },
+ "china": {
+  "nodes": 23028,
+  "positives": 768,
+  "traces": {
+   "coRT": {
+    "op_touched": 0.449,
+    "op_op_density": 0.0069,
+    "bg_density": 0.000493,
+    "op_op_deg": 5.3,
+    "op_bg_deg": 2.71
+   },
+   "coURL": {
+    "op_touched": 0.879,
+    "op_op_density": 0.0961,
+    "bg_density": 0.001226,
+    "op_op_deg": 73.7,
+    "op_bg_deg": 15.29
+   },
+   "hashSeq": {
+    "op_touched": 0.012,
+    "op_op_density": 0.0,
+    "bg_density": 0.0,
+    "op_op_deg": 0.02,
+    "op_bg_deg": 0.0
+   },
+   "fastRT": {
+    "op_touched": 0.027,
+    "op_op_density": 0.0001,
+    "bg_density": 2.7e-05,
+    "op_op_deg": 0.04,
+    "op_bg_deg": 1.17
+   },
+   "tweetSim": {
+    "op_touched": 0.0,
+    "op_op_density": 0.0,
+    "bg_density": 0.0,
+    "op_op_deg": 0.0,
+    "op_bg_deg": 0.0
+   }
+  }
+ }
+}
