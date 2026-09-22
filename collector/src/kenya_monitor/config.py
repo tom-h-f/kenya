@@ -395,8 +395,8 @@ FOLLOW_CRAWL_MAX_PER_RUN = int(os.getenv("FOLLOW_CRAWL_MAX_PER_RUN", "50"))
 FOLLOW_CRAWL_MAX_ATTEMPTS = int(os.getenv("FOLLOW_CRAWL_MAX_ATTEMPTS", "3"))
 # Hours between follow crawls. Every cycle until 2026-09-22, and once the step
 # stopped failing (2026-09-21) it was the largest thing in the cycle: 175-203
-# min of 367-421, of which 111-134 were seed and queue selection before a single
-# account was crawled. The follow graph has no 14-day horizon - an edge is as
+# min of 367-421, of which 167-192 passed before the first account was crawled
+# and 8-11 crawling 50 accounts. The follow graph has no 14-day horizon - an edge is as
 # collectable next week as today - so it is the one per-cycle step whose delay
 # loses nothing, while every hour it holds the cycle is an hour search waits.
 FOLLOW_CRAWL_EVERY_HOURS = float(os.getenv("FOLLOW_CRAWL_EVERY_HOURS", "24"))

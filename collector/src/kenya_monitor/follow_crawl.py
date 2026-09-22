@@ -135,8 +135,9 @@ def discover_from_edges(
     authors prefix into a Python dict through `QUALIFY row_number()` - a sort
     over every author snapshot ever collected - then every follow id into Python
     to filter there, to build a queue of 1,258,016 from which a run crawled 50.
-    Seed and queue selection was 111-134 minutes of each 175-203 minute follow
-    crawl on pi0 (2026-09-21/22 cycles).
+    On pi0 (2026-09-21/22 cycles) 167-192 minutes of each 175-203 minute
+    follow crawl passed before the first account was crawled: 111-134 to build
+    the queue, then ~56 more in the second directory scan and seed resolution.
 
     The latest-handle rule is unchanged: newest snapshot among those with a
     non-empty handle, now as `arg_max` - a hash aggregate that spills - over
