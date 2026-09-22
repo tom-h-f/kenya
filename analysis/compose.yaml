@@ -84,5 +84,34 @@ services:
     mem_limit: 2g
     restart: unless-stopped
 
+  # Posts new leads to ntfy. The reader runs on Modal and writes verdicts to
+  # R2; ntfy is on this host's loopback and tailnet-only, so Modal cannot reach
+  # it and this reads the verdicts back instead (`kma.leads_notify`). Needs
+  # NTFY_TOKEN in ../.env; never an Anthropic key.
+  #
+  # Host networking because ntfy listens on 127.0.0.1:8090, which a bridged
+  # container cannot see. The state volume holds which alerts were sent, so a
+  # restart never re-sends; losing it re-sends at most the last 48 hours.
+  #
+  #   docker compose --profile leads up -d --build leads-notify
+  leads-notify:
+    profiles: ["leads"]
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-}
+    env_file: ../.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      LEADS_STATE: /state/leads-notify.json
+    entrypoint: ["uv", "run", "--no-sync", "kma-leads-notify"]
+    command: ["--loop", "--interval", "600"]
+    network_mode: host
+    mem_limit: 512m
+    volumes:
+      - leads_state:/state
+    restart: unless-stopped
+
 volumes:
   hf_cache:
+  leads_state:
