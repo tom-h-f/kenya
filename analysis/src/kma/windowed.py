@@ -12,7 +12,7 @@ per window, and each window is split into communities the way the production
 community report splits the global graph (`2026-09-12-component-ranking`).
 
 Two widths, set by the `MIN_ENTITIES` sweep of 2026-09-22
-(`investigations/2026-09-22-windowed-floor/findings.md`):
+(`docs/plans/2026-09-15-windowed-detection.md`, "Measured and decided"):
 
 - `DETECTION` - the daily run, which is what catches an event while it is live.
 - `SERIES` - the weekly run, the stable series a trend is read from.
@@ -50,9 +50,12 @@ class WindowSpec:
     min_entities: int
 
 
-# Set by the 2026-09-22 sweep; the findings carry the numbers behind each.
-DETECTION = WindowSpec("day", 5)
-SERIES = WindowSpec("week", 10)
+# Set by the 2026-09-22 sweep. Daily floor 3 keeps a 12-account plant whole
+# (recall 1.00) where floor 5 loses a sixth of it and floor 10 all but 6% of
+# it; weekly floor 5 is the lowest weekly floor whose real communities are not
+# dwarfed by its own degree-preserving null.
+DETECTION = WindowSpec("day", 3)
+SERIES = WindowSpec("week", 5)
 
 WIDTHS = ("day", "week")
 
