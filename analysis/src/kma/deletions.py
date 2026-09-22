@@ -202,3 +202,29 @@ def author_rates(outcomes: pd.DataFrame, min_checked: int = 3) -> pd.DataFrame:
     out["absent_share"] = out["absent"] / out["checked"]
     out = out[out["checked"] >= int(min_checked)]
     return out.sort_values(["absent_share", "checked"], ascending=False)[cols].reset_index(drop=True)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Print the base-rate table. Rerun as re-checks accrue; nothing is cached."""
+    import argparse
+
+    from kma.db import connect
+
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--platform", default="x")
+    p.add_argument("--since", help="only re-checks on or after this date (YYYY-MM-DD)")
+    p.add_argument("--min-checked", type=int, default=3)
+    args = p.parse_args(argv)
+
+    con = connect()
+    outcomes = recheck_outcomes(con, args.platform, since=args.since)
+    with pd.option_context("display.width", 160):
+        print(base_rate(outcomes).to_string(index=False))
+        authors = author_rates(outcomes, args.min_checked)
+        print(f"\nauthors with >= {args.min_checked} re-checked posts: {len(authors)}, "
+              f"with any absence: {int((authors['absent'] > 0).sum())}")
+        print(authors.head(20).to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
