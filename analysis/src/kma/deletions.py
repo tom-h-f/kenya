@@ -28,9 +28,12 @@ re-check population, because control posts are rarely the top 5% by engagement.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import date, timedelta
+
 import pandas as pd
 
-from kma.db import BASELINE_TYPES, CONTROL_TYPES, TARGETED_TYPES, metrics_source, posts_source
+from kma.db import BASELINE_TYPES, BUCKET, CONTROL_TYPES, TARGETED_TYPES, metrics_source
 
 ABSENT = "absent"
 PRESENT = "present"
@@ -45,7 +48,32 @@ def _in_list(values: tuple[str, ...]) -> str:
     return ", ".join(f"'{v}'" for v in values)
 
 
-def recheck_outcomes(con, platform: str = "x", since: str | None = None) -> pd.DataFrame:
+def _posts_on_dates(platform: str, first: date, last: date) -> str:
+    """The posts prefix restricted to partitions in [first, last], by glob.
+
+    Not `posts_source` plus a `dt` filter: with `union_by_name` DuckDB reads
+    every file's schema before it prunes on the hive column, and the posts
+    prefix is 6,248 files. Measured from the mac 2026-09-22: with the filter the
+    report ran past 900s without returning; with these globs it returned in
+    323s. Listing the whole prefix takes 6s, so the cost is schema reads."""
+    days = (last - first).days
+    globs = [
+        f"'r2://{BUCKET}/posts/platform={platform}/type=*/"
+        f"dt={first + timedelta(days=i)}/run=*.parquet'"
+        for i in range(days + 1)
+    ]
+    return (
+        f"read_parquet([{', '.join(globs)}], union_by_name=true, "
+        "hive_partitioning=true)"
+    )
+
+
+def recheck_outcomes(
+    con,
+    platform: str = "x",
+    since: str | None = None,
+    posts_on: Callable[[str, date, date], str] = _posts_on_dates,
+) -> pd.DataFrame:
     """One row per re-checked post: whether it was ever found absent, the cause
     at its first absence, how many times it was checked, and which partitions
     hold it.
@@ -86,27 +114,29 @@ def recheck_outcomes(con, platform: str = "x", since: str | None = None) -> pd.D
         GROUP BY r.platform_post_id
         """
     )
-    first = con.sql("SELECT min(first_checked) FROM _del_checks").fetchone()[0]
+    first, last = con.sql(
+        "SELECT min(first_checked)::DATE, max(last_checked)::DATE FROM _del_checks"
+    ).fetchone()
     if first is None:
         return pd.DataFrame(
-            columns=["platform_post_id", "n_checks", "ever_absent", "first_cause",
-                     "returned", "age_days_at_first_check", "in_baseline",
-                     "in_targeted", "in_control"]
+            columns=["platform_post_id", "author_id", "n_checks", "ever_absent",
+                     "first_cause", "returned", "age_days_at_first_check",
+                     "in_baseline", "in_targeted", "in_control"]
         )
     return con.sql(
         f"""
         WITH p AS (
             SELECT platform_post_id,
+                   any_value(author_id) AS author_id,
                    min(created_at) AS created_at,
                    bool_or(type IN ({_in_list(BASELINE_TYPES)})) AS in_baseline,
                    bool_or(type IN ({_in_list(TARGETED_TYPES)})) AS in_targeted,
                    bool_or(type IN ({_in_list(CONTROL_TYPES)})) AS in_control
-            FROM {posts_source(platform)}
+            FROM {posts_on(platform, first - timedelta(days=POST_LOOKBACK_DAYS), last)}
             SEMI JOIN _del_checks c USING (platform_post_id)
-            WHERE dt >= CAST('{first}' AS DATE) - INTERVAL {POST_LOOKBACK_DAYS} DAY
             GROUP BY platform_post_id
         )
-        SELECT c.platform_post_id, c.n_checks, c.ever_absent, c.first_cause,
+        SELECT c.platform_post_id, p.author_id, c.n_checks, c.ever_absent, c.first_cause,
                coalesce(c.returned, false) AS returned,
                date_diff('hour', p.created_at, c.first_checked) / 24.0
                    AS age_days_at_first_check,
@@ -152,35 +182,23 @@ def base_rate(outcomes: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def author_rates(con, outcomes: pd.DataFrame, platform: str = "x", min_checked: int = 3) -> pd.DataFrame:
+def author_rates(outcomes: pd.DataFrame, min_checked: int = 3) -> pd.DataFrame:
     """Per-author absence among that author's re-checked posts, beside the base
     rate it has to be read against.
 
     `min_checked` is a floor on re-checked posts, not a significance test: an
     author with one re-checked post that vanished has an absence share of 1.0
     and tells us one fact. Below the floor the row is withheld."""
-    if outcomes.empty:
-        return pd.DataFrame(columns=["author_id", "checked", "absent", "absent_share"])
-    con.register("_del_outcomes", outcomes[["platform_post_id", "ever_absent"]])
-    try:
-        return con.sql(
-            f"""
-            WITH a AS (
-                SELECT platform_post_id, any_value(author_id) AS author_id
-                FROM {posts_source(platform)}
-                SEMI JOIN _del_outcomes USING (platform_post_id)
-                GROUP BY platform_post_id
-            )
-            SELECT a.author_id,
-                   count(*) AS checked,
-                   sum(o.ever_absent::INT) AS absent,
-                   avg(o.ever_absent::INT) AS absent_share
-            FROM _del_outcomes o JOIN a USING (platform_post_id)
-            WHERE a.author_id IS NOT NULL
-            GROUP BY 1
-            HAVING count(*) >= {int(min_checked)}
-            ORDER BY absent_share DESC, checked DESC
-            """
-        ).df()
-    finally:
-        con.unregister("_del_outcomes")
+    cols = ["author_id", "checked", "absent", "absent_share"]
+    known = outcomes.dropna(subset=["author_id"])
+    if known.empty:
+        return pd.DataFrame(columns=cols)
+    out = (
+        known.groupby("author_id")["ever_absent"]
+        .agg(checked="size", absent="sum")
+        .reset_index()
+    )
+    out["absent"] = out["absent"].astype(int)
+    out["absent_share"] = out["absent"] / out["checked"]
+    out = out[out["checked"] >= int(min_checked)]
+    return out.sort_values(["absent_share", "checked"], ascending=False)[cols].reset_index(drop=True)
