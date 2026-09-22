@@ -321,3 +321,55 @@ def test_the_dashboard_payload_never_carries_dossier_fields():
         "object_text", "object_author", "target_handle", "author_handle", "text",
     }
     assert not (set(d.TRIAGE_COLUMNS) & forbidden)
+
+
+def _pool():
+    from kma import concealment
+
+    days = pd.date_range("2019-12-01", "2020-01-31", freq="D", tz="UTC")
+    frame = pd.DataFrame({"created_at": list(days) * 20, "bio": None})
+    return concealment.month_pool(frame)
+
+
+def test_no_pool_means_no_concealment_section_rather_than_an_unscored_one(con, monkeypatch):
+    from kma import concealment
+
+    monkeypatch.setattr(concealment, "KEPT", ("creation_burst",))
+    packet = dossier.build(con, MEMBERS)[0]
+
+    assert "concealment" not in packet
+
+
+def test_only_validated_concealment_features_reach_the_packet(con, monkeypatch):
+    """An unvalidated signal in front of a reader is a thumb on the scale."""
+    from kma import concealment
+
+    monkeypatch.setattr(concealment, "KEPT", ("creation_burst",))
+    packet = dossier.build(con, MEMBERS, concealment_pool=_pool())[0]
+
+    hidden = packet["concealment"]
+    assert hidden["creation_burst"] == 1.0
+    assert "creation_burst_z" in hidden and "creation_burst_null_mean" in hidden
+    assert not any(k.startswith("bio_duplication") for k in hidden)
+
+
+def test_nothing_is_carried_while_no_feature_has_passed(con, monkeypatch):
+    from kma import concealment
+
+    monkeypatch.setattr(concealment, "KEPT", ())
+    packet = dossier.build(con, MEMBERS, concealment_pool=_pool())[0]
+
+    assert "concealment" not in packet
+
+
+def test_the_reader_sees_concealment_beside_its_null():
+    from kma import adjudicate
+
+    text = adjudicate.render({
+        "cluster_id": 3, "size": 2,
+        "concealment": {"creation_burst": 1.0, "creation_burst_null_mean": 0.2,
+                        "creation_burst_z": 4.1, "null_draws": 200},
+    })
+
+    assert "creation_burst: 1.0 (typical 0.2, z 4.1)" in text
+    assert "null_draws" not in text

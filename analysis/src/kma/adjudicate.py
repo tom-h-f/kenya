@@ -142,6 +142,19 @@ def render(packet: dict, max_items: int = 6) -> str:
             f"    share with empty bio: {prov.get('share_empty_bio')}",
             f"    share with default avatar: {prov.get('share_default_image')}",
         ]
+    hidden = p.get("concealment") or {}
+    features = [k for k in hidden if k != "null_draws" and not k.endswith(("_z", "_null_mean"))]
+    if features:
+        lines += [
+            "",
+            "SIGNS OF ACCOUNTS SET UP TOGETHER (against same-size groups created in the"
+            " same months; z above ~2 is unusual, not proof):",
+        ]
+        for name in features:
+            lines.append(
+                f"    {name}: {hidden.get(name)} (typical {hidden.get(f'{name}_null_mean')},"
+                f" z {hidden.get(f'{name}_z')})"
+            )
     kenya = p.get("kenya") or {}
     if kenya:
         lines += [

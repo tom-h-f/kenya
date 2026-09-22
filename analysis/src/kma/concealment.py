@@ -95,6 +95,16 @@ FEATURES = {
     "bio_duplication": ("bio", bio_duplication),
 }
 
+# Features that passed the keep rule on the IO archive and reach the dossier.
+# A feature that did not stays computable here for re-validation, and stays out
+# of what a reader is shown.
+KEPT: tuple[str, ...] = ()
+
+# Size of the reference sample the month-matched null draws from. A null draw
+# needs a handful of accounts per creation month; 100,000 accounts over ~200
+# months leaves hundreds in all but the earliest.
+POOL_SIZE = 100_000
+
 
 def month_pool(population: pd.DataFrame) -> dict:
     """Index a reference population by creation month, for matched draws."""
@@ -156,3 +166,27 @@ def score_group(
         out[f"{name}_z"] = z
     out["null_draws"] = len(nulls["creation_burst"])
     return out
+
+
+def reference_pool(con, platform: str = "x", size: int = POOL_SIZE, seed: int = 0) -> dict:
+    """A month-indexed random sample of the corpus's accounts, latest profile each.
+
+    Sampled from `latest_authors`' shape - one row per account - so an account
+    collected many times is not many times more likely to be drawn. Built once
+    per dossier run; every cluster draws its null from the same pool."""
+    from kma.db import authors_source
+
+    frame = con.sql(
+        f"""
+        WITH la AS (
+            SELECT platform_user_id,
+                   arg_max(struct_pack(created_at := created_at, bio := bio),
+                           collected_at) AS r
+            FROM {authors_source(platform)}
+            GROUP BY platform_user_id
+        )
+        SELECT r.created_at AS created_at, r.bio AS bio FROM la
+        USING SAMPLE {int(size)} ROWS (reservoir, {int(seed)})
+        """
+    ).df()
+    return month_pool(frame)

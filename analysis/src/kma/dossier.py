@@ -386,6 +386,46 @@ def provenance(con: duckdb.DuckDBPyConnection, platform: str) -> pd.DataFrame:
     ).df()
 
 
+def concealment_evidence(
+    con: duckdb.DuckDBPyConnection, platform: str, pool: dict
+) -> dict[int, dict]:
+    """Per-cluster concealment features, each against a month-matched null.
+
+    Only the features in `concealment.KEPT` - the ones that separated attributed
+    operations from matched controls - are carried. The rest stay out of what a
+    reader sees, however suggestive, because an unvalidated signal in front of a
+    reader is a thumb on the scale. See `kma.concealment` for the validation."""
+    from kma import concealment
+    from kma.db import authors_source
+
+    if not concealment.KEPT:
+        return {}
+    profiles = con.sql(
+        f"""
+        WITH la AS (
+            SELECT platform_user_id,
+                   arg_max(struct_pack(created_at := created_at, bio := bio),
+                           collected_at) AS r
+            FROM {authors_source(platform)}
+            SEMI JOIN (SELECT DISTINCT author_id FROM _dos_members) s
+                   ON s.author_id = platform_user_id
+            GROUP BY platform_user_id
+        )
+        SELECT m.cluster_id, la.r.created_at AS created_at, la.r.bio AS bio
+        FROM _dos_members m JOIN la ON la.platform_user_id = m.author_id
+        """
+    ).df()
+    out = {}
+    for cid, grp in profiles.groupby("cluster_id"):
+        scored = concealment.score_group(grp, pool, seed=int(cid))
+        packet = {"null_draws": scored["null_draws"]}
+        for name in concealment.KEPT:
+            for key in (name, f"{name}_null_mean", f"{name}_z"):
+                packet[key] = scored[key]
+        out[int(cid)] = packet
+    return out
+
+
 def kenya_share(con: duckdb.DuckDBPyConnection, platform: str, use_model: bool = True) -> pd.DataFrame:
     """Kenya-relevance per cluster: the classifier where it scored the post,
     the persisted lexicon `domain` column where it did not.
@@ -444,12 +484,17 @@ def build(
     max_objects: int = DEFAULT_MAX_OBJECTS,
     max_targets: int = DEFAULT_MAX_TARGETS,
     max_texts: int = DEFAULT_MAX_TEXTS,
+    concealment_pool: dict | None = None,
 ) -> list[dict]:
     """One evidence packet per cluster, ready to hand to a reader.
 
     `cluster_ids` restricts the build - adjudication is the expensive step, so
     the caller is expected to have narrowed to corroborated or Kenya-relevant
-    clusters first rather than packaging all ~150."""
+    clusters first rather than packaging all ~150.
+
+    `concealment_pool` is `concealment.reference_pool(con)`, built once by the
+    caller because it samples the whole authors prefix. Without it the packet
+    carries no concealment section rather than one scored against nothing."""
     if members.empty:
         return []
     members = members[["cluster_id", "author_id"]].drop_duplicates()
@@ -468,6 +513,10 @@ def build(
     targets = amplification_targets(con, platform, max_targets)
     prov = provenance(con, platform).set_index("cluster_id")
     kenya = kenya_share(con, platform).set_index("cluster_id")
+    hidden = (
+        concealment_evidence(con, platform, concealment_pool)
+        if concealment_pool is not None else {}
+    )
     scores = (
         scorecards.set_index("cluster_id") if scorecards is not None and len(scorecards)
         else None
@@ -491,6 +540,8 @@ def build(
             packet["provenance"] = prov.loc[cid].to_dict()
         if cid in kenya.index:
             packet["kenya"] = kenya.loc[cid].to_dict()
+        if int(cid) in hidden:
+            packet["concealment"] = hidden[int(cid)]
         if scores is not None and cid in scores.index:
             keep = [
                 c for c in ("size", "n_channels", "channels", "name",
