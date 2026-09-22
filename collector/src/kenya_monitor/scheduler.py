@@ -233,6 +233,7 @@ def _adaptive_targets(
             stories_view=storage.stories_view(platform="x"),
             hatespeech_view=storage.hatespeech_view(platform="x"),
             relevance_view=storage.relevance_view(platform="x"),
+            scores_view=storage.coord2_scores_view(platform="x"),
             dry_run=dry_run,
         )
     except Exception:
