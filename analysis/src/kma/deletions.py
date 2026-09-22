@@ -48,31 +48,40 @@ def _in_list(values: tuple[str, ...]) -> str:
     return ", ".join(f"'{v}'" for v in values)
 
 
-def _posts_on_dates(platform: str, first: date, last: date) -> str:
-    """The posts prefix restricted to partitions in [first, last], by glob.
+def _posts_on_dates(con, platform: str, first: date, last: date) -> str:
+    """The posts prefix restricted to partitions in [first, last], by file list.
 
     Not `posts_source` plus a `dt` filter: with `union_by_name` DuckDB reads
     every file's schema before it prunes on the hive column, and the posts
     prefix is 6,248 files. Measured from the mac 2026-09-22: with the filter the
-    report ran past 900s without returning; with these globs it returned in
-    323s. Listing the whole prefix takes 6s, so the cost is schema reads."""
-    days = (last - first).days
-    globs = [
-        f"'r2://{BUCKET}/posts/platform={platform}/type=*/"
-        f"dt={first + timedelta(days=i)}/run=*.parquet'"
-        for i in range(days + 1)
+    report ran past 900s without returning; with a file list it returned in
+    323s. Listing the whole prefix takes 6s, so the cost is schema reads.
+
+    The list comes from `glob`, not from counting days forward: a date pattern
+    that matches nothing is an IO error in DuckDB, so a single quiet day - an
+    outage, or a type that saw no writes - would take the whole report down."""
+    rows = con.sql(
+        f"SELECT file FROM glob('r2://{BUCKET}/posts/platform={platform}"
+        "/type=*/dt=*/run=*.parquet')"
+    ).fetchall()
+    kept = [
+        row[0] for row in rows
+        if str(first) <= row[0].split("dt=")[1][:10] <= str(last)
     ]
-    return (
-        f"read_parquet([{', '.join(globs)}], union_by_name=true, "
-        "hive_partitioning=true)"
-    )
+    if not kept:
+        return (
+            "(SELECT NULL AS platform_post_id, NULL AS author_id,"
+            " NULL AS created_at, NULL AS type WHERE false)"
+        )
+    files = ", ".join(f"'{f}'" for f in kept)
+    return f"read_parquet([{files}], union_by_name=true, hive_partitioning=true)"
 
 
 def recheck_outcomes(
     con,
     platform: str = "x",
     since: str | None = None,
-    posts_on: Callable[[str, date, date], str] = _posts_on_dates,
+    posts_on: Callable[..., str] = _posts_on_dates,
 ) -> pd.DataFrame:
     """One row per re-checked post: whether it was ever found absent, the cause
     at its first absence, how many times it was checked, and which partitions
@@ -132,7 +141,7 @@ def recheck_outcomes(
                    bool_or(type IN ({_in_list(BASELINE_TYPES)})) AS in_baseline,
                    bool_or(type IN ({_in_list(TARGETED_TYPES)})) AS in_targeted,
                    bool_or(type IN ({_in_list(CONTROL_TYPES)})) AS in_control
-            FROM {posts_on(platform, first - timedelta(days=POST_LOOKBACK_DAYS), last)}
+            FROM {posts_on(con, platform, first - timedelta(days=POST_LOOKBACK_DAYS), last)}
             SEMI JOIN _del_checks c USING (platform_post_id)
             GROUP BY platform_post_id
         )

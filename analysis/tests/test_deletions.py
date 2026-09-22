@@ -29,7 +29,7 @@ def con(monkeypatch):
 def _outcomes(con, metrics, posts):
     con.register("metrics_tbl", metrics)
     con.register("posts_tbl", posts)
-    return deletions.recheck_outcomes(con, posts_on=lambda platform, first, last: "posts_tbl")
+    return deletions.recheck_outcomes(con, posts_on=lambda con, platform, first, last: "posts_tbl")
 
 
 def test_rows_from_before_the_status_column_are_not_counted_as_present(con):
