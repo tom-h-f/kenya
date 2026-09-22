@@ -290,3 +290,22 @@ def top_suspicious_handles(
         f"SELECT handle FROM {table} ORDER BY suspicion DESC NULLS LAST LIMIT {int(n)}"
     ).fetchall()
     return [r[0] for r in rows]
+
+
+def top_suspicious_accounts(
+    con: duckdb.DuckDBPyConnection,
+    authors_view: str,
+    posts_view: str,
+    n: int = 1000,
+    lookback_days: int = SUSPICION_LOOKBACK_DAYS,
+) -> list[tuple[str, str]]:
+    """(user id, handle) of the top `n` accounts by heuristic suspicion.
+
+    The follow crawl's seed path. Handles alone made it resolve each seed back
+    to an id with a scan of the whole authors prefix, for an id this table
+    already holds."""
+    table = materialise(con, authors_view, posts_view, lookback_days)
+    rows = con.sql(
+        f"SELECT user_id, handle FROM {table} ORDER BY suspicion DESC NULLS LAST LIMIT {int(n)}"
+    ).fetchall()
+    return [(str(uid), handle) for uid, handle in rows]

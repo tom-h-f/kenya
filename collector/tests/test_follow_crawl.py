@@ -207,33 +207,39 @@ def test_unresolvable_seed_is_recorded_then_left_alone(tmp_path):
     assert run()["not_found"] == 0
 
 
-def test_author_directory_is_scanned_once_per_run(tmp_path, monkeypatch):
-    """It used to be re-scanned per crawled account - a full pass over the whole
-    authors prefix, up to max_accounts times, for data already in hand."""
-    import kenya_monitor.follow_crawl as fc
+class _PagedCollector(_StubCollector):
+    """Returns, with each crawled page, the author snapshots X sends alongside
+    the edges - which is where neighbour handles come from."""
 
-    calls = {"n": 0}
-    real = fc._author_directory
+    def __init__(self, edges_by_handle, authors_by_handle):
+        super().__init__(edges_by_handle)
+        self._authors = authors_by_handle
+        self._last: list[Author] = []
 
-    def counting(con, view):
-        calls["n"] += 1
-        return real(con, view)
+    async def follows(self, handle: str, limit: int = 0):
+        self._last = self._authors.get(handle.lower(), [])
+        async for edge in super().follows(handle, limit):
+            yield edge
 
-    monkeypatch.setattr(fc, "_author_directory", counting)
+    def collected_authors(self):
+        return self._last
 
-    con = _con_with([("1", "alice"), ("2", "bob"), ("3", "carol")])
-    collector = _StubCollector(
-        {
-            "alice": [FollowEdge(platform="x", follower_id="1", followed_id="2")],
-            "bob": [FollowEdge(platform="x", follower_id="2", followed_id="3")],
-        }
+
+def test_neighbours_are_enqueued_from_the_crawled_page_without_a_prefix_scan(tmp_path):
+    """The authors prefix is empty here, so a neighbour can only be enqueued by
+    the handle its own page carried. The crawl used to build a second full
+    directory of the prefix for this."""
+    con = _con_with([])
+    collector = _PagedCollector(
+        {"alice": [FollowEdge(platform="x", follower_id="1", followed_id="2")]},
+        {"alice": [Author(platform="x", platform_user_id="2", handle="bob")]},
     )
 
     counts = asyncio.run(
         crawl_follows(
             collector,
             _StubStorage(con),
-            seed_handles=["alice", "bob"],
+            seed_accounts=[("1", "alice")],
             limit=10,
             max_accounts=2,
             refresh_days=30,
@@ -243,7 +249,92 @@ def test_author_directory_is_scanned_once_per_run(tmp_path, monkeypatch):
     )
 
     assert counts["crawled"] == 2
-    assert calls["n"] == 1
+    assert set(load_crawl_state(tmp_path / "follow_crawl.json")) == {"1", "2"}
+
+
+def test_a_seed_with_an_id_needs_no_resolution_and_is_skipped_when_fresh(tmp_path):
+    """Handle-only seeds were resolved with an authors-prefix scan each, and
+    4-10 of every 10 then turned out fresh. With the id, freshness is a ledger
+    lookup."""
+    state_path = tmp_path / "follow_crawl.json"
+    save_crawl_state({"1": CrawlEntry(handle="alice", crawled_at=NOW.isoformat())}, state_path)
+    con = _con_with([])
+    collector = _StubCollector({"bob": []})
+
+    counts = asyncio.run(
+        crawl_follows(
+            collector,
+            _StubStorage(con),
+            seed_accounts=[("1", "alice"), ("2", "bob")],
+            limit=10,
+            max_accounts=5,
+            refresh_days=30,
+            from_edges=False,
+            state_path=state_path,
+        )
+    )
+
+    assert counts["crawled"] == 1
+    assert counts["not_found"] == 0
+    assert counts["skipped_fresh"] == 0
+
+
+def test_discovery_is_bounded_and_skips_fresh_accounts():
+    ids = [str(i) for i in range(20)]
+    authors = pa.table(
+        {
+            "platform": pa.array(["x"] * 20, type=pa.string()),
+            "platform_user_id": pa.array(ids, type=pa.string()),
+            "handle": pa.array([f"h{i}" for i in ids], type=pa.string()),
+            "collected_at": pa.array([NOW] * 20, type=pa.timestamp("us", tz="UTC")),
+        }
+    )
+    follows = pa.table(
+        {
+            "platform": pa.array(["x"] * 19, type=pa.string()),
+            "follower_id": pa.array(ids[:-1], type=pa.string()),
+            "followed_id": pa.array(ids[1:], type=pa.string()),
+            "collected_at": pa.array([NOW] * 19, type=pa.timestamp("us", tz="UTC")),
+        }
+    )
+    con = duckdb.connect()
+    con.register("authors_tbl", authors)
+    con.register("follows_tbl", follows)
+    fresh = {i: CrawlEntry(handle=f"h{i}", crawled_at=NOW.isoformat()) for i in ids[:15]}
+
+    assert sorted(u for u, _ in discover_from_edges(
+        con, "follows_tbl", "authors_tbl", fresh, refresh_days=30
+    )) == sorted(ids[15:])
+    assert len(discover_from_edges(con, "follows_tbl", "authors_tbl", {}, 30, limit=7)) == 7
+
+
+def test_discovery_takes_the_newest_non_empty_handle():
+    """The rule the old `QUALIFY` directory applied, kept under `arg_max`: an
+    empty handle on the newest snapshot does not erase a real one."""
+    older, newer = NOW - timedelta(days=2), NOW
+    authors = pa.table(
+        {
+            "platform": pa.array(["x"] * 3, type=pa.string()),
+            "platform_user_id": pa.array(["1", "1", "1"], type=pa.string()),
+            "handle": pa.array(["old_name", "new_name", ""], type=pa.string()),
+            "collected_at": pa.array(
+                [older, newer - timedelta(hours=1), newer], type=pa.timestamp("us", tz="UTC")
+            ),
+        }
+    )
+    follows = pa.table(
+        {
+            "platform": pa.array(["x"], type=pa.string()),
+            "follower_id": pa.array(["1"], type=pa.string()),
+            "followed_id": pa.array([None], type=pa.string()),
+            "collected_at": pa.array([NOW], type=pa.timestamp("us", tz="UTC")),
+        }
+    )
+    con = duckdb.connect()
+    con.register("authors_tbl", authors)
+    con.register("follows_tbl", follows)
+
+    assert discover_from_edges(con, "follows_tbl", "authors_tbl", {}, 30) == [("1", "new_name")]
 
 
 def test_failed_entries_respect_the_attempt_cap():
