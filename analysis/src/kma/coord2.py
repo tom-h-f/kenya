@@ -355,18 +355,30 @@ def similarity_network(
 # --------------------------------------------------------------------------
 
 
-def co_retweet_traces(con: duckdb.DuckDBPyConnection, view: str) -> pd.DataFrame:
+def _time_col(with_time: bool, alias: str = "") -> str:
+    """The row timestamp, carried only when a caller windows the traces.
+
+    Off by default so every existing trace keeps its exact (user_id, entity)
+    shape - the reproduction gate was run on that shape."""
+    return f", {alias}created_at" if with_time else ""
+
+
+def co_retweet_traces(
+    con: duckdb.DuckDBPyConnection, view: str, *, with_time: bool = False
+) -> pd.DataFrame:
     """Entity: the retweeted tweet."""
     return con.sql(
         f"""
-        SELECT user_id, retweet_post_id AS entity
+        SELECT user_id, retweet_post_id AS entity{_time_col(with_time)}
         FROM ({view})
         WHERE retweet_post_id IS NOT NULL AND user_id IS NOT NULL
         """
     ).df()
 
 
-def co_url_traces(con: duckdb.DuckDBPyConnection, view: str) -> pd.DataFrame:
+def co_url_traces(
+    con: duckdb.DuckDBPyConnection, view: str, *, with_time: bool = False
+) -> pd.DataFrame:
     """Entity: the URL as shared.
 
     Shorteners are NOT resolved. The paper's entity is the URL as it appears in
@@ -379,7 +391,7 @@ def co_url_traces(con: duckdb.DuckDBPyConnection, view: str) -> pd.DataFrame:
     """
     return con.sql(
         f"""
-        SELECT user_id, unnest(urls) AS entity
+        SELECT user_id, unnest(urls) AS entity{_time_col(with_time)}
         FROM ({view})
         WHERE urls IS NOT NULL AND len(urls) > 0 AND user_id IS NOT NULL
         """
@@ -402,6 +414,7 @@ def hashtag_sequence_traces(
     *,
     min_hashtags: int = MIN_HASHTAGS,
     order: str = "list",
+    with_time: bool = False,
 ) -> pd.DataFrame:
     """Entity: the ordered hashtag sequence, at least `min_hashtags` long.
 
@@ -421,22 +434,25 @@ def hashtag_sequence_traces(
             f"""
             SELECT user_id,
                    list_aggregate(list_transform(hashtags, x -> lower(x)), 'string_agg', '|')
-                       AS entity
+                       AS entity{_time_col(with_time)}
             FROM ({view})
             WHERE hashtags IS NOT NULL AND len(hashtags) >= {int(min_hashtags)}
               AND user_id IS NOT NULL
             """
         ).df()
 
-    rows = con.sql(f"SELECT user_id, text FROM ({view}) WHERE user_id IS NOT NULL").df()
+    rows = con.sql(
+        f"SELECT user_id, text{_time_col(with_time)} FROM ({view}) WHERE user_id IS NOT NULL"
+    ).df()
     tags = [hashtags_from_text(t) for t in rows["text"]]
     keep = [i for i, t in enumerate(tags) if len(t) >= min_hashtags]
-    return pd.DataFrame(
-        {
-            "user_id": rows["user_id"].to_numpy()[keep],
-            "entity": ["|".join(tag.lower() for tag in tags[i]) for i in keep],
-        }
-    )
+    out = {
+        "user_id": rows["user_id"].to_numpy()[keep],
+        "entity": ["|".join(tag.lower() for tag in tags[i]) for i in keep],
+    }
+    if with_time:
+        out["created_at"] = rows["created_at"].to_numpy()[keep]
+    return pd.DataFrame(out)
 
 
 def fast_retweet_traces(
@@ -444,6 +460,7 @@ def fast_retweet_traces(
     view: str,
     *,
     seconds: int = FAST_RETWEET_SECONDS,
+    with_time: bool = False,
 ) -> pd.DataFrame:
     """Entity: the retweeted AUTHOR, for retweets landing within `seconds`.
 
@@ -459,7 +476,7 @@ def fast_retweet_traces(
         f"""
         WITH v AS ({view})
         SELECT rt.user_id,
-               coalesce(rt.retweet_user_id, orig.user_id) AS entity
+               coalesce(rt.retweet_user_id, orig.user_id) AS entity{_time_col(with_time, "rt.")}
         FROM v rt
         JOIN v orig ON orig.post_id = rt.retweet_post_id
         WHERE rt.retweet_post_id IS NOT NULL
