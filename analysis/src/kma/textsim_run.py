@@ -62,6 +62,11 @@ def build(
     log.info("rows with an embedding: %d", len(vecs))
 
     joined = rows.merge(vecs, on="post_id", how="inner").reset_index(drop=True)
+    coverage = len(joined) / max(len(rows), 1)
+    if coverage < 0.5:
+        # Measured 14% on the first daily window: the trace is then a sample of
+        # the corpus, not the corpus, and a reader of its edges needs to know.
+        log.warning("only %.0f%% of text-eligible posts have an embedding", coverage * 100)
     if joined.empty:
         raise RuntimeError(f"snapshot {snapshot!r}: no text-eligible post has an embedding")
     matrix = np.vstack(joined["embedding"].to_numpy())
@@ -110,7 +115,7 @@ def build(
         "snapshot": snapshot,
         "eligible": len(rows),
         "rows": len(joined),
-        "embedding_coverage": round(len(joined) / max(len(rows), 1), 4),
+        "embedding_coverage": round(coverage, 4),
         "threshold": float(cut),
         "overlap": floor,
         "edges": len(edges),

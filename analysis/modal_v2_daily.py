@@ -27,6 +27,30 @@ Stages, each on the hardware it needs:
 
 Windowed detection (workstream D) plugs in as an `extra_passes` entry in
 `rank_window`; see `kma.v2_daily`.
+
+`--no-persist` suppresses the `daily_*` result tables only. The window
+manifest and the text trace are still written: both are keyed by window id,
+reused by the next run over the same window, and the manifest is what makes a
+run reproducible at all.
+
+## Measured, 2026-09-22
+
+The Modal workspace was over its spend limit, so the 7-day smoke ran the same
+orchestration on the mac (torch CPU for the pair search): window
+`daily-2026-09-21-7d`, 741,613 post rows, 353s end to end (manifest 84s, text
+trace 168s, rank 100s), 3.5 GB peak RSS. 5,054 accounts, 101,464 edges, 30
+communities of 4+, 27 kept, 500 accounts listed from 25.
+
+Two upstream gaps it exposed, both outside this app:
+
+- **Embeddings lag collection.** 26,788 of 190,398 text-eligible posts in the
+  window (14%) had a vector, so the text trace held 909 edges. The tf1 enrich
+  worker embedded 500 posts per pass, five passes on 2026-09-21. The text
+  trace is only as current as the embedding backlog.
+- **Relevance stopped scoring on 2026-09-14** (1,523 of 9,989 listed posts
+  scored). `kma-relevance` last billed on 2026-09-14, consistent with the
+  spend limit stopping its schedule too. Stage 2 above re-runs it; until it
+  can, new communities come out `relevance_scored=False`.
 """
 
 import modal
