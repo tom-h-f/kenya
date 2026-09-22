@@ -435,20 +435,39 @@ def detect_burst(
     min_posts: int = BURST_MIN_POSTS,
 ) -> tuple[bool, float, int]:
     """Is the last complete hour's post volume a burst vs the prior 48h?
-    Returns (bursting, z, posts_last_hour)."""
+    Returns (bursting, z, posts_last_hour).
+
+    Every hour is counted at the SAME AGE as the latest one: only posts first
+    collected by the end of that hour plus however long the latest hour has
+    been over. Counted on everything held, the latest hour was always the least
+    collected - search, snowball and hydration keep adding posts to an hour for
+    12 hours and more after it ends - so z sat negative whatever X was doing.
+    Measured 2026-09-22 against live R2: raw z -0.84 (latest 392 against a
+    prior-48h mean of 797); restricted to posts seen within an hour of
+    creation, +1.04; hours aged 12h compared on posts seen within 12h, -0.24.
+    One 09-21 hour went from 88 posts at one hour old to 523.
+
+    Age-matching removes the bias, not the dependence on collection cadence:
+    an hour that no posts pass reached while it was young counts low here too.
+
+    A hash aggregate on the post id rather than `QUALIFY row_number()`. A
+    post's `created_at` does not change, so its earliest snapshot and its
+    latest agree, and the first-seen time is the minimum by definition."""
     rows = con.sql(
         f"""
         WITH lp AS (
-            SELECT * FROM {posts_view}
+            SELECT min(created_at) AS created_at, min(collected_at) AS first_seen
+            FROM {posts_view}
             -- Partition pruning; see `bursting_hashtags`. This one runs once per
             -- cycle purely to decide whether to skip a <=300s cooldown, so an
             -- unpruned full-corpus scan here cost more than the sleep it saved.
             WHERE dt >= current_date - INTERVAL 3 DAY
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
+            GROUP BY platform, platform_post_id
         )
-        SELECT count(*) AS n
+        SELECT count(*) FILTER (
+            WHERE first_seen <= date_trunc('hour', created_at) + INTERVAL 1 HOUR
+                                + (now() - date_trunc('hour', now()))
+        ) AS n
         FROM lp
         WHERE created_at > now() - INTERVAL 49 HOUR
           AND created_at < date_trunc('hour', now())
