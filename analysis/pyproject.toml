@@ -48,6 +48,7 @@ kma-windowed = "kma.windowed:main"
 kma-measure-eval = "kma.measure_eval:main"
 kma-ioa-verify = "kma.ioa_verify:main"
 kma-replay = "kma.replay:main"
+kma-deletions = "kma.deletions:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
