@@ -171,8 +171,13 @@ def report(
         sub = graph.subgraph(nodes)
         value, vector = leading(sub, nodes)
         vector = vector / np.linalg.norm(vector)
+        # `coord2.fuse` labels every edge it builds, but a caller can hand this
+        # a graph assembled another way - the canary's synthetic cliques do -
+        # and an unlabelled edge should cost that community its trace shares,
+        # not the whole report.
         traces = pd.Series(
-            [t for _, _, d in sub.edges(data=True) for t in d["traces"]], dtype="object"
+            [t for _, _, d in sub.edges(data=True) for t in d.get("traces", ())],
+            dtype="object",
         ).value_counts()
         total = max(int(traces.sum()), 1)
         table.append({
