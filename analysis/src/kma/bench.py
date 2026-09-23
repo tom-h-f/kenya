@@ -104,15 +104,27 @@ def partition_values(key: str) -> dict[str, str]:
 
 
 def _row_counts(
-    con: duckdb.DuckDBPyConnection, prefix: str, uri: Callable[[str], str]
+    con: duckdb.DuckDBPyConnection,
+    prefix: str,
+    uri: Callable[[str], str],
+    paths: list[str] | None = None,
 ) -> pd.DataFrame:
     """One row per file: footer `num_rows`. Empty frame when the prefix has no
-    parquet under it - a prefix that was never written is not an error."""
-    glob = uri(f"{prefix}/**/*.parquet")
+    parquet under it - a prefix that was never written is not an error.
+
+    `paths` reads only those footers instead of globbing the prefix, so a
+    snapshot that keeps a slice of a prefix does not pay for the rest of it."""
     empty = pd.DataFrame({"file_name": pd.Series(dtype="object"), "rows": pd.Series(dtype="int64")})
+    if paths is not None:
+        parquet = [p for p in paths if p.endswith(".parquet")]
+        if not parquet:
+            return empty
+        target = "[" + ", ".join(f"'{p}'" for p in parquet) + "]"
+    else:
+        target = f"'{uri(f'{prefix}/**/*.parquet')}'"
     try:
         return con.sql(
-            f"SELECT file_name, num_rows AS rows FROM parquet_file_metadata('{glob}')"
+            f"SELECT file_name, num_rows AS rows FROM parquet_file_metadata({target})"
         ).df()
     except duckdb.Error as exc:
         log.info("no parquet under %s (%s)", prefix, str(exc).split("\n")[0])
@@ -144,11 +156,15 @@ def snapshot(
     bucket: str = BUCKET,
     uri: Callable[[str], str] | None = None,
     write: bool = True,
+    keep: Callable[[str, dict[str, str]], bool] | None = None,
 ) -> pd.DataFrame:
     """Freeze what the corpus currently is, and write the manifest to R2.
 
     `rows=False` skips footer reads: fast, but the manifest then cannot be used
     to check that a pinned read is stable, which is the point of taking one.
+
+    `keep(prefix, partitions)` narrows the listing before anything is read -
+    `kma.window` uses it to pin a rolling slice of the corpus by `dt`.
     """
     con = con or connect()
     client = client or _r2_client()
@@ -156,7 +172,10 @@ def snapshot(
 
     frames = []
     for prefix in prefixes:
-        listing = pd.DataFrame(list(list_objects(client, bucket, prefix)))
+        objects = list_objects(client, bucket, prefix)
+        if keep is not None:
+            objects = (o for o in objects if keep(prefix, partition_values(o["key"])))
+        listing = pd.DataFrame(list(objects))
         if listing.empty:
             log.info("%s: no objects", prefix)
             continue
@@ -170,7 +189,9 @@ def snapshot(
         listing["model"] = parts.get("model", pd.Series(index=listing.index, dtype="object"))
 
         if rows:
-            counts = _row_counts(con, prefix, uri)
+            counts = _row_counts(
+                con, prefix, uri, paths=list(listing["path"]) if keep is not None else None
+            )
             listing = listing.merge(counts, how="left", left_on="path", right_on="file_name")
             listing = listing.drop(columns=["file_name"])
         else:

@@ -51,78 +51,17 @@ image = (
 )
 def build(snapshot: str, limit: int = 0, percentile: float = 96.0, chunk: int = 1024,
           threshold: float = 0.0, overlap: float = -1.0) -> dict:
-    import numpy as np
-    import pandas as pd
+    import logging
+    import os
 
-    from kma import bench, coord2
+    from kma import coord2, textsim_run
     from kma.db import connect
 
-    con = connect()
-    manifest = bench.load(snapshot, con=con)
-    posts = bench.pinned_source(manifest, "posts")
-    embeddings = bench.pinned_source(manifest, "embeddings")
-
-    view = coord2.posts_view(posts)
-    rows = coord2.text_rows(con, view)
-    if limit:
-        rows = rows.head(limit)
-    print(f"text-eligible rows: {len(rows)}", flush=True)
-
-    con.register("_rows", rows[["post_id"]])
-    vecs = con.sql(
-        f"""SELECT e.platform_post_id AS post_id, e.embedding
-            FROM {embeddings} e JOIN _rows r ON r.post_id = e.platform_post_id
-            QUALIFY row_number() OVER (PARTITION BY e.platform_post_id ORDER BY e.embedded_at DESC) = 1"""
-    ).df()
-    print(f"rows with an embedding: {len(vecs)}", flush=True)
-
-    joined = rows.merge(vecs, on="post_id", how="inner").reset_index(drop=True)
-    matrix = np.vstack(joined["embedding"].to_numpy())
-    print(f"matrix {matrix.shape}", flush=True)
-
-    # Estimate the cut on a sample with the exact CPU path, THEN push it into
-    # the GPU pass. Estimating with a thresholded sampler would bias it.
-    window = float(coord2.TEXT_WINDOW_DAYS) * 86400.0
-    times = coord2.epoch_seconds(joined["created_at"])
-    if threshold > 0:
-        # The percentile reading does not survive contact with a real corpus: a
-        # 96th percentile over ALL in-window pairs makes 4% of every pair an
-        # edge. Measured 2026-09-07 on 16,478 posts, it resolved to 0.5198 and
-        # produced 3,116,957 edges. An absolute cut is what the reference
-        # implementation ships (`--tweet_sim_threshold`, default 0.7).
-        cut = threshold
-        print(f"absolute threshold = {cut:.4f}", flush=True)
-    else:
-        cut = coord2.pair_similarity_percentile(
-            matrix.astype("float64"), times, percentile, window_seconds=window, max_rows=4000
-        )
-        print(f"{percentile}th percentile threshold = {cut:.4f}", flush=True)
-
-    floor = coord2.TEXT_MIN_OVERLAP if overlap < 0 else overlap
-    edges = coord2.text_similarity_network(
-        joined[["user_id", "created_at", "clean"]],
-        matrix,
-        threshold=float(cut),
-        similarity=coord2.gpu_cosine_pairs(float(cut)),
-        chunk=chunk,
-        min_overlap=floor or None,
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    edges, info = textsim_run.build(
+        connect(), snapshot, limit=limit, percentile=percentile, chunk=chunk,
+        threshold=threshold, overlap=overlap, similarity_for=coord2.gpu_cosine_pairs,
     )
-    print(f"edges: {len(edges)} (word-overlap floor {floor or 'off'})", flush=True)
-
-    # Persist to R2 under the key the runner reads, so a pass is one command
-    # after this. The volume copy stays as a cheap local artifact.
-    from kma.coord2_run import textsim_key
-    from kma.db import BUCKET
-
-    r2_key = textsim_key(snapshot, float(cut), overlap=floor or None)
-    con.register("_ts", edges)
-    try:
-        con.execute(f"COPY _ts TO 'r2://{BUCKET}/{r2_key}' (FORMAT parquet, COMPRESSION zstd)")
-    finally:
-        con.unregister("_ts")
-    print(f"wrote r2://{BUCKET}/{r2_key}", flush=True)
-
-    import os
 
     os.makedirs("/data/textsim", exist_ok=True)
     # Threshold, floor and row bound belong in the KEY. Without them a 20k-row
@@ -130,21 +69,10 @@ def build(snapshot: str, limit: int = 0, percentile: float = 96.0, chunk: int = 
     # distinguishable only by file timestamp, which is how one of these was
     # briefly mistaken for the other.
     scope = "full" if not limit else f"limit{limit}"
-    path = f"/data/textsim/{snapshot}__t{cut:.2f}__o{floor:.2f}__{scope}.parquet"
+    path = f"/data/textsim/{snapshot}__t{info['threshold']:.2f}__o{info['overlap']:.2f}__{scope}.parquet"
     edges.to_parquet(path)
     vol.commit()
-
-    users = len(set(edges["source"]) | set(edges["target"])) if len(edges) else 0
-    return {
-        "snapshot": snapshot,
-        "rows": len(joined),
-        "threshold": float(cut),
-        "overlap": floor,
-        "edges": len(edges),
-        "users": users,
-        "path": path,
-        "r2_key": r2_key,
-    }
+    return {**info, "path": path}
 
 
 @app.local_entrypoint()

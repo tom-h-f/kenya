@@ -185,6 +185,30 @@ def run(
     was 40 nodes, and centrality had nothing to rank.
     """
     con = con or connect()
+    networks, sizes, view = snapshot_networks(
+        con, snapshot, days=days, text_threshold=text_threshold, text_overlap=text_overlap,
+        min_entities=min_entities, since=since, until=until,
+    )
+    scores = coord2.detect(networks, threshold=0.0)
+    scores = scores.sort_values("centrality", ascending=False).head(top).reset_index(drop=True)
+    scores = attach_relevance(con, scores, view)
+    return RunResult(networks=networks, scores=scores, trace_sizes=sizes)
+
+
+def snapshot_networks(
+    con: duckdb.DuckDBPyConnection,
+    snapshot: str,
+    *,
+    days: int | None = None,
+    text_threshold: float | None = 0.85,
+    text_overlap: float | None = coord2.TEXT_MIN_OVERLAP,
+    min_entities: int = coord2.MIN_ENTITIES_PER_USER,
+    since: str | None = None,
+    until: str | None = None,
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, str]:
+    """Every similarity network for a pinned snapshot, plus the posts view it
+    was built from - the half of `run` that callers ranking differently (the
+    community report, the daily pipeline) share with it."""
     manifest = bench.load(snapshot, con=con)
     source = bench.pinned_source(manifest, "posts")
 
@@ -215,11 +239,7 @@ def run(
 
     if not networks:
         raise RuntimeError("no similarity networks were built; nothing to detect on")
-
-    scores = coord2.detect(networks, threshold=0.0)
-    scores = scores.sort_values("centrality", ascending=False).head(top).reset_index(drop=True)
-    scores = attach_relevance(con, scores, view)
-    return RunResult(networks=networks, scores=scores, trace_sizes=sizes)
+    return networks, sizes, view
 
 
 def main() -> None:
