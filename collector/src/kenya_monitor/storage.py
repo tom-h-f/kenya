@@ -72,6 +72,9 @@ METRIC_SCHEMA = pa.schema(
         # signal this project can actually reach.
         ("status", pa.string()),
         ("absence_cause", pa.string()),
+        # Rows from the engagement arm and the random arm must never be pooled
+        # into one rate: the first is conditional on being popular.
+        ("arm", pa.string()),
         ("collected_at", pa.timestamp("us", tz="UTC")),
     ]
 )

@@ -60,6 +60,11 @@ CAUSE_POST_DELETED = "post_deleted"   # author is fine, the post is not
 CAUSE_AUTHOR_GONE = "author_gone"     # suspended, deleted or protected
 CAUSE_UNRESOLVED = "unresolved"       # we did not or could not check
 
+# The two re-check arms. `top` is selected on engagement and cannot carry a
+# base rate; `random` is a uniform sample of held posts and can.
+ARM_TOP = "top"
+ARM_RANDOM = "random"
+
 
 @dataclass
 class MetricSnapshot:
@@ -87,6 +92,11 @@ class MetricSnapshot:
     view_count: int = 0
     status: str = STATUS_PRESENT
     absence_cause: str | None = None
+    # Which re-check arm selected this post. The engagement arm answers "what
+    # happened to the posts that mattered"; only the random arm can answer
+    # "what share of held posts vanish", because selecting on engagement makes
+    # the denominator conditional on being popular.
+    arm: str = ARM_TOP
     collected_at: datetime = field(default_factory=_now)
 
     def as_row(self) -> dict:

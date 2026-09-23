@@ -14,7 +14,14 @@ import duckdb
 from twscrape import API
 
 from kenya_monitor import census
-from kenya_monitor.collectors.base import STATUS_ABSENT, Collector, Engagement, FollowEdge, Post
+from kenya_monitor.collectors.base import (
+    ARM_RANDOM,
+    STATUS_ABSENT,
+    Collector,
+    Engagement,
+    FollowEdge,
+    Post,
+)
 from kenya_monitor.collectors.x import Window, XCollector, build_api, sync_accounts
 from kenya_monitor.config import (
     CENSUS_OVER_BAND_WARN,
@@ -23,6 +30,7 @@ from kenya_monitor.config import (
     CENSUS_TIMELINE_POOL_SIZE,
     CENSUS_TIMELINE_RETRY_DAYS,
     COLLECT_CONCURRENCY,
+    METRICS_RANDOM_POSTS,
     SEARCH_INCLUDE_RETWEETS,
     SEARCH_PRODUCT,
     SNOWBALL_BAND_MAX,
@@ -1012,11 +1020,20 @@ async def collect_metrics(
     since_days: int = 5,
     top_pct: float = 0.05,
     max_posts: int = 200,
+    random_posts: int = METRICS_RANDOM_POSTS,
 ) -> dict[str, int]:
     """Re-fetch engagement for the top `top_pct` of posts (by likes+quotes+reposts) from
     the last `since_days` days. Writes lightweight count snapshots to the metrics/ prefix.
 
     `max_posts` is a safety cap: defaults scale with the active account pool.
+
+    `random_posts` adds a SECOND arm: a uniform sample of held posts from the
+    same window, re-checked the same way and tagged `arm='random'`. The
+    engagement arm cannot carry a deletion base rate, because selecting the top
+    5% by engagement conditions the denominator on being popular - measured
+    2026-09-22, it drew 0 of 467 re-checks from the control arm, so the one
+    partition sampled exogenously was absent by construction. Rates per arm,
+    never pooled.
     """
     source = storage.posts_view(platform=collector.platform)
     threshold = 1.0 - top_pct
@@ -1047,6 +1064,32 @@ async def collect_metrics(
         return {"metrics": 0, "absent": 0}
 
     snapshots = [m async for m in collector.refresh_metrics(ids, authors=authors)]
+
+    if random_posts:
+        picked = storage.query(
+            f"""
+            WITH latest AS (
+                SELECT platform_post_id, author_id
+                FROM {source}
+                WHERE collected_at > now() - INTERVAL {since_days} DAY
+                QUALIFY row_number() OVER (
+                    PARTITION BY platform_post_id ORDER BY collected_at DESC
+                ) = 1
+            )
+            SELECT platform_post_id, author_id FROM latest
+            WHERE platform_post_id NOT IN ({','.join(f"'{i}'" for i in ids) or "''"})
+            ORDER BY random()
+            LIMIT {int(random_posts)}
+            """
+        ).fetchall()
+        if picked:
+            rnd_authors = {str(r[0]): str(r[1]) for r in picked if r[1] is not None}
+            snapshots += [
+                m async for m in collector.refresh_metrics(
+                    [r[0] for r in picked], authors=rnd_authors, arm=ARM_RANDOM
+                )
+            ]
+
     absent = [m for m in snapshots if m.status == STATUS_ABSENT]
     key = storage.write_metrics(snapshots)
     if key:
@@ -1065,4 +1108,13 @@ async def collect_metrics(
             len(absent), len(snapshots),
             ", ".join(f"{k}={v}" for k, v in sorted(causes.items())),
         )
-    return {"metrics": len(snapshots), "absent": len(absent)}
+    n_random = sum(1 for m in snapshots if m.arm == ARM_RANDOM)
+    if n_random:
+        gone = sum(1 for m in absent if m.arm == ARM_RANDOM)
+        log.info("metrics: random arm %d re-checked, %d absent", n_random, gone)
+    return {
+        "metrics": len(snapshots),
+        "absent": len(absent),
+        "random": n_random,
+        "random_absent": sum(1 for m in absent if m.arm == ARM_RANDOM),
+    }

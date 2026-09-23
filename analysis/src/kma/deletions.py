@@ -6,13 +6,22 @@ posts it holds and, since 2026-09-21, records the ones that come back empty as
 A per-account deletion rate means nothing without the rate among everyone else,
 so this module computes that rate and nothing more.
 
-WHAT THE DENOMINATOR IS, AND IS NOT. `runner.collect_metrics` re-checks the top
-5% of posts by engagement from the last 5 days, capped at ~400 per pass. So the
-population here is *high-engagement recent posts*, not the corpus. A rate over
-it is a rate among the posts most worth pushing and then deleting, which is the
-population the concealment question is about - but it is not "the share of held
-posts that vanish", and must never be quoted as one. A corpus-wide base rate
-needs a random re-check arm, which does not exist.
+WHAT THE DENOMINATOR IS, AND IS NOT. There are two arms and they answer
+different questions, so they are reported separately and never pooled.
+
+- `arm='top'`: the top 5% of posts by engagement from the last 5 days, ~400 per
+  pass. A rate over it is a rate among the posts most worth pushing and then
+  deleting - the population the concealment question is about - but it is NOT
+  "the share of held posts that vanish" and must never be quoted as one. On
+  2026-09-22 it drew 0 of 467 re-checks from the control partition, so the one
+  exogenously sampled arm was absent from it by construction.
+- `arm='random'`: a uniform sample of held posts from the same window, 50 per
+  pass, added 2026-09-23. This is the arm that can carry a corpus-wide base
+  rate, and it starts empty - until it accumulates, every number here is
+  conditional on engagement.
+
+Rows written before the arm column are from the engagement arm, and are read as
+`top`.
 
 Rows written before the status column carry no status. Their absences were
 discarded at collection (`if tw is None: continue`), so they can say nothing
@@ -92,12 +101,19 @@ def recheck_outcomes(
     unsuspended, a protected account opened) - reported as `returned`, never
     silently overwritten by the later observation."""
     window = f"AND dt >= DATE '{since}'" if since else ""
+    # The arm column arrived 2026-09-23. Probed rather than assumed, because
+    # every row written before it is from the engagement arm and a rescan of
+    # the old rows must not fail to bind.
+    has_arm = "arm" in {
+        c[0] for c in con.sql(f"SELECT * FROM {metrics_source(platform)} LIMIT 0").description
+    }
+    arm = "arm" if has_arm else "'top' AS arm"
     # The metrics prefix is small - ~400 rows a pass - so it is read once and
     # held, rather than rescanned per post to find each first absence.
     con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE _del_rows AS
-        SELECT platform_post_id, status, absence_cause, collected_at
+        SELECT platform_post_id, status, absence_cause, collected_at, {arm}
         FROM {metrics_source(platform)}
         WHERE status IS NOT NULL {window}
         """
@@ -118,7 +134,8 @@ def recheck_outcomes(
                arg_min(r.absence_cause, r.collected_at)
                    FILTER (WHERE r.status = '{ABSENT}') AS first_cause,
                bool_or(r.status = '{PRESENT}' AND r.collected_at > fa.first_absent_at)
-                   AS returned
+                   AS returned,
+               arg_min(r.arm, r.collected_at) AS arm
         FROM _del_rows r JOIN fa USING (platform_post_id)
         GROUP BY r.platform_post_id
         """
@@ -129,7 +146,7 @@ def recheck_outcomes(
     if first is None:
         return pd.DataFrame(
             columns=["platform_post_id", "author_id", "n_checks", "ever_absent",
-                     "first_cause", "returned", "age_days_at_first_check",
+                     "first_cause", "returned", "arm", "age_days_at_first_check",
                      "in_baseline", "in_targeted", "in_control"]
         )
     return con.sql(
@@ -146,7 +163,7 @@ def recheck_outcomes(
             GROUP BY platform_post_id
         )
         SELECT c.platform_post_id, p.author_id, c.n_checks, c.ever_absent, c.first_cause,
-               coalesce(c.returned, false) AS returned,
+               coalesce(c.returned, false) AS returned, c.arm,
                date_diff('hour', p.created_at, c.first_checked) / 24.0
                    AS age_days_at_first_check,
                coalesce(p.in_baseline, false) AS in_baseline,
@@ -180,6 +197,11 @@ def base_rate(outcomes: pd.DataFrame) -> pd.DataFrame:
     `absent_share` is None, not 0, for an empty population - an arm with no
     re-checked posts has no rate, and a zero would read as a measured one."""
     rows = [_rate_row("all re-checked", outcomes)]
+    # Split before anything else: pooling an engagement-selected arm with a
+    # uniform one produces a rate that belongs to neither population.
+    if "arm" in outcomes.columns:
+        for arm, label in (("top", "arm: top engagement"), ("random", "arm: random")):
+            rows.append(_rate_row(label, outcomes[outcomes["arm"].fillna("top") == arm]))
     for flag, label in (
         ("in_baseline", "baseline"),
         ("in_targeted", "targeted"),

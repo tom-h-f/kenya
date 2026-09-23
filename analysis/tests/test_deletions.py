@@ -102,3 +102,29 @@ def test_author_rates_withhold_authors_below_the_floor():
 
     assert list(got["author_id"]) == ["a1"]
     assert got.iloc[0]["absent_share"] == pytest.approx(1 / 3)
+
+
+def test_the_two_arms_are_reported_separately():
+    """Pooling a rate selected on engagement with a uniform one produces a
+    number that belongs to neither population. The random arm exists precisely
+    because the engagement arm cannot carry a base rate."""
+    outcomes = pd.DataFrame({
+        "platform_post_id": ["p1", "p2", "p3", "p4"],
+        "author_id": ["a1", "a2", "a3", "a4"],
+        "n_checks": [2, 2, 2, 2],
+        "ever_absent": [True, False, False, False],
+        "first_cause": ["post_deleted", None, None, None],
+        "returned": [False, False, False, False],
+        "arm": ["top", "top", "random", "random"],
+        "age_days_at_first_check": [1.0, 1.0, 1.0, 1.0],
+        "in_baseline": [True, True, False, False],
+        "in_targeted": [False, False, False, False],
+        "in_control": [False, False, True, True],
+    })
+
+    table = deletions.base_rate(outcomes).set_index("population")
+
+    assert table.loc["arm: top engagement", "absent_share"] == 0.5
+    assert table.loc["arm: random", "absent_share"] == 0.0
+    # And the pooled row is still there, but it is not either arm's rate.
+    assert table.loc["all re-checked", "absent_share"] == 0.25

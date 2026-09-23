@@ -12,6 +12,7 @@ import logging
 
 from kenya_monitor.config import METRICS_RESOLVE_ABSENCE
 from kenya_monitor.collectors.base import (
+    ARM_TOP,
     CAUSE_AUTHOR_GONE,
     CAUSE_POST_DELETED,
     CAUSE_UNRESOLVED,
@@ -314,6 +315,7 @@ class XCollector(Collector):
         post_ids: list[str],
         authors: dict[str, str] | None = None,
         resolve_absence: bool = METRICS_RESOLVE_ABSENCE,
+        arm: str = ARM_TOP,
     ) -> AsyncIterator[MetricSnapshot]:
         """Re-check held posts, and RECORD the ones that have gone.
 
@@ -343,6 +345,7 @@ class XCollector(Collector):
                     quote_count=tw.quoteCount or 0,
                     view_count=tw.viewCount or 0,
                     status=STATUS_PRESENT,
+                    arm=arm,
                 )
                 continue
 
@@ -359,6 +362,7 @@ class XCollector(Collector):
                 platform_post_id=str(pid),
                 status=STATUS_ABSENT,
                 absence_cause=cause,
+                arm=arm,
             )
 
     def _to_author(self, u) -> Author:

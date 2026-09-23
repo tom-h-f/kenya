@@ -164,20 +164,84 @@ def test_the_candidate_query_carries_the_author_of_every_post():
         def __init__(self):
             self.authors = None
 
-        async def refresh_metrics(self, ids, authors=None, **kw):
-            self.authors = authors
+        async def refresh_metrics(self, ids, authors=None, arm="top", **kw):
+            if arm == "top":
+                self.authors = authors
             for pid in ids:
-                yield _Snapshot(pid)
+                yield _Snapshot(pid, arm)
 
     collector = _Collector()
-    counts = asyncio.run(collect_metrics(collector, _Storage(), top_pct=1.0))
+    counts = asyncio.run(collect_metrics(collector, _Storage(), top_pct=1.0, random_posts=0))
 
     assert counts["metrics"] == 2
     assert collector.authors == {"p1": "a1", "p2": "a2"}
 
 
 class _Snapshot:
-    def __init__(self, pid):
+    def __init__(self, pid, arm="top"):
         self.platform_post_id = pid
         self.status = STATUS_PRESENT
         self.absence_cause = None
+        self.arm = arm
+
+
+def test_the_random_arm_rechecks_posts_the_engagement_arm_would_never_pick():
+    """The engagement arm selects the top 5% by engagement, so its absences
+    cannot carry a base rate: measured 2026-09-22 it drew 0 of 467 re-checks
+    from the control partition. The random arm exists to answer 'what share of
+    held posts vanish', and its rows must be distinguishable from the other
+    arm's or the two get pooled into a number that means neither."""
+    import duckdb
+    import pyarrow as pa
+
+    from kenya_monitor.collectors.base import ARM_RANDOM, ARM_TOP
+    from kenya_monitor.runner import collect_metrics
+
+    now = datetime.now(timezone.utc)
+    n = 20
+    posts = pa.table(
+        {
+            "platform": pa.array(["x"] * n, type=pa.string()),
+            "platform_post_id": pa.array([f"p{i}" for i in range(n)], type=pa.string()),
+            "author_id": pa.array([f"a{i}" for i in range(n)], type=pa.string()),
+            # One viral post; the rest are the ordinary tail the top arm never sees.
+            "like_count": pa.array([1000] + [0] * (n - 1), type=pa.int64()),
+            "quote_count": pa.array([0] * n, type=pa.int64()),
+            "repost_count": pa.array([0] * n, type=pa.int64()),
+            "collected_at": pa.array([now] * n, type=pa.timestamp("us", tz="UTC")),
+        }
+    )
+    con = duckdb.connect()
+    con.register("posts_tbl", posts)
+
+    class _Storage:
+        def posts_view(self, platform="*", target_type="*"):
+            return "posts_tbl"
+
+        def query(self, sql):
+            return con.sql(sql)
+
+        def write_metrics(self, snapshots):
+            return None
+
+    class _Collector:
+        platform = "x"
+
+        def __init__(self):
+            self.seen = {}
+
+        async def refresh_metrics(self, ids, authors=None, arm=ARM_TOP, **kw):
+            self.seen[arm] = list(ids)
+            for pid in ids:
+                yield _Snapshot(pid, arm)
+
+    collector = _Collector()
+    counts = asyncio.run(collect_metrics(
+        collector, _Storage(), top_pct=0.05, max_posts=1, random_posts=5
+    ))
+
+    assert collector.seen[ARM_TOP] == ["p0"]
+    assert counts["random"] == 5
+    # Uniform, and never a post the engagement arm already took.
+    assert len(collector.seen[ARM_RANDOM]) == 5
+    assert "p0" not in collector.seen[ARM_RANDOM]

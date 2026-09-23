@@ -415,6 +415,10 @@ FOLLOW_CRAWL_TOP_SUSPICIOUS = int(os.getenv("FOLLOW_CRAWL_TOP_SUSPICIOUS", "10")
 # nothing ever called: `monitor run` cycles back to back, throttled only by
 # per-account pacing and twscrape's rate-limit rotation. Both were documented as
 # live in docs/collection/README.md, so an operator tuning them changed nothing.
+# The random re-check arm. 50 a pass against the engagement arm's ~400: enough
+# that a base rate accumulates, small enough that it costs a tenth of the pass.
+# The engagement arm cannot carry that rate at all, so this is not redundancy.
+METRICS_RANDOM_POSTS = int(os.getenv("METRICS_RANDOM_POSTS", "50"))
 METRICS_MAX_POSTS_FLOOR = int(os.getenv("METRICS_MAX_POSTS_FLOOR", "200"))
 METRICS_MAX_POSTS_PER_ACCOUNT = int(os.getenv("METRICS_MAX_POSTS_PER_ACCOUNT", "8"))
 
