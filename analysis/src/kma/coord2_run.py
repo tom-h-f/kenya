@@ -21,6 +21,7 @@ Nothing here is a verdict. It is a ranked list for a reader.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import duckdb
@@ -192,6 +193,17 @@ def run(
     scores = coord2.detect(networks, threshold=0.0)
     scores = scores.sort_values("centrality", ascending=False).head(top).reset_index(drop=True)
     scores = attach_relevance(con, scores, view)
+    # Which community each ranked account belongs to. Global centrality alone
+    # hands the top of the ranking to one co-retweet block (measured
+    # 2026-09-12), which is why v2 reports by community - but every consumer of
+    # `kind=scores` got the global order with no way to spread across blocks.
+    # The collector's promotion cap and the leads diff both need this column.
+    from kma import coord2_communities
+
+    member = coord2_communities.communities(coord2.fuse(networks))
+    scores["community"] = scores["user_id"].astype(str).map(
+        {str(k): int(v) for k, v in member.items()}
+    ).astype("Int64")
     return RunResult(networks=networks, scores=scores, trace_sizes=sizes)
 
 
@@ -205,10 +217,16 @@ def snapshot_networks(
     min_entities: int = coord2.MIN_ENTITIES_PER_USER,
     since: str | None = None,
     until: str | None = None,
+    transform_view: Callable[[str], str] | None = None,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, str]:
     """Every similarity network for a pinned snapshot, plus the posts view it
     was built from - the half of `run` that callers ranking differently (the
-    community report, the daily pipeline) share with it."""
+    community report, the daily pipeline) share with it.
+
+    `transform_view` rewrites the view after the window filters and before any
+    trace is built, so what it adds is seen by every trace rather than by the
+    one the caller remembered to patch. The canary uses it to union its planted
+    posts in memory; nothing it adds is ever written."""
     manifest = bench.load(snapshot, con=con)
     source = bench.pinned_source(manifest, "posts")
 
@@ -223,6 +241,8 @@ def snapshot_networks(
         view = f"SELECT * FROM ({view}) WHERE created_at >= TIMESTAMPTZ '{since}'"
     if until:
         view = f"SELECT * FROM ({view}) WHERE created_at < TIMESTAMPTZ '{until}'"
+    if transform_view is not None:
+        view = transform_view(view)
 
     networks, sizes = build_networks(con, view, min_entities=min_entities)
 

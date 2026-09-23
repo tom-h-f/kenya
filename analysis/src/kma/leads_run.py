@@ -52,7 +52,10 @@ from kma.db import BUCKET, connect
 log = logging.getLogger("kma")
 
 PLATFORM = "x"
-COMMUNITIES_PREFIX = f"coord2/platform={PLATFORM}/kind=communities"
+# The daily pass's full membership, not its listing: Leiden ids are not stable
+# between runs, so "is this community new?" is answered by member overlap, and
+# `daily_accounts` carries only the accounts that made the triage budget.
+COMMUNITIES_PREFIX = f"coord2/platform={PLATFORM}/kind=daily_members"
 V1_PREFIX = f"coordination/platform={PLATFORM}/kind=clusters"
 TRENDS_PREFIX = f"trend_candidates/platform={PLATFORM}"
 LEADS_PREFIX = f"leads/platform={PLATFORM}"
@@ -421,7 +424,7 @@ def execute(
 ) -> dict:
     """The whole pass. `judge` is `adjudicate.judge_all`, or None for a dry
     run that builds nothing and spends nothing."""
-    from kma import adjudicate, dossier
+    from kma import adjudicate, canary, dossier
 
     previous, current = latest_listings(con, source)
     trends_prev, trends_cur = latest_trends(con)
@@ -444,7 +447,19 @@ def execute(
         return summary
 
     frame, ids = members(con, p.queued, current.frame if current else None)
-    packets = dossier.build(con, frame, cluster_ids=list(ids))
+    # A canary's accounts are never in the archive, so `dossier.build` would
+    # hand the reader an empty packet and earn an `unclear` that says nothing
+    # about detection. Its packet is built from the planted posts instead.
+    canary_rows = frame[frame["author_id"].astype(str).str.startswith(CANARY_PREFIX)]
+    packets = dossier.build(
+        con, frame[~frame.index.isin(canary_rows.index)],
+        cluster_ids=[c for c in ids if c not in set(canary_rows["cluster_id"])],
+    )
+    if not canary_rows.empty:
+        planted = canary.load_active(con)
+        for cluster_id, rows in canary_rows.groupby("cluster_id"):
+            packets.append(canary.packet(planted, rows["author_id"].astype(str).tolist(),
+                                         int(cluster_id)))
     keys: dict[str, str] = {}
     if persist:
         for packet in packets:

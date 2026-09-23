@@ -386,10 +386,25 @@ def v2_accounts(
     if cached.get("computed_at") == latest and cached.get("min_kenya_share") == min_kenya_share:
         return list(cached.get("handles", []))
 
+    # Round-robin across communities where the run carries them. Eigenvector
+    # centrality concentrates in one co-retweet block (measured 2026-09-12),
+    # and a cap of 10 taken in global order can spend every slot inside it,
+    # densifying collection around one block and calling it the top of the
+    # ranking. Ranking within a community first spreads the same cap across
+    # blocks. Runs written before `community` existed keep the global order.
+    has_community = "community" in {
+        r[0] for r in con.sql(f"SELECT * FROM {scores_view} LIMIT 0").description
+    }
+    order = (
+        "row_number() OVER (PARTITION BY community ORDER BY centrality DESC), centrality DESC"
+        if has_community else "centrality DESC"
+    )
+    community = "any_value(community) AS community," if has_community else ""
     rows = con.sql(
         f"""
         WITH ranked AS (
-            SELECT CAST(user_id AS VARCHAR) AS user_id, max(centrality) AS centrality
+            SELECT CAST(user_id AS VARCHAR) AS user_id, {community}
+                   max(centrality) AS centrality
             FROM {scores_view}
             WHERE computed_at = (SELECT max(computed_at) FROM {scores_view})
               AND user_id IS NOT NULL
@@ -404,7 +419,7 @@ def v2_accounts(
         )
         SELECT h.handle
         FROM ranked r JOIN handles h ON h.platform_user_id = r.user_id
-        ORDER BY r.centrality DESC
+        ORDER BY {order}
         """
     ).fetchall()
     handles = [r[0] for r in rows]

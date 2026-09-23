@@ -46,7 +46,7 @@ import duckdb
 import networkx as nx
 import pandas as pd
 
-from kma import coord2, coord2_communities, coord2_run, window
+from kma import canary, coord2, coord2_communities, coord2_run, window
 from kma.db import BUCKET
 
 log = logging.getLogger(__name__)
@@ -134,6 +134,7 @@ def rank(
     uri: Callable[[str], str] | None = None,
     now: datetime | None = None,
     networks: tuple[dict[str, pd.DataFrame], pd.DataFrame, str] | None = None,
+    canary_posts: pd.DataFrame | None = None,
 ) -> RankResult:
     """Rank one window and persist every table. `networks` injects prebuilt
     `(networks, sizes, view)` in place of `coord2_run.snapshot_networks`, which
@@ -143,11 +144,26 @@ def rank(
     run_id = f"{stamp:%Y%m%dT%H%M%SZ}"
     timings: dict[str, float] = {}
 
+    # Planted posts join the window before any trace is built, so the canary is
+    # carried by co-action like any other account rather than by a trace patched
+    # in afterwards. The persisted text trace is GPU-built and cannot contain
+    # them, so their text edges are added here on the same cut.
+    planted = canary_posts if canary_posts is not None and not canary_posts.empty else None
     t = time.monotonic()
     nets, sizes, view = networks or coord2_run.snapshot_networks(
         con, w.id, text_threshold=text_threshold, text_overlap=text_overlap,
         min_entities=min_entities,
+        transform_view=(lambda v: canary.inject_view(con, v, planted)) if planted is not None else None,
     )
+    if planted is not None:
+        extra_text = canary.text_edges(planted, threshold=text_threshold or 0.85,
+                                       overlap=text_overlap)
+        if not extra_text.empty:
+            nets["text_similarity"] = pd.concat(
+                [nets.get("text_similarity", pd.DataFrame(columns=extra_text.columns)), extra_text],
+                ignore_index=True,
+            )
+        log.info("canary: %d planted post(s), %d text edge(s)", len(planted), len(extra_text))
     timings["networks_s"] = time.monotonic() - t
 
     t = time.monotonic()
