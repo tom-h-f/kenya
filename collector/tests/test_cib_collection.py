@@ -363,11 +363,9 @@ def test_detect_burst_fires_on_spike():
     pid = 0
     for h in range(2, 40):  # steady baseline: 5 posts/hour
         for _ in range(5):
-            rows.append({"platform_post_id": str(pid := pid + 1),
-                         "created_at": NOW - timedelta(hours=h, minutes=30)})
+            rows.append(_seen_promptly(str(pid := pid + 1), NOW - timedelta(hours=h, minutes=30)))
     for _ in range(150):  # spike in the last complete hour
-        rows.append({"platform_post_id": str(pid := pid + 1),
-                     "created_at": NOW - timedelta(hours=1, minutes=30)})
+        rows.append(_seen_promptly(str(pid := pid + 1), NOW - timedelta(hours=1, minutes=30)))
     con, view = _con_with_posts(rows)
     bursting, z, n = detect_burst(con, view, zscore=3.0, min_posts=100)
     assert bursting and z > 3.0 and n >= 150
@@ -378,11 +376,37 @@ def test_detect_burst_quiet_on_steady_volume():
     pid = 0
     for h in range(1, 40):
         for _ in range(5):
-            rows.append({"platform_post_id": str(pid := pid + 1),
-                         "created_at": NOW - timedelta(hours=h, minutes=30)})
+            rows.append(_seen_promptly(str(pid := pid + 1), NOW - timedelta(hours=h, minutes=30)))
     con, view = _con_with_posts(rows)
     bursting, _, _ = detect_burst(con, view, zscore=3.0, min_posts=100)
     assert not bursting
+
+
+def _seen_promptly(pid: str, created: datetime) -> dict:
+    return {"platform_post_id": pid, "created_at": created,
+            "collected_at": created + timedelta(minutes=5)}
+
+
+def test_detect_burst_is_not_dragged_negative_by_late_collection():
+    """Steady volume, but older hours also hold posts that later passes found
+    hours afterwards - as search, snowball and hydration do. Counted on
+    everything held, the latest hour looks like a collapse; at matched age it
+    looks like what it is. On live R2 2026-09-22 the raw form read -0.84."""
+    rows = []
+    pid = 0
+    for h in range(1, 40):
+        created = NOW - timedelta(hours=h, minutes=30)
+        for _ in range(10):
+            rows.append(_seen_promptly(str(pid := pid + 1), created))
+        if h >= 8:
+            for _ in range(10):
+                rows.append({"platform_post_id": str(pid := pid + 1), "created_at": created,
+                             "collected_at": created + timedelta(hours=6)})
+    con, view = _con_with_posts(rows)
+    bursting, z, n = detect_burst(con, view, zscore=3.0, min_posts=5)
+    assert not bursting
+    assert z > -1.0
+    assert n == 10
 
 
 def test_promoted_accounts_are_separated_from_baseline_targets():

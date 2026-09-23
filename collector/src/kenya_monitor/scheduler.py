@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import duckdb
 
@@ -25,6 +27,7 @@ from kenya_monitor.config import (
     CYCLE_COOLDOWN_MIN_S,
     DEPTH_EVERY_HOURS,
     DEPTH_IN_CYCLE_ENABLED,
+    FOLLOW_CRAWL_EVERY_HOURS,
     FOLLOW_CRAWL_MAX_PER_RUN,
     FOLLOW_CRAWL_REFRESH_DAYS,
     FOLLOW_CRAWL_TOP_HATE,
@@ -47,6 +50,7 @@ from kenya_monitor.config import (
     SEARCH_MIN_FAVES,
     SEARCH_RECENT_DAYS,
     SEARCH_WINDOW_LIMIT,
+    STEP_ATTEMPTS_PATH,
     PlatformTargets,
     R2Config,
     load_accounts,
@@ -106,6 +110,102 @@ def _depth_due(latest_fetch: str | None, every_hours: float, now: datetime | Non
     return datetime.fromisoformat(latest_fetch) <= now - timedelta(hours=every_hours)
 
 
+def load_attempts(path: Path | None = None) -> dict[str, str]:
+    """When each gated step last STARTED, keyed by step name.
+
+    A step's own ledger records only what it fetched, so a pass that selects
+    nothing leaves it untouched and the step is due again next cycle. On pi0
+    that was `deep_timelines`: "no candidates" on every cycle of 2026-09-21/22,
+    at 25-31 minutes of selection query each time. Recording the start, not the
+    finish, also stops a step that fails from retrying every cycle - a 2-hour
+    step that raised was the other way a cycle tripled."""
+    path = path or STEP_ATTEMPTS_PATH
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def record_attempt(
+    name: str, path: Path | None = None, now: datetime | None = None
+) -> None:
+    """Best effort: a write failure costs a rerun next cycle, never the step."""
+    path = path or STEP_ATTEMPTS_PATH
+    attempts = load_attempts(path)
+    attempts[name] = (now or datetime.now(timezone.utc)).isoformat()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(attempts, indent=2))
+        tmp.replace(path)
+    except OSError:
+        log.warning("could not record %s attempt at %s", name, path)
+
+
+def _latest(*stamps: str | None) -> str | None:
+    present = [s for s in stamps if s]
+    return max(present, key=datetime.fromisoformat) if present else None
+
+
+def _gated(name: str, due, step, *, record: bool = True):
+    """Run `step` only if `due()` holds WHEN THE STEP IS REACHED.
+
+    The due checks used to run while the step list was built, at cycle start.
+    With a 6.5-hour cycle and a 6-hour control cadence, a pass 4.75 hours old at
+    cycle start was skipped and not reconsidered until the next cycle: the
+    control arm ran once in the 20 hours after the 2026-09-21 deploy. Checked
+    here, a step becomes due as soon as the cycle reaches it."""
+
+    async def run():
+        if not due():
+            return None
+        if record:
+            record_attempt(name)
+        return await step()
+
+    return run
+
+
+def _control_due() -> bool:
+    from kenya_monitor.control import load_state
+
+    state = load_state(CONTROL_STATE_PATH)
+    latest = max((v.get("sampled_at") for v in state.values()), default=None)
+    return _depth_due(latest, CONTROL_EVERY_HOURS)
+
+
+def _trends_due() -> bool:
+    from kenya_monitor.trend_discovery import load_state
+
+    return _depth_due(load_state().get("last_run"), TRENDS_EVERY_HOURS)
+
+
+def _parents_due() -> bool:
+    from kenya_monitor.parent_backfill import backfill_summary, load_state
+
+    latest = backfill_summary(load_state())["latest_fetch"]
+    return _depth_due(_latest(latest, load_attempts().get("hydrate_parents")), DEPTH_EVERY_HOURS)
+
+
+def _accounts_due() -> bool:
+    from kenya_monitor.deep_timelines import load_state, timeline_summary
+
+    latest = timeline_summary(load_state())["latest_fetch"]
+    return _depth_due(_latest(latest, load_attempts().get("deep_timelines")), DEPTH_EVERY_HOURS)
+
+
+def _follow_crawl_due() -> bool:
+    """Daily, from whichever is later: the last crawl the ledger holds or the
+    last attempt. The ledger alone would make a run that crawls nothing due
+    again next cycle - the `deep_timelines` failure over again."""
+    from kenya_monitor.follow_crawl import load_crawl_state
+
+    crawled = _latest(*(e.crawled_at for e in load_crawl_state().values()))
+    return _depth_due(
+        _latest(crawled, load_attempts().get("follow_crawl")), FOLLOW_CRAWL_EVERY_HOURS
+    )
+
+
 def _adaptive_targets(
     storage: Storage, dry_run: bool = False
 ) -> tuple[PlatformTargets, list[str], set[str]]:
@@ -133,6 +233,7 @@ def _adaptive_targets(
             stories_view=storage.stories_view(platform="x"),
             hatespeech_view=storage.hatespeech_view(platform="x"),
             relevance_view=storage.relevance_view(platform="x"),
+            scores_view=storage.coord2_scores_view(platform="x"),
             dry_run=dry_run,
         )
     except Exception:
@@ -561,26 +662,26 @@ async def run_follow_crawl_once(
 ) -> dict[str, int]:
     """Recursive BFS follow-graph crawl with persisted per-account state."""
     from kenya_monitor.follow_crawl import crawl_follows, crawl_summary, load_crawl_state
-    from kenya_monitor.suspicion import top_suspicious_handles
+    from kenya_monitor.suspicion import top_suspicious_accounts
 
     storage = Storage(R2Config.from_env())
     seeds = list(seed_handles or [])
     if top_hate:
         seeds.extend(_hate_seed_handles(storage, top_hate))
+    seed_accounts: list[tuple[str, str]] = []
     if top_suspicious:
-        seeds.extend(
-            top_suspicious_handles(
-                storage.con,
-                storage.authors_view(platform="x"),
-                storage.posts_view(platform="x"),
-                n=top_suspicious,
-            )
+        seed_accounts = top_suspicious_accounts(
+            storage.con,
+            storage.authors_view(platform="x"),
+            storage.posts_view(platform="x"),
+            n=top_suspicious,
         )
     collector = await build_x_collector(load_accounts())
     counts = await crawl_follows(
         collector,
         storage,
         seed_handles=seeds,
+        seed_accounts=seed_accounts,
         limit=limit,
         max_accounts=max_accounts,
         refresh_days=refresh_days,
@@ -691,30 +792,6 @@ async def run_scheduler(limit: int) -> None:
             # so adding `census_timelines` after snowball silently pushed them
             # past it - the ordering guarantee above depended on an index that
             # nothing was protecting.
-            def _control_due() -> bool:
-                from kenya_monitor.control import load_state
-
-                state = load_state(CONTROL_STATE_PATH)
-                latest = max((v.get("sampled_at") for v in state.values()), default=None)
-                return _depth_due(latest, CONTROL_EVERY_HOURS)
-
-            def _trends_due() -> bool:
-                from kenya_monitor.trend_discovery import load_state
-
-                return _depth_due(load_state().get("last_run"), TRENDS_EVERY_HOURS)
-
-            def _parents_due() -> bool:
-                from kenya_monitor.parent_backfill import backfill_summary, load_state
-
-                latest = backfill_summary(load_state())["latest_fetch"]
-                return _depth_due(latest, DEPTH_EVERY_HOURS)
-
-            def _accounts_due() -> bool:
-                from kenya_monitor.deep_timelines import load_state, timeline_summary
-
-                latest = timeline_summary(load_state())["latest_fetch"]
-                return _depth_due(latest, DEPTH_EVERY_HOURS)
-
             steps = [
                 ("posts", _posts),
                 ("snowball", run_snowball_once),
@@ -723,13 +800,16 @@ async def run_scheduler(limit: int) -> None:
             # behind baseline coverage. A gap in it cannot be filled later - X
             # search reaches 14 days and the horizon closes over an unsampled
             # window permanently - which is not true of anything below it here.
-            if CONTROL_ENABLED and _control_due():
-                steps.append(("control", run_control_once))
+            #
+            # Control and trends keep their own ledgers as the record: a pass
+            # that runs always writes one, so they need no attempt entry.
+            if CONTROL_ENABLED:
+                steps.append(("control", _gated("control", _control_due, run_control_once, record=False)))
             # Behind the control arm, never ahead: discovery reads what that
             # pass just collected, and running first would re-find last
             # cycle's tags.
-            if TRENDS_ENABLED and _trends_due():
-                steps.append(("trends", run_trends_once))
+            if TRENDS_ENABLED:
+                steps.append(("trends", _gated("trends", _trends_due, run_trends_once, record=False)))
             if hate_due:
                 steps += [
                     ("hate_seek", run_hate_seek_once),
@@ -740,9 +820,13 @@ async def run_scheduler(limit: int) -> None:
                 ("metrics", run_metrics_once),
                 (
                     "follow_crawl",
-                    lambda: run_follow_crawl_once(
-                        top_suspicious=FOLLOW_CRAWL_TOP_SUSPICIOUS,
-                        top_hate=FOLLOW_CRAWL_TOP_HATE if HATE_SEEK_ENABLED else None,
+                    _gated(
+                        "follow_crawl",
+                        _follow_crawl_due,
+                        lambda: run_follow_crawl_once(
+                            top_suspicious=FOLLOW_CRAWL_TOP_SUSPICIOUS,
+                            top_hate=FOLLOW_CRAWL_TOP_HATE if HATE_SEEK_ENABLED else None,
+                        ),
                     ),
                 ),
             ]
@@ -755,10 +839,12 @@ async def run_scheduler(limit: int) -> None:
             if DEPTH_IN_CYCLE_ENABLED:
                 # Two steps rather than one, so an arm that raises does not
                 # take the other arm's pass with it.
-                if _parents_due():
-                    steps.append(("hydrate_parents", run_parent_backfill_once))
-                if _accounts_due():
-                    steps.append(("deep_timelines", run_deep_timelines_once))
+                steps.append(
+                    ("hydrate_parents", _gated("hydrate_parents", _parents_due, run_parent_backfill_once))
+                )
+                steps.append(
+                    ("deep_timelines", _gated("deep_timelines", _accounts_due, run_deep_timelines_once))
+                )
             for name, step in steps:
                 try:
                     await step()

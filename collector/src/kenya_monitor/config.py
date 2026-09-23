@@ -261,7 +261,15 @@ CONTROL_WINDOW_CAP = int(os.getenv("CONTROL_WINDOW_CAP", "100"))
 # Not raised further than doubling in one step: more windows per pass is more
 # pool budget spent ahead of baseline coverage, and the truncation rate should
 # be re-read at 8 before it goes higher.
-CONTROL_WINDOWS_PER_PASS = int(os.getenv("CONTROL_WINDOWS_PER_PASS", "8"))
+#
+# Re-read 2026-09-22 and doubled again to 16. At 8, over 22 passes and 172
+# windows (2026-09-14..21): 5 truncated (2.9%), mean 32 posts, p95 81, max 104.
+# Truncation is a property of the window, not of how many are drawn per pass,
+# so it does not move with this setting. The live pass on 2026-09-21 took 26s
+# for 8 windows and 241 posts - about 16 search pages at 20 per page, against
+# ~290 pages for one baseline search pass (5,858 posts) - so 16 windows adds
+# roughly 30s and 5% of a search pass's requests, four times a day.
+CONTROL_WINDOWS_PER_PASS = int(os.getenv("CONTROL_WINDOWS_PER_PASS", "16"))
 # Include native retweets in the census. True, because the frame should be
 # everything posted in the window and silently dropping a category is the kind
 # of unstated choice this arm exists to avoid. It raises volume, so it also
@@ -315,6 +323,19 @@ STORY_FLAG_MIN_INDEX = float(os.getenv("STORY_FLAG_MIN_INDEX", "0.6"))
 # predicts accounts rather than clusters, so this path has no input until
 # promotion is re-pointed at v2 centrality ranks.
 CLUSTER_PROMOTION_ENABLED = os.getenv("CLUSTER_PROMOTION_ENABLED", "1") not in ("0", "false", "False")
+# The re-point: promote from the latest v2 scores run instead of v1 clusters.
+# Its own flag, default off, so turning it on is a config flip on pi0 and v1
+# promotion stays off either way.
+V2_PROMOTION_ENABLED = os.getenv("V2_PROMOTION_ENABLED", "0") not in ("0", "false", "False")
+# At most this many accounts not already live may be added per pass. The live
+# set is still capped by DYNAMIC_MAX_ACCOUNTS; this bounds the rate, which is
+# what the 6.6x targeting blowup at Leiden resolution 0.001 threatened. The v2
+# gates do not bound it: in the 2026-09-14 runs `predicted` is true for 500 of
+# 500 and `kenya_share >= CLUSTER_MIN_KENYA_SHARE` passes 499 of 500.
+V2_PROMOTION_MAX_NEW_PER_PASS = int(os.getenv("V2_PROMOTION_MAX_NEW_PER_PASS", "10"))
+# Refuse a scores run older than this. The latest on 2026-09-22 was 8 days old;
+# promoting from it would chase last week's ranking.
+V2_PROMOTION_MAX_AGE_HOURS = float(os.getenv("V2_PROMOTION_MAX_AGE_HOURS", "72"))
 CLUSTER_MIN_CHANNELS = int(os.getenv("CLUSTER_MIN_CHANNELS", "2"))
 # Min share of a cluster's scored posts that must reference Kenya before it can
 # promote accounts. Corroboration alone is the WRONG gate on its own: measured
@@ -372,6 +393,13 @@ FOLLOW_CRAWL_MAX_PER_RUN = int(os.getenv("FOLLOW_CRAWL_MAX_PER_RUN", "50"))
 # Give up on an account after this many consecutive failed/unresolvable attempts.
 # Without it a handle that can never resolve is re-tried every single run.
 FOLLOW_CRAWL_MAX_ATTEMPTS = int(os.getenv("FOLLOW_CRAWL_MAX_ATTEMPTS", "3"))
+# Hours between follow crawls. Every cycle until 2026-09-22, and once the step
+# stopped failing (2026-09-21) it was the largest thing in the cycle: 175-203
+# min of 367-421, of which 167-192 passed before the first account was crawled
+# and 8-11 crawling 50 accounts. The follow graph has no 14-day horizon - an edge is as
+# collectable next week as today - so it is the one per-cycle step whose delay
+# loses nothing, while every hour it holds the cycle is an hour search waits.
+FOLLOW_CRAWL_EVERY_HOURS = float(os.getenv("FOLLOW_CRAWL_EVERY_HOURS", "24"))
 
 # Account pool / throughput (scale with pool size; see kenya_monitor.accounts).
 TWS_ACCOUNT_ORDER = os.getenv("TWS_ACCOUNT_ORDER", "COALESCE(last_used, '1970-01-01') ASC")
@@ -402,6 +430,8 @@ CENSUS_TIMELINE_STATE_PATH = Path(
     os.getenv("CENSUS_TIMELINE_STATE_PATH", STATE_DIR / "census_timelines.json")
 )
 FOLLOW_CRAWL_STATE_PATH = Path(os.getenv("FOLLOW_CRAWL_STATE_PATH", STATE_DIR / "follow_crawl.json"))
+STEP_ATTEMPTS_PATH = Path(os.getenv("STEP_ATTEMPTS_PATH", STATE_DIR / "step_attempts.json"))
+V2_PROMOTION_STATE_PATH = Path(os.getenv("V2_PROMOTION_STATE_PATH", STATE_DIR / "v2_promotion.json"))
 HATE_SEEK_STATE_PATH = Path(os.getenv("HATE_SEEK_STATE_PATH", STATE_DIR / "hate_seek.json"))
 PARENT_BACKFILL_STATE_PATH = Path(
     os.getenv("PARENT_BACKFILL_STATE_PATH", STATE_DIR / "parent_backfill.json")

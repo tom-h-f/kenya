@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
+import pyarrow as pa
 
 from kenya_monitor.collectors.base import Collector, FollowEdge
 from kenya_monitor.config import (
@@ -113,24 +114,11 @@ def crawl_summary(entries: dict[str, CrawlEntry]) -> dict[str, int | str | None]
     }
 
 
-def _author_directory(
-    con: duckdb.DuckDBPyConnection, authors_view: str
-) -> dict[str, str]:
-    """platform_user_id -> handle (latest snapshot)."""
-    try:
-        rows = con.sql(
-            f"""
-            SELECT platform_user_id, handle
-            FROM {authors_view}
-            WHERE handle IS NOT NULL AND trim(handle) != ''
-            QUALIFY row_number() OVER (
-                PARTITION BY platform_user_id ORDER BY collected_at DESC
-            ) = 1
-            """
-        ).fetchall()
-    except duckdb.Error:
-        return {}
-    return {r[0]: r[1] for r in rows}
+# Discovered candidates fetched per run, as a multiple of the accounts it will
+# crawl. Every discovered entry is already due and already has a handle, so the
+# only losses between here and a crawl are failures and in-run duplicates -
+# 0 failed and 0 not_found in the three runs after 2026-09-21.
+DISCOVER_HEADROOM = 4
 
 
 def discover_from_edges(
@@ -139,32 +127,54 @@ def discover_from_edges(
     authors_view: str,
     entries: dict[str, CrawlEntry],
     refresh_days: int,
+    limit: int | None = None,
 ) -> list[tuple[str, str]]:
-    """Accounts appearing in follows/ with a known handle and due for crawl."""
+    """Accounts appearing in follows/ with a known handle and due for crawl.
+
+    Filtered and bounded inside DuckDB. The previous form pulled the whole
+    authors prefix into a Python dict through `QUALIFY row_number()` - a sort
+    over every author snapshot ever collected - then every follow id into Python
+    to filter there, to build a queue of 1,258,016 from which a run crawled 50.
+    On pi0 (2026-09-21/22 cycles) 167-192 minutes of each 175-203 minute
+    follow crawl passed before the first account was crawled: 111-134 to build
+    the queue, then ~56 more in the second directory scan and seed resolution.
+
+    The latest-handle rule is unchanged: newest snapshot among those with a
+    non-empty handle, now as `arg_max` - a hash aggregate that spills - over
+    only the ids the follows prefix names. Order stays arbitrary, as the UNION
+    made it before; `limit` cuts that arbitrary order short.
+    """
     try:
         con.sql(f"SELECT 1 FROM {follows_view} LIMIT 1").fetchall()
     except duckdb.Error:
         return []
-    directory = _author_directory(con, authors_view)
-    rows = con.sql(
-        f"""
-        SELECT uid FROM (
-            SELECT follower_id AS uid FROM {follows_view}
-            UNION
-            SELECT followed_id AS uid FROM {follows_view}
-        )
-        WHERE uid IS NOT NULL
-        """
-    ).fetchall()
-    out: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for (uid,) in rows:
-        if uid in seen or uid not in directory:
-            continue
-        seen.add(uid)
-        if is_due(entries.get(uid), refresh_days):
-            out.append((uid, directory[uid]))
-    return out
+    blocked = [
+        uid for uid, e in entries.items()
+        if not uid.startswith("handle:") and not is_due(e, refresh_days)
+    ]
+    con.register("_fc_blocked", pa.table({"uid": pa.array(blocked, type=pa.string())}))
+    limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
+    try:
+        rows = con.sql(
+            f"""
+            WITH ids AS (
+                SELECT follower_id AS uid FROM {follows_view} WHERE follower_id IS NOT NULL
+                UNION
+                SELECT followed_id AS uid FROM {follows_view} WHERE followed_id IS NOT NULL
+            ), due AS (
+                SELECT uid FROM ids ANTI JOIN _fc_blocked USING (uid)
+            )
+            SELECT platform_user_id, arg_max(handle, collected_at) AS handle
+            FROM {authors_view}
+            WHERE handle IS NOT NULL AND trim(handle) != ''
+              AND platform_user_id IN (SELECT uid FROM due)
+            GROUP BY platform_user_id
+            {limit_sql}
+            """
+        ).fetchall()
+    finally:
+        con.unregister("_fc_blocked")
+    return [(str(uid), handle) for uid, handle in rows]
 
 
 async def _resolve_uid(
@@ -206,11 +216,28 @@ def _queue_candidates(
     discovered: list[tuple[str, str]],
     entries: dict[str, CrawlEntry],
     refresh_days: int,
+    seed_accounts: list[tuple[str, str]] | None = None,
 ) -> deque[tuple[str, str]]:
-    """Deduped BFS queue of (uid, handle), seeds first."""
+    """Deduped BFS queue of (uid, handle), seeds first.
+
+    Seeds with a known id are checked against their own ledger entry here, so a
+    seed crawled within the refresh window costs nothing. A handle-only seed can
+    only be found fresh after `_resolve_uid` has scanned the authors prefix for
+    it - 4-10 of the 10 suspicion seeds per run were, in the runs after
+    2026-09-21."""
     queue: deque[tuple[str, str]] = deque()
     queued_uids: set[str] = set()
     queued_handles: set[str] = set()
+
+    for uid, handle in seed_accounts or []:
+        h = handle.lstrip("@").strip()
+        key = h.lower()
+        if not h or uid in queued_uids or key in queued_handles:
+            continue
+        if is_due(entries.get(uid), refresh_days):
+            queue.append((uid, h))
+            queued_uids.add(uid)
+            queued_handles.add(key)
 
     for handle in seed_handles:
         h = handle.lstrip("@").strip()
@@ -242,13 +269,18 @@ async def crawl_follows(
     storage: Storage,
     *,
     seed_handles: list[str] | None = None,
+    seed_accounts: list[tuple[str, str]] | None = None,
     limit: int,
     max_accounts: int,
     refresh_days: int = FOLLOW_CRAWL_REFRESH_DAYS,
     from_edges: bool = True,
     state_path: Path = FOLLOW_CRAWL_STATE_PATH,
 ) -> dict[str, int]:
-    """BFS crawl of follower/following graphs. Returns run counters."""
+    """BFS crawl of follower/following graphs. Returns run counters.
+
+    `seed_accounts` are (user id, handle) pairs and skip resolution. A
+    handle-only seed costs `_resolve_uid`, which is a scan of the whole authors
+    prefix per seed; the suspicion ranking already carries the id."""
     entries = load_crawl_state(state_path)
     authors_view = storage.authors_view(platform="x")
     follows_view = storage.follows_view(platform="x")
@@ -256,15 +288,19 @@ async def crawl_follows(
     discovered: list[tuple[str, str]] = []
     if from_edges:
         discovered = discover_from_edges(
-            storage.con, follows_view, authors_view, entries, refresh_days
+            storage.con, follows_view, authors_view, entries, refresh_days,
+            limit=max_accounts * DISCOVER_HEADROOM,
         )
 
-    queue = _queue_candidates(seed_handles or [], discovered, entries, refresh_days)
+    queue = _queue_candidates(
+        seed_handles or [], discovered, entries, refresh_days, seed_accounts=seed_accounts
+    )
     log.info(
-        "follow crawl: queue=%d seeds=%d discovered=%d tracked=%d",
+        "follow crawl: queue=%d seeds=%d discovered=%d (capped at %d) tracked=%d",
         len(queue),
-        len(seed_handles or []),
+        len(seed_handles or []) + len(seed_accounts or []),
         len(discovered),
+        max_accounts * DISCOVER_HEADROOM,
         len(entries),
     )
 
@@ -280,11 +316,12 @@ async def crawl_follows(
     }
     seen_this_run: set[str] = set()
 
-    # Built once. This is a full scan of the whole `authors/` prefix, and it used
-    # to sit inside the loop below, so a 50-account run re-read every author ever
-    # collected 50 times for information the freshly-written snapshots already
-    # carry. That scan was the dominant cost of the step.
-    directory = _author_directory(storage.con, authors_view)
+    # Neighbour handles come from the author snapshots each crawled page
+    # returns, added below. This was a second full scan of the `authors/` prefix
+    # per run (discovery did the first), and it only ever fed the tail of a queue
+    # that already held ~1.26M due accounts - neighbours were never reached.
+    directory: dict[str, str] = dict(discovered)
+    directory.update(seed_accounts or [])
 
     while queue and counts["crawled"] < max_accounts:
         uid_hint, handle = queue.popleft()

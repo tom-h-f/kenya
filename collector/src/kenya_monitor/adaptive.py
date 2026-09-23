@@ -35,6 +35,10 @@ from kenya_monitor.config import (
     DYNAMIC_MAX_KEYWORDS,
     DYNAMIC_TARGETS_PATH,
     STORY_FLAG_MIN_INDEX,
+    V2_PROMOTION_ENABLED,
+    V2_PROMOTION_MAX_AGE_HOURS,
+    V2_PROMOTION_MAX_NEW_PER_PASS,
+    V2_PROMOTION_STATE_PATH,
     PlatformTargets,
 )
 
@@ -327,6 +331,120 @@ def cluster_accounts(
     return kept
 
 
+def v2_accounts(
+    con: duckdb.DuckDBPyConnection,
+    scores_view: str,
+    authors_view: str,
+    min_kenya_share: float = CLUSTER_MIN_KENYA_SHARE,
+    max_age_hours: float = V2_PROMOTION_MAX_AGE_HOURS,
+    state_path: Path = V2_PROMOTION_STATE_PATH,
+    now: datetime | None = None,
+) -> list[str]:
+    """Handles from the latest v2 scores run, strongest centrality first.
+
+    The re-point docs/plans/2026-09-05-v2-methodology.md section 11 calls for:
+    v2 ranks accounts, so this needs no clusters. Latest run only, for the
+    reason `deep_timelines._score_targets` gives - each run is a complete
+    ranking and a union of two belongs to neither.
+
+    Refuses a run older than `max_age_hours`. The latest run on 2026-09-22 was
+    eight days old; promoting from it would densify collection around last
+    week's ranking and call it current.
+
+    Scores carry ids, not handles, and a handle comes from the authors prefix -
+    a full scan (resolving ONE handle measured 1,580s against live R2 from the
+    mac on 2026-09-22). So handles are resolved once per scores run and cached
+    under its `computed_at`; the posts pass calls this several times a day, and
+    a new ranking arrives at most daily.
+
+    `predicted` is not a gate: it was true for 500 of 500 in every 2026-09-14
+    run. The Kenya share is kept as one, at the cluster path's threshold, and
+    passes 499 of 500 on the latest run - so neither bounds the rate. The cap
+    in `promote` does."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        latest = con.sql(
+            f"SELECT CAST(max(computed_at) AS VARCHAR) FROM {scores_view}"
+        ).fetchone()[0]
+    except duckdb.IOException:
+        log.info("v2 promotion: no persisted v2 scores; promoting nobody")
+        return []
+    if latest is None:
+        return []
+    age = now - datetime.fromisoformat(latest)
+    if age > timedelta(hours=max_age_hours):
+        log.warning(
+            "v2 promotion: latest scores run %s is %.0fh old (limit %.0fh); promoting nobody",
+            latest, age.total_seconds() / 3600, max_age_hours,
+        )
+        return []
+
+    try:
+        cached = json.loads(state_path.read_text())
+    except (OSError, ValueError):
+        cached = {}
+    if cached.get("computed_at") == latest and cached.get("min_kenya_share") == min_kenya_share:
+        return list(cached.get("handles", []))
+
+    rows = con.sql(
+        f"""
+        WITH ranked AS (
+            SELECT CAST(user_id AS VARCHAR) AS user_id, max(centrality) AS centrality
+            FROM {scores_view}
+            WHERE computed_at = (SELECT max(computed_at) FROM {scores_view})
+              AND user_id IS NOT NULL
+              AND kenya_share >= {float(min_kenya_share)}
+            GROUP BY 1
+        ), handles AS (
+            SELECT platform_user_id, arg_max(handle, collected_at) AS handle
+            FROM {authors_view}
+            WHERE handle IS NOT NULL AND trim(handle) != ''
+              AND platform_user_id IN (SELECT user_id FROM ranked)
+            GROUP BY platform_user_id
+        )
+        SELECT h.handle
+        FROM ranked r JOIN handles h ON h.platform_user_id = r.user_id
+        ORDER BY r.centrality DESC
+        """
+    ).fetchall()
+    handles = [r[0] for r in rows]
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "computed_at": latest,
+            "min_kenya_share": min_kenya_share,
+            "resolved_at": now.isoformat(),
+            "handles": handles,
+        }, indent=2))
+        os.replace(tmp, state_path)
+    except OSError:
+        log.warning("v2 promotion: could not cache handles at %s", state_path)
+    log.info("v2 promotion: %d handles from scores run %s", len(handles), latest)
+    return handles
+
+
+def cap_new_accounts(
+    candidates: list[str], existing: list[DynamicEntry], max_new: int
+) -> list[str]:
+    """Keep every candidate already live, and at most `max_new` others, in
+    candidate order.
+
+    The rate bound for v2 promotion. Without it the first pass after enabling
+    adds up to DYNAMIC_MAX_ACCOUNTS accounts at once, and a ranking that moves
+    between runs churns the whole set daily - the 6.6x targeting multiplication
+    that froze the Leiden resolution, arriving by another route."""
+    live = {e.value.lower() for e in existing if e.kind == "account"}
+    kept, added = [], 0
+    for handle in candidates:
+        if handle.lower() in live:
+            kept.append(handle)
+        elif added < max_new:
+            kept.append(handle)
+            added += 1
+    return kept
+
+
 def flagged_story_keywords(
     con: duckdb.DuckDBPyConnection,
     stories_view: str,
@@ -435,20 +553,39 @@ def detect_burst(
     min_posts: int = BURST_MIN_POSTS,
 ) -> tuple[bool, float, int]:
     """Is the last complete hour's post volume a burst vs the prior 48h?
-    Returns (bursting, z, posts_last_hour)."""
+    Returns (bursting, z, posts_last_hour).
+
+    Every hour is counted at the SAME AGE as the latest one: only posts first
+    collected by the end of that hour plus however long the latest hour has
+    been over. Counted on everything held, the latest hour was always the least
+    collected - search, snowball and hydration keep adding posts to an hour for
+    12 hours and more after it ends - so z sat negative whatever X was doing.
+    Measured 2026-09-22 against live R2: raw z -0.84 (latest 392 against a
+    prior-48h mean of 797); restricted to posts seen within an hour of
+    creation, +1.04; hours aged 12h compared on posts seen within 12h, -0.24.
+    One 09-21 hour went from 88 posts at one hour old to 523.
+
+    Age-matching removes the bias, not the dependence on collection cadence:
+    an hour that no posts pass reached while it was young counts low here too.
+
+    A hash aggregate on the post id rather than `QUALIFY row_number()`. A
+    post's `created_at` does not change, so its earliest snapshot and its
+    latest agree, and the first-seen time is the minimum by definition."""
     rows = con.sql(
         f"""
         WITH lp AS (
-            SELECT * FROM {posts_view}
+            SELECT min(created_at) AS created_at, min(collected_at) AS first_seen
+            FROM {posts_view}
             -- Partition pruning; see `bursting_hashtags`. This one runs once per
             -- cycle purely to decide whether to skip a <=300s cooldown, so an
             -- unpruned full-corpus scan here cost more than the sleep it saved.
             WHERE dt >= current_date - INTERVAL 3 DAY
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
+            GROUP BY platform, platform_post_id
         )
-        SELECT count(*) AS n
+        SELECT count(*) FILTER (
+            WHERE first_seen <= date_trunc('hour', created_at) + INTERVAL 1 HOUR
+                                + (now() - date_trunc('hour', now()))
+        ) AS n
         FROM lp
         WHERE created_at > now() - INTERVAL 49 HOUR
           AND created_at < date_trunc('hour', now())
@@ -481,6 +618,9 @@ def promote(
     state_path: Path = DYNAMIC_TARGETS_PATH,
     dry_run: bool = False,
     relevance_view: str | None = None,
+    scores_view: str | None = None,
+    v2_enabled: bool = V2_PROMOTION_ENABLED,
+    v2_max_new: int = V2_PROMOTION_MAX_NEW_PER_PASS,
 ) -> list[DynamicEntry]:
     """One promotion pass: compute candidates, refresh the state file, return
     the live entries. `dry_run` computes without saving. When `stories_view` is
@@ -494,6 +634,18 @@ def promote(
         relevance_view=relevance_view,
     )
     sources: dict[str, str] = {}
+    existing = load_state(state_path)
+    if v2_enabled and scores_view is not None:
+        ranked = v2_accounts(con, scores_view, authors_view)
+        v2 = cap_new_accounts(ranked, existing, v2_max_new)
+        log.info(
+            "v2 promotion: %d ranked -> %d kept (at most %d new per pass)",
+            len(ranked), len(v2), v2_max_new,
+        )
+        for handle in v2:
+            sources[handle] = "v2-centrality"
+        seen = {a.lower() for a in accounts}
+        accounts = accounts + [h for h in v2 if h.lower() not in seen]
     if stories_view is not None:
         story_kw = flagged_story_keywords(con, stories_view)
         seen = {k for k, _ in keywords}
@@ -503,7 +655,7 @@ def promote(
         # burst of the same age on purpose: a story cleared STORY_FLAG_MIN_INDEX,
         # which is a stronger claim than volume.
         keywords = keywords + [(kw, DYNAMIC_HASHTAG_MIN_COUNT) for kw in story_kw if kw not in seen]
-    entries = refresh_entries(load_state(state_path), keywords, accounts, sources=sources)
+    entries = refresh_entries(existing, keywords, accounts, sources=sources)
     if not dry_run:
         save_state(entries, state_path)
     for e in entries:
