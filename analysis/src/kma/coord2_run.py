@@ -95,7 +95,8 @@ def build_networks(
 
 
 def textsim_key(
-    snapshot: str, threshold: float, platform: str = "x", overlap: float | None = None
+    snapshot: str, threshold: float, platform: str = "x", overlap: float | None = None,
+    bucket: str | None = None,
 ) -> str:
     """Where a text-similarity trace for this snapshot and cut lives in R2.
 
@@ -106,9 +107,13 @@ def textsim_key(
     edges - and a trace built without one keeps the original path.
     """
     floor = "" if overlap is None else f"/overlap={overlap:.2f}"
+    # A bucketed trace is (pair, bucket) rather than (pair): a different object,
+    # so it gets its own key rather than overwriting the one every whole-snapshot
+    # consumer reads.
+    timed = "" if bucket is None else f"/bucket={bucket}"
     return (
         f"coord2/platform={platform}/kind=textsim"
-        f"/snapshot={snapshot}/threshold={threshold:.2f}{floor}/edges.parquet"
+        f"/snapshot={snapshot}/threshold={threshold:.2f}{floor}{timed}/edges.parquet"
     )
 
 
@@ -149,10 +154,16 @@ def apply_text_floor(
 
 
 def load_textsim(
-    con: duckdb.DuckDBPyConnection, snapshot: str, threshold: float, overlap: float | None = None
+    con: duckdb.DuckDBPyConnection, snapshot: str, threshold: float, overlap: float | None = None,
+    bucket: str | None = None, since: str | None = None, until: str | None = None,
 ) -> pd.DataFrame:
-    """Read the persisted text-similarity trace, or say exactly how to make it."""
-    key = textsim_key(snapshot, threshold, overlap=overlap)
+    """Read the persisted text-similarity trace, or say exactly how to make it.
+
+    With `bucket` this reads the timestamped trace and, given `since`/`until`,
+    slices it to that window and re-aggregates to one row per pair - the shape
+    every consumer expects. That is what lets a windowed run use this trace at
+    all; the unbucketed object has no time axis to slice."""
+    key = textsim_key(snapshot, threshold, overlap=overlap, bucket=bucket)
     try:
         edges = con.sql(f"SELECT * FROM read_parquet('r2://{BUCKET}/{key}')").df()
     except duckdb.Error as exc:
@@ -164,7 +175,18 @@ def load_textsim(
             f"Then re-run this. Use --no-text to run without it, but note the "
             f"trace is over half the fused edges."
         ) from exc
-    return edges.assign(source=edges["source"].astype(str), target=edges["target"].astype(str))
+    edges = edges.assign(source=edges["source"].astype(str), target=edges["target"].astype(str))
+    if bucket is None:
+        return edges
+    stamps = pd.to_datetime(edges["bucket"], utc=True)
+    if since:
+        edges = edges[stamps >= pd.Timestamp(since, tz="UTC")]
+    if until:
+        edges = edges[pd.to_datetime(edges["bucket"], utc=True) < pd.Timestamp(until, tz="UTC")]
+    return (
+        edges.groupby(["source", "target"], as_index=False)
+        .agg(weight=("weight", "mean"))
+    )
 
 
 def run(

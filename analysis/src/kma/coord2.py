@@ -757,6 +757,10 @@ def pair_similarity_percentile(
     return float(np.percentile(np.concatenate(sims), percentile))
 
 
+def _TEXT_KEYS(time_bucket: str | None) -> list[str]:
+    return ["source", "target"] if time_bucket is None else ["source", "target", "bucket"]
+
+
 def text_similarity_network(
     rows: pd.DataFrame,
     vectors: np.ndarray,
@@ -769,6 +773,7 @@ def text_similarity_network(
     seed: int = 0,
     similarity: PairSimilarity = cosine_pairs,
     min_overlap: float | None = None,
+    time_bucket: str | None = None,
 ) -> pd.DataFrame:
     """Users linked by at least one similar pair of tweets; weight is the MEAN
     similarity over the qualifying pairs.
@@ -778,6 +783,14 @@ def text_similarity_network(
     it. Then `rows` also needs `clean`, as `text_rows` supplies. Off by
     default because the paper has no such test; production passes
     `TEXT_MIN_OVERLAP`, for the reason recorded there.
+
+    `time_bucket` ("day") adds a `bucket` column and aggregates per (pair,
+    bucket) instead of per pair, stamped with the LATER post of each qualifying
+    pair - the moment the second account acted, which is what a windowed run
+    slices on. Without it this trace has no time axis at all, so windowed
+    detection cannot use it, and it carried over half the fused edges globally
+    (measured 2026-09-22 by workstream D). Off by default: the whole-snapshot
+    path wants one row per pair.
 
     `rows` needs `user_id` and `created_at`; `vectors` is one embedding per row,
     in the same order. Embeddings are injected rather than computed here so the
@@ -846,9 +859,14 @@ def text_similarity_network(
         a, b = users[i[keep]], users[j[keep]]
         lo = np.where(a <= b, a, b)
         hi = np.where(a <= b, b, a)
+        frame = pd.DataFrame({"source": lo, "target": hi, "weight": sim[keep]})
+        if time_bucket is not None:
+            later = np.maximum(times[i[keep]], times[j[keep]])
+            frame["bucket"] = pd.to_datetime(later, unit="s", utc=True).floor(
+                {"day": "D", "hour": "h"}[time_bucket]
+            )
         parts.append(
-            pd.DataFrame({"source": lo, "target": hi, "weight": sim[keep]})
-            .groupby(["source", "target"], as_index=False)
+            frame.groupby(_TEXT_KEYS(time_bucket), as_index=False)
             .agg(weight=("weight", "sum"), pairs=("weight", "size"))
         )
     if not parts:
@@ -856,7 +874,7 @@ def text_similarity_network(
 
     agg = (
         pd.concat(parts, ignore_index=True)
-        .groupby(["source", "target"], as_index=False)
+        .groupby(_TEXT_KEYS(time_bucket), as_index=False)
         .agg(weight=("weight", "sum"), pairs=("pairs", "sum"))
     )
     agg["weight"] = agg["weight"] / agg["pairs"]

@@ -98,9 +98,12 @@ def textsim(window_id: str, threshold: float = 0.85, overlap: float = -1.0) -> d
     from kma import coord2, textsim_run
     from kma.db import connect
 
+    # Bucketed by day: the windowed detector needs a time axis on this trace,
+    # and the pair-level object every other consumer reads is written from the
+    # same pass.
     _, info = textsim_run.build(
         connect(), window_id, threshold=threshold, overlap=overlap,
-        similarity_for=coord2.gpu_cosine_pairs,
+        similarity_for=coord2.gpu_cosine_pairs, time_bucket="day",
     )
     return info
 

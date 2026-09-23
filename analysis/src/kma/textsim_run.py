@@ -33,12 +33,18 @@ def build(
     overlap: float = -1.0,
     similarity_for: Callable[[float], coord2.PairSimilarity] | None = None,
     persist: bool = True,
+    time_bucket: str | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Text-eligible posts, their latest embeddings, and the thresholded
     user-pair network. Returns the edges and a summary; writes the edges to
     `coord2_run.textsim_key` unless `persist=False`.
 
     `overlap < 0` means `coord2.TEXT_MIN_OVERLAP`, `0` means no floor.
+
+    `time_bucket` ("day") emits the trace with a `bucket` column, to its own
+    key, so a windowed run can slice it. The persisted whole-snapshot trace has
+    no time axis, which is why windowed detection has been blind to the trace
+    carrying over half the fused edges.
     """
     manifest = bench.load(snapshot, con=con)
     posts = bench.pinned_source(manifest, "posts")
@@ -97,18 +103,30 @@ def build(
         threshold=float(cut),
         chunk=chunk,
         min_overlap=floor or None,
+        time_bucket=time_bucket,
         **extra,
     )
     log.info("edges: %d (word-overlap floor %s)", len(edges), floor or "off")
 
-    r2_key = textsim_key(snapshot, float(cut), overlap=floor or None)
-    if persist:
-        con.register("_ts", edges)
+    r2_key = textsim_key(snapshot, float(cut), overlap=floor or None, bucket=time_bucket)
+
+    def _write(frame: pd.DataFrame, key: str) -> None:
+        con.register("_ts", frame)
         try:
-            con.execute(f"COPY _ts TO 'r2://{BUCKET}/{r2_key}' (FORMAT parquet, COMPRESSION zstd)")
+            con.execute(f"COPY _ts TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)")
         finally:
             con.unregister("_ts")
-        log.info("wrote r2://%s/%s", BUCKET, r2_key)
+        log.info("wrote r2://%s/%s (%d rows)", BUCKET, key, len(frame))
+
+    if persist:
+        _write(edges, r2_key)
+        # The pair-level trace is the bucketed one aggregated, so one GPU pass
+        # serves both the whole-snapshot consumers and a windowed run. Building
+        # them separately would pay for the quadratic search twice and risk two
+        # traces that disagree.
+        if time_bucket is not None:
+            plain = edges.groupby(["source", "target"], as_index=False).agg(weight=("weight", "mean"))
+            _write(plain, textsim_key(snapshot, float(cut), overlap=floor or None))
 
     users = len(set(edges["source"]) | set(edges["target"])) if len(edges) else 0
     return edges, {
