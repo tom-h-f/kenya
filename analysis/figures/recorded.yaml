@@ -20,7 +20,7 @@ benchmark_reproduction:
     - {country: cuba, published: 57.92, ours: 57.92}
     - {country: russia, published: 87.65, ours: 87.83}
     - {country: venezuela, published: 95.05, ours: 95.05}
-    - {country: iran, published: 71.31, ours: 71.43}
+    - {country: iran, published: 71.31, paper: 60.83, ours: 71.43}
     - {country: china, published: 63.66, ours: 63.67}
   within_2sd: 6
 
@@ -41,6 +41,8 @@ adjudication:
   title: What a blind reader made of what the detector surfaced
   measured: 2026-09-12
   source: analysis/investigations/2026-09-12-component-ranking/findings.md
+  snapshot: 2026-09-05-promotion-off__emb20260912
+  relevance_floor: 0.5
   note: >
     Model verdicts, 17 cases per method, read blind. A description of the
     method's output, never a prevalence rate - there is no denominator.
@@ -48,3 +50,43 @@ adjudication:
     - {method: v2, cases: 17, political: 5, kenya_relevant: 12}
     - {method: v1, cases: 17, political: 1, kenya_relevant: 3}
   influence_operations_found: 0
+
+negative_results:
+  title: Where the method failed its own tests
+  measured: 2026-09-13
+  source: docs/analysis/2026-09-13-publishable-statistics.md
+  items:
+    - id: self_amplification
+      claim: >
+        A high self-amplification score does not separate engagement pods from
+        influence operations. Confirmed operations self-amplify more than the
+        pods this project's detector found, so the filter was dropped.
+      figure: "effect size d = +0.78, confirmed operations above pods"
+      basis: >
+        Standardised mean difference of the self-amplification score, confirmed
+        operations against the pods found on this corpus. Group sizes are not
+        recorded in the cited document.
+      source: docs/OBJECTIVES.md (A3)
+    - id: text_similarity_threshold
+      claim: >
+        At a cosine cut of 0.85 in this encoder, most admitted post pairs are
+        unrelated Sheng replies, not copies.
+      figure: "59 of 100 sampled pairs unrelated; 26 same message; 15 same topic"
+      basis: >
+        100 cross-author post pairs at or above 0.85 drawn from 279,060 behind
+        the top 500 and labelled blind by a reader. Of all 279,060 pairs, 3%
+        were near-copies and the median pair shared no words.
+      source: docs/analysis/v2-findings.md (section 4)
+      checked: 2026-09-11
+    - id: composition_drift
+      claim: >
+        A raw toxicity series over this corpus is not publishable: it moved
+        because the collector changed what it collected, not because the
+        discourse changed.
+      figure: "raw series +78%; composition-standardised series flat then falling"
+      basis: >
+        Baseline scope, July to August 2026. The baseline mix moved from 70.7%
+        search and 12.1% replies to 14.3% search and 72.6% replies. The
+        standardised series holds the mix at the earlier reference week.
+      source: docs/analysis/2026-09-13-publishable-statistics.md
+      measured: 2026-09-13

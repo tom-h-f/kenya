@@ -39,7 +39,9 @@ def test_a_transcribed_figure_needs_a_measurement_date(tmp_path):
 def test_the_shipped_recorded_figures_all_carry_provenance():
     loaded = figures.load_recorded()
 
-    assert set(loaded) == {"benchmark_reproduction", "relevance_error", "adjudication"}
+    assert set(loaded) == {
+        "benchmark_reproduction", "relevance_error", "adjudication", "negative_results",
+    }
     for name, block in loaded.items():
         assert block["source"] and block["measured"], name
 
