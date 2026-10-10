@@ -192,7 +192,12 @@ to `FLOAT[768]` for DuckDB `array_cosine_similarity`.
 `platform_post_id`, `topic` (int, `-1` = unclustered), `model` (encoder slug),
 `params` (the UMAP/HDBSCAN settings that produced the run), `assigned_at`.
 Written by `persist_topics`, read by `load_topics`, which joins the assignments
-back to post text so `topic_summary` consumes it unchanged.
+back to post text so `topic_summary` consumes it unchanged. `load_topics` also derives
+`assignment_method` from `params`: `fit` for the UMAP/HDBSCAN fit, `knn` for posts
+embedded later and given the topic of their nearest fitted posts
+(`kma.topics_assign`, see `topics-incremental.md`). A knn run writes
+`run=<id>-cNNNN.parquet` chunks with `params` starting `method=knn`, plus a marker under
+`topics/_assign/`.
 
 This prefix exists because the fit does not run interactively: the corpus is
 658k x 768, and the fit costs hours of CPU plus tens of GB of peak RSS

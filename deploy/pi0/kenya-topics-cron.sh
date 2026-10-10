@@ -15,6 +15,7 @@
 # KMA_TOPICS_TEXTFILE_DIR, KMA_TOPICS_LIMIT, KMA_TOPICS_POLL_S and
 # KMA_TOPICS_NO_WAKE override defaults.
 set -uo pipefail
+export PATH=/usr/local/bin:/usr/bin:/bin
 
 HOME_DIR=/home/tom
 R2="$HOME_DIR/kenya_topics_r2.py"
@@ -23,11 +24,13 @@ PROM="$TEXTFILE_DIR/kma_topics.prom"
 DEADLINE_S="${KMA_TOPICS_DEADLINE_S:-72000}"
 BACKOFF_BASE_S="${KMA_TOPICS_BACKOFF_BASE_S:-60}"
 BACKOFF_CAP_S="${KMA_TOPICS_BACKOFF_CAP_S:-3600}"
-ATTEMPT_TIMEOUT_S="${KMA_TOPICS_ATTEMPT_TIMEOUT_S:-14400}"
-AWAKE_FOR="${KMA_TOPICS_AWAKE_FOR:-4h}"
+ATTEMPT_TIMEOUT_S="${KMA_TOPICS_ATTEMPT_TIMEOUT_S:-6600}"
+AWAKE_FOR="${KMA_TOPICS_AWAKE_FOR:-2h}"
 REF="${KMA_TOPICS_REF:-master}"
 FAIL_FIRST="${KMA_TOPICS_FAIL_FIRST:-0}"
-SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 mike-wsl)
+# pi0 has a key for the Windows side of mike-pc only, so WSL is reached through
+# `wsl -e bash -s` and scripts go over stdin (PowerShell mangles quoted args).
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 mike-pc "wsl -d Debian -u tom -e bash -s")
 
 mkdir -p "$HOME_DIR/cron-logs"
 LOG="$HOME_DIR/cron-logs/kenya-topics-$(date -u +%Y%m%d).log"
@@ -77,7 +80,7 @@ QUERY_BLOCK=""
 log "=== kenya-topics start (deadline ${DEADLINE_S}s, ref $REF) ==="
 write_prom "$START" "$LAST_OK_TS" "$LAST_ASSIGNED" 0
 
-mike_up() { "${SSH[@]}" true 2>/dev/null; }
+mike_up() { [ "$("${SSH[@]}" <<<'echo up' 2>/dev/null | tr -d '\r')" = up ]; }
 
 ensure_up() {
   mike_up && return 0
@@ -94,7 +97,7 @@ ensure_up() {
   return 1
 }
 
-remote() { "${SSH[@]}" bash -s -- "$@"; }
+remote() { "${SSH[@]}" | tr -d '\r'; }
 
 gpu_busy() {
   local used
@@ -114,35 +117,39 @@ if tmux has-session -t "kt-$rid" 2>/dev/null; then echo "$rid"; fi
 REMOTE_EOF
 }
 
+take_awake() {
+  local flag_before
+  flag_before=$(remote <<'REMOTE_EOF'
+awake status 2>/dev/null | head -1
+REMOTE_EOF
+)
+  if [ "$flag_before" = "awake: off" ]; then
+    remote <<REMOTE_EOF >/dev/null
+awake on $AWAKE_FOR
+cat "/mnt/c/Users/Tom French/.wsl-host-agent/awake" > "\$HOME/projects/kenya-topics/our-hold"
+REMOTE_EOF
+    WE_SET_AWAKE=1
+    log "awake on $AWAKE_FOR"
+  else
+    log "awake already held by someone else ($flag_before); leaving it"
+  fi
+}
+
 attempt() {
-  local n=$1 rid active
+  local n=$1 rid active out
   if [ "$FAIL_FIRST" -ge "$n" ]; then log "forced failure (KMA_TOPICS_FAIL_FIRST=$FAIL_FIRST)"; return 1; fi
   ensure_up || { log "could not reach mike-wsl"; return 1; }
 
   active=$(adopt_active) || { log "adopt check failed"; return 1; }
+  take_awake || return 1
   if [ -n "$active" ]; then
     rid=$active
     log "adopting still-running run $rid"
   else
     if gpu_busy; then log "GPU busy (another job); not starting"; return 1; fi
     rid=$(date -u +%Y%m%dT%H%M%SZ)
-    local flag_before
-    flag_before=$(remote <<'REMOTE_EOF'
-awake status 2>/dev/null | head -1
-REMOTE_EOF
-)
-    if [ "$flag_before" = "awake: off" ]; then
-      remote <<REMOTE_EOF || return 1
-awake on $AWAKE_FOR >/dev/null
-cat "/mnt/c/Users/Tom French/.wsl-host-agent/awake" > "\$HOME/projects/kenya-topics/our-hold"
-REMOTE_EOF
-      WE_SET_AWAKE=1
-      log "awake on $AWAKE_FOR"
-    else
-      log "awake already held by someone else ($flag_before); leaving it"
-    fi
     log "sync repo to $REF"
-    remote <<REMOTE_EOF || { log "sync failed"; return 1; }
+    out=$(remote <<REMOTE_EOF
 set -e
 B="\$HOME/projects/kenya-topics"
 export PATH="\$HOME/.local/bin:\$PATH"
@@ -152,20 +159,27 @@ git checkout -q -B "$REF" "origin/$REF"
 cp deploy/mike/pyproject.toml "\$B/pyproject.toml"
 cd "\$B"
 uv sync -q
+echo SYNC_OK
 REMOTE_EOF
+)
+    [ "${out##*$'\n'}" = SYNC_OK ] || { log "sync failed: $out"; return 1; }
     log "ship manifest for $rid"
     # umask on both ends: the file holds signed urls valid for hours
-    (umask 077; python3 "$R2" manifest "$rid" --chunks 200 --hours 10) \
-      | "${SSH[@]}" 'umask 077; mkdir -p "$HOME/projects/kenya-topics/cache"; cat > "$HOME/projects/kenya-topics/cache/manifest.json"' \
-      || { log "manifest failed"; return 1; }
+    out=$({ printf '%s\n' 'umask 077' 'mkdir -p "$HOME/projects/kenya-topics/cache"' \
+        "base64 -d > \"\$HOME/projects/kenya-topics/cache/manifest.json\" <<'B64_EOF'"
+      python3 "$R2" manifest "$rid" --chunks 200 --hours 10 | base64 -w0; echo
+      printf '%s\n' B64_EOF 'wc -c < "$HOME/projects/kenya-topics/cache/manifest.json"'; } | remote)
+    case "${out##*$'\n'}" in ''|*[!0-9]*|0) log "manifest failed: $out"; return 1 ;; esac
     local envs=""
     [ -n "$QUERY_BLOCK" ] && envs="KMA_TOPICS_QUERY_BLOCK=$QUERY_BLOCK"
     [ -n "${KMA_TOPICS_LIMIT:-}" ] && envs="$envs KMA_TOPICS_LIMIT=$KMA_TOPICS_LIMIT"
-    remote <<REMOTE_EOF || { log "tmux start failed"; return 1; }
+    out=$(remote <<REMOTE_EOF
 B="\$HOME/projects/kenya-topics"
 echo "$rid" > "\$B/active"
-tmux new-session -d -s "kt-$rid" "env $envs \$B/repo/deploy/mike/run-topics.sh $rid"
+tmux new-session -d -s "kt-$rid" "env $envs \$B/repo/deploy/mike/run-topics.sh $rid" && echo STARTED
 REMOTE_EOF
+)
+    [ "${out##*$'\n'}" = STARTED ] || { log "tmux start failed: $out"; return 1; }
     log "started tmux kt-$rid"
   fi
 

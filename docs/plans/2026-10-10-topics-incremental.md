@@ -46,6 +46,14 @@ set it. Failure of any step backs off exponentially (60 s doubling, cap 60 min)
 until 20 h after the scheduled start, then gives up loudly. Gauge file
 `kma_topics.prom` on pi0.
 
+## As built (2026-10-10)
+
+Calibrated k=10, weight sim**16, share >= 0.40, topics+noise reference, held-out topic
+agreement 0.8017. First run: 1,803,207 posts in 224 s, 1.47 GiB peak. pi0 reaches WSL
+through its existing Windows-side key (`wsl -e bash -s`), because it has no key for WSL's
+sshd. Schedule Tue/Fri 02:10 Europe/London. Details: `docs/analysis/topics-incremental.md`,
+`deploy/pi0/README.md`.
+
 ## Not here
 
 - The periodic full refit (Modal A100, about $5). See "When to refit" in

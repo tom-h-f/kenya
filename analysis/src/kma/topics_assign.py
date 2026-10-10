@@ -324,23 +324,26 @@ def plan_rows(
     matching `latest_embeddings`. `wanted` keeps only those ids, `exclude`
     drops them; ids are read without touching the 768-d column."""
     plan: list[tuple[Path, np.ndarray]] = []
+    # Python sets, built once: pc.is_in rebuilds its hash set on every call, which
+    # is files x ids work and measured at minutes over 1.7k files and 2.5M ids.
+    wanted_set = set(wanted.to_pylist()) if wanted is not None else None
+    exclude_set = set(exclude.to_pylist()) if exclude is not None else set()
     claimed: set[str] = set()
     for path in sorted(embedding_files, key=lambda p: p.as_posix(), reverse=True):
-        ids = _read(path, ["platform_post_id"]).column(0).combine_chunks()
-        keep = pa.array(np.ones(len(ids), dtype=bool))
-        if wanted is not None:
-            keep = pc.and_(keep, pc.is_in(ids, value_set=wanted))
-        if exclude is not None:
-            keep = pc.and_(keep, pc.invert(pc.is_in(ids, value_set=exclude)))
-        rows = np.flatnonzero(keep.to_numpy(zero_copy_only=False))
+        ids = _read(path, ["platform_post_id"]).column(0).to_pylist()
+        rows = np.fromiter(
+            (
+                n
+                for n, i in enumerate(ids)
+                if i not in claimed
+                and i not in exclude_set
+                and (wanted_set is None or i in wanted_set)
+            ),
+            dtype=np.int64,
+        )
         if not len(rows):
             continue
-        row_ids = ids.take(pa.array(rows)).to_pylist()
-        fresh = np.array([i not in claimed for i in row_ids], dtype=bool)
-        rows = rows[fresh]
-        if not len(rows):
-            continue
-        claimed.update(i for i, f in zip(row_ids, fresh) if f)
+        claimed.update(ids[n] for n in rows)
         plan.append((path, rows))
     return plan
 
