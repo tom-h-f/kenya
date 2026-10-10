@@ -1,3 +1,6 @@
+> Superseded 2026-10-10 by `2026-10-10-dashboard-v2.md`: the v1 producer and its
+> cluster/toxicity pages are gone; the public page is now a v2 summary.
+
 # The dashboard, and why it needs less than it was blocked on
 
 C4 has been deferred since 2026-09-05 with two asks attached: an R2 token scoped

@@ -6,7 +6,7 @@ producer, Access-gated). Branch `feat/dashboard-v2`; the site is the private rep
 
 ## Rules
 
-- **What may appear** is only what `analysis/2026-09-13-publishable-statistics.md`
+- **What may appear** is only what `docs/analysis/2026-09-13-publishable-statistics.md`
   permits. The producer can emit nothing else: cards are built from a fixed set
   of functions, and `assert_public` rejects account keys, `@handles`, profile
   URLs and id-sized numbers before any write.
