@@ -240,6 +240,8 @@ def snapshot_networks(
     since: str | None = None,
     until: str | None = None,
     transform_view: Callable[[str], str] | None = None,
+    manifest: pd.DataFrame | None = None,
+    text_edges: pd.DataFrame | None = None,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, str]:
     """Every similarity network for a pinned snapshot, plus the posts view it
     was built from - the half of `run` that callers ranking differently (the
@@ -249,7 +251,8 @@ def snapshot_networks(
     trace is built, so what it adds is seen by every trace rather than by the
     one the caller remembered to patch. The canary uses it to union its planted
     posts in memory; nothing it adds is ever written."""
-    manifest = bench.load(snapshot, con=con)
+    if manifest is None:
+        manifest = bench.load(snapshot, con=con)
     source = bench.pinned_source(manifest, "posts")
 
     view = coord2.posts_view(source)
@@ -269,7 +272,9 @@ def snapshot_networks(
     networks, sizes = build_networks(con, view, min_entities=min_entities)
 
     if text_threshold is not None:
-        edges = apply_text_floor(con, load_textsim(con, snapshot, text_threshold, text_overlap), view)
+        if text_edges is None:
+            text_edges = load_textsim(con, snapshot, text_threshold, text_overlap)
+        edges = apply_text_floor(con, text_edges, view)
         networks["text_similarity"] = edges
         sizes = pd.concat(
             [sizes, pd.DataFrame([{"trace": "text_similarity", "trace_rows": pd.NA,
@@ -343,6 +348,7 @@ def persist(
     since: str | None = None,
     until: str | None = None,
     platform: str = "x",
+    uri: Callable[[str], str] | None = None,
 ) -> str:
     """Write one v2 pass under its own R2 prefix.
 
@@ -356,6 +362,7 @@ def persist(
     the per-trace edge counts, and the text-similarity threshold, which is OUR
     choice rather than the paper's and determines most of the ranking.
     """
+    uri = uri or (lambda key: f"r2://{BUCKET}/{key}")
     now = datetime.now(timezone.utc)
     buf = scores.copy()
     buf["snapshot"] = snapshot
@@ -377,7 +384,7 @@ def persist(
     con.register("_coord2_buf", buf)
     try:
         con.execute(
-            f"COPY _coord2_buf TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)"
+            f"COPY _coord2_buf TO '{uri(key)}' (FORMAT parquet, COMPRESSION zstd)"
         )
     finally:
         con.unregister("_coord2_buf")

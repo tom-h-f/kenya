@@ -24,7 +24,10 @@ every row carrying `run_id` and `window_id`:
 
 A separate kind from `kind=scores` deliberately: snapshot runs made by hand and
 daily production runs answer different questions (a fixed corpus against a
-moving window), and a reader globbing one must never pick up the other.
+moving window). The CPU runner (`kma.v2_daily_run`) also writes `kind=scores`
+from the listed accounts, with `snapshot` set to the window id, because the
+collector's targeting reads that kind; a reader of it picks runs by
+`computed_at` and can tell the two apart by `snapshot` and `window_since`.
 
 ## Where windowed detection plugs in
 
@@ -76,6 +79,7 @@ class RankResult:
     tables: dict[str, pd.DataFrame] = field(default_factory=dict)
     keys: dict[str, str] = field(default_factory=dict)
     summary: dict = field(default_factory=dict)
+    trace_sizes: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def run_stamp(now: datetime | None = None) -> datetime:
@@ -135,10 +139,14 @@ def rank(
     now: datetime | None = None,
     networks: tuple[dict[str, pd.DataFrame], pd.DataFrame, str] | None = None,
     canary_posts: pd.DataFrame | None = None,
+    manifest: pd.DataFrame | None = None,
+    text_edges: pd.DataFrame | None = None,
 ) -> RankResult:
     """Rank one window and persist every table. `networks` injects prebuilt
     `(networks, sizes, view)` in place of `coord2_run.snapshot_networks`, which
-    is how the offline tests run without R2."""
+    is how the offline tests run without R2. `manifest` and `text_edges` inject
+    just the window manifest and the pair-level text trace, for a caller that
+    holds them in memory."""
     uri = uri or (lambda key: f"r2://{BUCKET}/{key}")
     stamp = run_stamp(now)
     run_id = f"{stamp:%Y%m%dT%H%M%SZ}"
@@ -154,6 +162,7 @@ def rank(
         con, w.id, text_threshold=text_threshold, text_overlap=text_overlap,
         min_entities=min_entities,
         transform_view=(lambda v: canary.inject_view(con, v, planted)) if planted is not None else None,
+        manifest=manifest, text_edges=text_edges,
     )
     if planted is not None:
         extra_text = canary.text_edges(planted, threshold=text_threshold or 0.85,
@@ -228,7 +237,7 @@ def rank(
         **{f"edges_{r['trace']}": int(r["edges"]) for _, r in sizes.iterrows()},
         **{k: round(v, 1) for k, v in timings.items()},
     }
-    result = RankResult(tables=tables, summary=summary)
+    result = RankResult(tables=tables, summary=summary, trace_sizes=sizes)
 
     if persist:
         for name, frame in tables.items():
