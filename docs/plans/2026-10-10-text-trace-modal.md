@@ -73,3 +73,30 @@ fails on `missing`. The freshness gauge name, file and semantics are unchanged.
    cost. Budget for testing: under $3.
 
 Results are filled in below as they land.
+
+## Results (2026-10-10)
+
+Equivalence, window `daily-2026-10-09-2d`, scratch prefix `tt-test/`, local path
+= `text_trace.build` on CPU torch over the manifest the Modal run pinned:
+
+| coverage | edges (day / pair) | only in one side | max abs weight diff |
+|---|---|---|---|
+| 13% (5,080 vectors) | 147 / 126 | 0 | 1.0e-6 |
+| 100% (39,094 vectors) | 3,067 / 3,002 | 0 | 1.1e-6 |
+
+Diff is float32 GPU vs float64 CPU cosine. Edge sets identical.
+
+Modal run, A10G, `--no-embed`, scratch, window `daily-2026-10-09-30d` (the branch
+base still has DEFAULT_DAYS=30; master has 21): 583,982 vectors (100%
+coverage by then), 102,023 edges. wall 330 s (manifest 83 s, trace 247 s),
+peak RSS 31.2 GB, GPU peak 9.7 GiB. Cost: not yet billed (API drops the current
+day); estimate from A10G list rate and 330 s is about $0.10-0.15, to be read
+from `kma.modal_spend` tomorrow.
+
+Not measured: the embed stage on Modal (the mike-pc backfill had covered the
+window), and the first-ever deploy-day cost with embedding. The production
+textsim key was NOT written; a trace built before the backfill finished would
+be reused by the cloud for that window id.
+
+Deployed `kma-text-trace` with no schedule. Enable: re-deploy with
+`KMA_TEXT_TRACE_SCHEDULE=1`.
