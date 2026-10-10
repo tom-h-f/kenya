@@ -826,7 +826,14 @@ def text_similarity_network(
 
     order = np.argsort(rows["created_at"].to_numpy(), kind="stable")
     rows = rows.iloc[order].reset_index(drop=True)
-    vectors = np.asarray(vectors, dtype="float64")[order]
+    # The default search is numpy float64. A caller that supplies its own
+    # `similarity` (the torch one narrows to float32 itself) keeps the dtype it
+    # passed: promoting a 584,000 x 768 float32 matrix to float64 here was a
+    # 3.6 GB copy that the search then threw away.
+    vectors = np.asarray(vectors)
+    if similarity is cosine_pairs or vectors.dtype.kind != "f":
+        vectors = vectors.astype("float64", copy=False)
+    vectors = vectors[order]
     times = epoch_seconds(rows["created_at"])
     window_seconds = float(window_days) * 86400.0
     users = rows["user_id"].to_numpy()
