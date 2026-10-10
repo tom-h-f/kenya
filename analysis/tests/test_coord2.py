@@ -918,3 +918,32 @@ def test_ioa_view_reads_a_truncated_slice(tmp_path):
     con = duckdb.connect()
     view = coord2.ioa_view(str(path))
     assert con.sql(f"SELECT count(*) FROM ({view})").fetchone()[0] >= 2
+
+
+def test_a_supplied_similarity_keeps_the_dtype_it_was_given():
+    """The torch search narrows to float32 itself; promoting a full-window
+    matrix to float64 first is a multi-GB copy it throws away."""
+    seen = {}
+
+    def search(vectors, times=None, *, window_seconds=None, chunk=512):
+        seen["dtype"] = vectors.dtype
+        return iter(())
+
+    rows = pd.DataFrame({
+        "user_id": ["a", "b"],
+        "created_at": pd.to_datetime(["2026-09-01", "2026-09-02"], utc=True),
+    })
+    vectors = np.eye(2, 4, dtype=np.float32)
+    coord2.text_similarity_network(rows, vectors, threshold=0.9, similarity=search)
+    assert seen["dtype"] == np.float32
+
+
+def test_the_default_search_is_still_float64():
+    rows = pd.DataFrame({
+        "user_id": ["a", "b"],
+        "created_at": pd.to_datetime(["2026-09-01", "2026-09-02"], utc=True),
+    })
+    out = coord2.text_similarity_network(
+        rows, np.array([[1, 0, 0, 0], [1, 0, 0, 0]], dtype=np.float32), threshold=0.9
+    )
+    assert out["weight"].tolist() == [1.0]

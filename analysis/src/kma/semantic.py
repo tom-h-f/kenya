@@ -17,10 +17,14 @@ embedded after a fit get the topic of their nearest fitted posts from
 from __future__ import annotations
 
 import gc
+import logging
 import re
+import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 import duckdb
+import numpy as np
 import pyarrow as pa
 
 from kma.db import (
@@ -30,6 +34,8 @@ from kma.db import (
     posts_source,
     topics_source,
 )
+
+log = logging.getLogger(__name__)
 
 _CLEAN = re.compile(r"https?://\S+|@\w+|#\w+|[^\w\s]", re.UNICODE)
 
@@ -71,6 +77,14 @@ def _model(model: str):
     return _MODELS[model]
 
 
+def release_models() -> None:
+    """Drop the loaded encoders. A job that embeds and then does something
+    memory-heavy (the daily's text trace) should not carry ~1 GB of weights
+    through it."""
+    _MODELS.clear()
+    gc.collect()
+
+
 def _embedded_ids(con: duckdb.DuckDBPyConnection, platform: str, model: str) -> set[str]:
     try:
         rel = con.sql(
@@ -87,6 +101,99 @@ def _pending(con: duckdb.DuckDBPyConnection, platform: str, model: str, limit: i
     )
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def run_key(platform: str, model: str, now: datetime) -> str:
+    return (
+        f"embeddings/platform={platform}/model={_slug(model)}"
+        f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
+    )
+
+
+def write_run(
+    con: duckdb.DuckDBPyConnection,
+    ids: list[str],
+    vectors: np.ndarray,
+    *,
+    model: str = MODEL,
+    platform: str = "x",
+    now: datetime | None = None,
+    uri: Callable[[str], str] | None = None,
+) -> str:
+    """Write one `embeddings/` run and return its key. `uri` maps a key to a
+    location, for a test that writes under a local directory.
+
+    Rows are `platform_post_id`, `model`, `dim`, `embedding` (`list<double>`),
+    `embedded_at`: the format every reader and the 2026-09-12 backfill share.
+    The list column is built from the numpy buffer, not a Python list per row,
+    which at 50,000 rows of 768 floats is gigabytes of objects.
+    """
+    if vectors.ndim != 2 or vectors.shape[1] != DIM or len(vectors) != len(ids):
+        raise ValueError(f"{len(ids)} ids against vectors of shape {vectors.shape}, dim {DIM}")
+    now = now or _utcnow()
+    flat = np.ascontiguousarray(vectors, dtype=np.float64).reshape(-1)
+    offsets = pa.array(np.arange(len(ids) + 1, dtype=np.int32) * DIM)
+    table = pa.table(
+        {
+            "platform_post_id": [str(i) for i in ids],
+            "model": [_slug(model)] * len(ids),
+            "dim": [DIM] * len(ids),
+            "embedding": pa.ListArray.from_arrays(offsets, pa.array(flat)),
+            "embedded_at": [now] * len(ids),
+        }
+    )
+    key = run_key(platform, model, now)
+    target = uri(key) if uri else f"r2://{BUCKET}/{key}"
+    con.register("_emb_buf", table)
+    try:
+        con.execute(f"COPY _emb_buf TO '{target}' (FORMAT parquet, COMPRESSION zstd)")
+    finally:
+        con.unregister("_emb_buf")
+    return key
+
+
+def embed_texts(
+    con: duckdb.DuckDBPyConnection,
+    ids: list[str],
+    texts: list[str],
+    *,
+    model: str = MODEL,
+    platform: str = "x",
+    batch_size: int = 64,
+    chunk: int = 5_000,
+    uri: Callable[[str], str] | None = None,
+) -> list[str]:
+    """Encode `texts` and write one run per `chunk`, returning the run keys.
+
+    A run per chunk rather than one for the lot: a pass that dies at 90% keeps
+    the 90%, and the next pass finds the rest still pending. Run keys carry
+    seconds, so a chunk that finishes inside the previous one's second waits
+    for the next rather than overwriting it.
+    """
+    keys: list[str] = []
+    previous: datetime | None = None
+    started = time.monotonic()
+    for lo in range(0, len(ids), chunk):
+        part = slice(lo, lo + chunk)
+        vectors = _model(model).encode(
+            texts[part], batch_size=batch_size, normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        now = _utcnow().replace(microsecond=0)
+        while previous is not None and now <= previous:
+            time.sleep(0.5)
+            now = _utcnow().replace(microsecond=0)
+        keys.append(
+            write_run(con, ids[part], vectors, model=model, platform=platform, now=now, uri=uri)
+        )
+        previous = now
+        done = min(lo + chunk, len(ids))
+        log.info("embedded %d of %d (%.0fs)", done, len(ids), time.monotonic() - started)
+    return keys
+
+
 def embed_new(
     con: duckdb.DuckDBPyConnection,
     model: str = MODEL,
@@ -99,33 +206,10 @@ def embed_new(
     df = _pending(con, platform, model, limit)
     if df.empty:
         return 0
-    vecs = _model(model).encode(
-        df["text"].tolist(),
-        batch_size=batch_size,
-        normalize_embeddings=True,
-        show_progress_bar=False,
+    embed_texts(
+        con, df["platform_post_id"].tolist(), df["text"].tolist(),
+        model=model, platform=platform, batch_size=batch_size, chunk=max(len(df), 1),
     )
-    now = datetime.now(timezone.utc)
-    table = pa.table(
-        {
-            "platform_post_id": df["platform_post_id"].tolist(),
-            "model": [_slug(model)] * len(df),
-            "dim": [DIM] * len(df),
-            "embedding": [v.tolist() for v in vecs],
-            "embedded_at": [now] * len(df),
-        }
-    )
-    key = (
-        f"embeddings/platform={platform}/model={_slug(model)}"
-        f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"
-    )
-    con.register("_emb_buf", table)
-    try:
-        con.execute(
-            f"COPY _emb_buf TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)"
-        )
-    finally:
-        con.unregister("_emb_buf")
     return len(df)
 
 

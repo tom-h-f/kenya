@@ -63,10 +63,17 @@ def build(
 
     con.register("_rows", rows[["post_id"]])
     try:
+        # FLOAT, not the stored DOUBLE: the stored values are float32 widened,
+        # so the cast is exact, and the pair search narrows to float32 anyway.
+        # It halves every copy of the matrix below, which is what sets this
+        # stage's peak memory at full coverage. The latest row per post comes
+        # from an aggregate rather than a window, so one narrow vector per post
+        # is held instead of every matching row sorted wide.
         vecs = con.sql(
-            f"""SELECT e.platform_post_id AS post_id, e.embedding
+            f"""SELECT e.platform_post_id AS post_id,
+                       arg_max(CAST(e.embedding AS FLOAT[]), e.embedded_at) AS embedding
                 FROM {embeddings} e JOIN _rows r ON r.post_id = e.platform_post_id
-                QUALIFY row_number() OVER (PARTITION BY e.platform_post_id ORDER BY e.embedded_at DESC) = 1"""
+                GROUP BY e.platform_post_id"""
         ).df()
     finally:
         con.unregister("_rows")
@@ -81,6 +88,13 @@ def build(
     if joined.empty:
         raise RuntimeError(f"snapshot {snapshot!r}: no text-eligible post has an embedding")
     matrix = np.vstack(joined["embedding"].to_numpy())
+    if similarity_for is None:
+        # The CPU search was validated on float64; only the torch path, which
+        # narrows to float32 itself, may keep the matrix narrow.
+        matrix = matrix.astype("float64")
+    # One array per post plus the stacked matrix is two copies of every vector.
+    joined = joined.drop(columns=["embedding"])
+    del vecs
     log.info("matrix %s", matrix.shape)
 
     # Estimate the cut on a sample with the exact CPU path, THEN push it into

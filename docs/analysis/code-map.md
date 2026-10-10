@@ -71,9 +71,15 @@ flowchart TD
 ### Phase 2 - semantic / narrative
 
 - **`semantic.py`** - the embedding layer. `embed_new` encodes unembedded posts
-  and writes `embeddings/` (incremental); `search` is cosine semantic search;
-  `assign_topics` (UMAP + HDBSCAN) and `topic_summary` build the corpus topic
-  landscape. 768-d multilingual vectors.
+  and writes `embeddings/` (incremental); `embed_texts` / `write_run` are the
+  chunked writer it and `embed_window` share; `search` is cosine semantic
+  search; `assign_topics` (UMAP + HDBSCAN) and `topic_summary` build the corpus
+  topic landscape. 768-d multilingual vectors.
+- **`embed_window.py`** - embeds the text-eligible posts (`coord2.text_rows`)
+  of one rolling window that have no vector, before `kma.v2_daily_run` pins
+  the window. This, not the enrich worker, is what keeps the v2 text trace's
+  coverage near 100%; the worker's per-cycle cap embeds a few thousand posts a
+  day against about 43,000 new ones.
 - **`classify.py`** - transformer inference. `classify_new` persists
   sentiment + emotion to `labels/` (incremental); `stance(con, target)` is
   zero-shot supports/opposes/neutral, computed live. `_pipe`/`_run` are the

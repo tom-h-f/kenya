@@ -187,6 +187,16 @@ corpus; compare within the crawled set).
 `latest_embeddings` dedups per post by `embedded_at`; the vector column is cast
 to `FLOAT[768]` for DuckDB `array_cosine_similarity`.
 
+Writers: the enrich worker (`embed_new`, newest first, a fixed number per
+cycle), one-off GPU backfills (`investigations/2026-09-12-embedding-backfill`)
+and the daily's `embed_window` stage, which embeds only the window's
+text-eligible posts. Every writer uses `semantic.write_run`'s row format and
+the key `embeddings/platform=x/model=<slug>/dt=<embed day>/run=<utc-ts>.parquet`;
+a post embedded twice keeps its latest row. `dt` is the day the vector was
+computed, so a window must not bound it (see `window.py`). Coverage of the
+text-eligible posts is the number to watch: `kma.v2_daily_run` logs it as
+`embedding_coverage` in the text-trace summary.
+
 ### topics/ (`semantic.py`)
 
 `platform_post_id`, `topic` (int, `-1` = unclustered), `model` (encoder slug),

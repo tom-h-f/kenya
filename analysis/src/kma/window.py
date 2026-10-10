@@ -14,11 +14,16 @@ from its window id alone, exactly as a hand run is from its snapshot name.
 - `posts/` with `dt` in `(end - days, end]`. `dt` is the day a row was
   COLLECTED, not posted, so a deep timeline fetched inside the window brings
   its old posts with it - the history that makes an account rankable at all.
-- `embeddings/` with `dt <= end`, not windowed at the start. An embedding is
-  dated when it was computed, and a post re-collected inside the window may
-  have been embedded weeks earlier; windowing both ends would drop its vector
-  and silently shrink the text trace, which is the coverage effect measured in
-  `2026-09-12-component-ranking` (62% coverage: 82,667 -> 50,085 text edges).
+- `embeddings/`, whatever its `dt`. An embedding is dated when it was
+  computed, not when its post was collected. A post re-collected inside the
+  window may have been embedded weeks earlier, so windowing the start would
+  drop its vector and silently shrink the text trace, which is the coverage
+  effect measured in `2026-09-12-component-ranking` (62% coverage: 82,667 ->
+  50,085 text edges). And the daily embeds the window's missing posts just
+  before it pins the window (`embed_window`), so yesterday's posts get vectors
+  dated today; an upper bound at `end` would hide exactly those. The manifest
+  is what makes the listing reproducible, not the bound: `ensure` reads it
+  back on a re-run.
 
 `end` defaults to yesterday, UTC. A `dt` partition is only closed once its day
 is over, so a window ending today would list a different set of objects each
@@ -55,7 +60,7 @@ log = logging.getLogger(__name__)
 DEFAULT_DAYS = 90
 ID_PREFIX = "daily"
 WINDOWED_PREFIXES = ("posts",)
-UNBOUNDED_START_PREFIXES = ("embeddings",)
+UNBOUNDED_PREFIXES = ("embeddings",)
 
 
 @dataclass(frozen=True)
@@ -87,7 +92,7 @@ class Window:
 
     def keeps(self, prefix: str, partitions: dict[str, str]) -> bool:
         """The `bench.snapshot(keep=...)` predicate for this window."""
-        if prefix not in WINDOWED_PREFIXES + UNBOUNDED_START_PREFIXES:
+        if prefix not in WINDOWED_PREFIXES + UNBOUNDED_PREFIXES:
             return False
         dt = partitions.get("dt")
         if dt is None:
@@ -96,9 +101,9 @@ class Window:
             day = date.fromisoformat(dt)
         except ValueError:
             return False
-        if day > self.end:
-            return False
-        return prefix in UNBOUNDED_START_PREFIXES or day >= self.start
+        if prefix in UNBOUNDED_PREFIXES:
+            return True
+        return self.start <= day <= self.end
 
 
 def default_end(now: datetime | None = None) -> date:
@@ -119,7 +124,7 @@ def build(
     """Write the window's manifest, as a snapshot named by the window id."""
     return bench.snapshot(
         w.id,
-        prefixes=WINDOWED_PREFIXES + UNBOUNDED_START_PREFIXES,
+        prefixes=WINDOWED_PREFIXES + UNBOUNDED_PREFIXES,
         con=con,
         client=client,
         bucket=bucket,

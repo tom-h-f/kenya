@@ -384,16 +384,26 @@ def orchestrate(
     con: duckdb.DuckDBPyConnection,
     ensure: Callable[[window.Window], pd.DataFrame] | None = None,
     trace_exists: Callable[[str], bool] | None = None,
+    embed: Callable[[window.Window], dict] | None = None,
 ) -> dict:
-    """Window -> text trace (only if missing) -> rank. Each stage is a callable
-    so the Modal app can put it on the right hardware and the tests can fake it.
+    """[Embed] -> window -> text trace (only if missing) -> rank. Each stage is
+    a callable so the Modal app can put it on the right hardware and the tests
+    can fake it.
+
+    `embed` runs before the window is pinned, because the manifest lists the
+    vectors that exist when it is built and a re-run reads that listing back:
+    vectors written after it would be invisible to the trace.
     """
     w = window.Window.ending(end, days)
+    t0 = time.monotonic()
+    embedded = embed(w) if embed is not None else None
+    embed_s = round(time.monotonic() - t0, 1)
     t0 = time.monotonic()
     manifest = (ensure or (lambda win: window.ensure(win, con=con)))(w)
     posts = manifest[manifest["prefix"] == "posts"]
     out: dict = {
         "window_id": w.id,
+        **({"embed": embedded, "embed_s": embed_s} if embed is not None else {}),
         "posts_objects": len(posts),
         "posts_rows": int(pd.to_numeric(posts["rows"], errors="coerce").sum()),
         "window_s": round(time.monotonic() - t0, 1),

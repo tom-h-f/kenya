@@ -16,7 +16,8 @@ import duckdb
 import pandas as pd
 import pytest
 
-from kma import canary, coord2, coord2_communities, coord2_run, textsim_run, v2_daily, v2_daily_run
+from kma import canary, coord2, coord2_communities, coord2_run, embed_window, textsim_run, v2_daily
+from kma import v2_daily_run
 from kma import window, windowed
 
 GAUGE = "kma_v2_daily_last_success_timestamp_seconds"
@@ -65,6 +66,11 @@ def stages(monkeypatch):
     def relevance(con, scores, view, **kw):
         return scores.assign(n_posts=10, kenya_share=1.0)
 
+    def embed(con, w, **kw):
+        calls["order"].append("embed")
+        return {"window_id": w.id, "embedded": 3, "runs": []}
+
+    monkeypatch.setattr(embed_window, "embed_missing", embed)
     monkeypatch.setattr(window, "build", build)
     monkeypatch.setattr(textsim_run, "build", trace)
     monkeypatch.setattr(coord2_run, "snapshot_networks", networks)
@@ -277,6 +283,29 @@ def test_r2_mode_uses_the_production_writers_and_reuses_an_existing_trace(tmp_pa
 
     out = v2_daily_run.run("2026-09-21", 7, con=duckdb.connect(), textfile_dir=tmp_path)
     assert out["textsim"] == "reused"
+    assert stages["order"] == ["embed", "rank"]
+    assert out["embed"]["embedded"] == 3
     assert stages["build"] == []
     assert stages["snapshot"][-1].get("text_edges") is None
     assert "scores" in written and any("kind=daily_accounts" in k for k in written)
+
+
+def test_no_embed_flag_skips_the_stage_in_r2_mode(tmp_path, stages, monkeypatch):
+    monkeypatch.setattr(window, "ensure", lambda w, **kw: pd.DataFrame([{"prefix": "posts", "rows": 5}]))
+    monkeypatch.setattr(v2_daily, "text_trace_exists", lambda con, snapshot, **kw: True)
+    monkeypatch.setattr(v2_daily, "_write", lambda con, frame, key, uri: key)
+    monkeypatch.setattr(coord2_run, "persist", lambda con, scores, **kw: "k")
+    out = v2_daily_run.run("2026-09-21", 7, con=duckdb.connect(), textfile_dir=tmp_path, embed=False)
+    assert "embed" not in out and "embed" not in stages["order"]
+
+
+def test_out_dir_mode_never_embeds(tmp_path, stages):
+    """`--out-dir` promises nothing is written to R2, and vectors go there."""
+    out = _run(tmp_path)
+    assert "embed" not in out and "embed" not in stages["order"]
+
+
+def test_the_summary_carries_the_rss_after_each_stage(tmp_path, stages):
+    out = _run(tmp_path)
+    assert set(out["peak_rss_mb_after"]) == {"window", "textsim", "rank"}
+    assert out["peak_rss_mb_after"]["rank"] <= out["peak_rss_mb"]
