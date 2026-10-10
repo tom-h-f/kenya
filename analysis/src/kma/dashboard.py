@@ -4,7 +4,8 @@
     uv run kma-dashboard                          # build, publish to R2_DASHBOARD_BUCKET
 
 Feeds kenya.tomfr.net. What may appear on that page is fixed by
-`docs/analysis/2026-09-13-publishable-statistics.md`; this module is that
+`docs/analysis/2026-10-10-publishing-policy.md` (which supersedes
+`2026-09-13-publishable-statistics.md`); this module is that
 document made executable, and it can only emit what it names:
 
 - the benchmark reproduction, the relevance gate's human-measured error, what
@@ -16,10 +17,12 @@ document made executable, and it can only emit what it names:
   latest daily run's freshness and stage timings, enrichment lag. These are
   LIVE figures, recomputed from persisted R2 output on every run.
 
-Never emitted: any prevalence figure, any per-account value or handle, any
-count of coordinated accounts or communities from the live run, the raw
-toxicity series, corroboration claims. `withheld` on the payload says so, so
-the page states the gap instead of leaving it for a reader to fill.
+Never emitted: any prevalence figure, any per-account value or handle (the
+explorer carries account-level views; this summary stays aggregate), any
+count of surfaced accounts or communities from the live run as a finding, the
+raw toxicity series, corroboration claims. `withheld` on the payload lists the
+policy in `docs/analysis/2026-10-10-publishing-policy.md`, so the page states
+the gap instead of leaving it for a reader to fill.
 
 ## Persisted output only
 
@@ -72,7 +75,7 @@ from kma import db, figures, relevance
 
 log = logging.getLogger("kma.dashboard")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PLATFORM = "x"
 PUBLIC_KEY = "public/summary.json"
 DASHBOARD_BUCKET = os.getenv("R2_DASHBOARD_BUCKET", "kenya-monitor-dashboard")
@@ -86,6 +89,9 @@ RUN_HISTORY_DAYS = 14
 
 # Order is the order a reader meets them on the page.
 LIVE_CARDS = ("pipeline", "collection", "enrichment")
+# Derived from the collection and enrichment cards: no extra read.
+DERIVED_CARDS = ("composition", "control_arm", "data_quality", "stage_coverage")
+LOW_VOLUME_FRACTION = 0.5
 
 FORBIDDEN_KEYS = frozenset({
     "user_id", "author_id", "account_id", "platform_user_id", "handle", "username",
@@ -109,34 +115,49 @@ WITHHELD = (
         "item": "Any prevalence rate",
         "why": (
             "Nothing in the collector samples the discourse at random, so no rate "
-            "over it has a denominator. A control arm is needed first."
+            "over it has a denominator. The control arm is the only denominator and "
+            "it is small."
         ),
     },
     {
-        "item": "Any account, handle or per-account claim",
+        "item": "A raw toxicity or hate series over time",
         "why": (
-            "Detection says accounts act together; neither it nor a reader's "
-            "judgement establishes that a named account is inauthentic."
+            "The raw series moved with the collector's own target list: replies "
+            "carry 3.2x the hate rate and the mix shifted from search to replies. "
+            "Only a composition-standardised or within-partition rate may be shown, "
+            "and none is shown yet."
         ),
     },
     {
-        "item": "Counts of coordinated accounts or communities from the live run",
+        "item": "Counts of surfaced accounts or communities as a finding",
         "why": (
             "The listing length is a triage budget and the community count depends "
             "on a clustering resolution and seed. Neither is a finding."
         ),
     },
     {
-        "item": "A toxicity series over time",
+        "item": "Cross-channel corroboration of clusters",
+        "why": "The earlier statement about it is false and was retired.",
+    },
+    {
+        "item": "Any statement about what a named account is, or intends",
         "why": (
-            "The raw series moved with the collector's own target list. Only a "
-            "composition-standardised or within-partition rate may be shown, and "
-            "none is shown yet."
+            "Co-activity is evidence that accounts act together. It does not show "
+            "that an account is inauthentic, paid or acting with intent, and it says "
+            "nothing about who runs it."
         ),
     },
     {
-        "item": "Cross-channel corroboration of clusters",
-        "why": "The earlier statement about it is false and was retired.",
+        "item": "Per-account hate, incitement, toxicity, deletion or suspension flags",
+        "why": (
+            "A strong accusation against a named person from a classifier with a "
+            "documented weakness on coded speech. Only aggregates by topic, with "
+            "denominators, may be shown."
+        ),
+    },
+    {
+        "item": "Location text, bios used to characterise a group, cross-platform identity links",
+        "why": "Harm without a measurement that needs it.",
     },
 )
 
@@ -245,6 +266,7 @@ def collection_card(
     for d in window:
         day = per_day[per_day["dt"] == d.isoformat()]
         by_scope = day.groupby("scope")["rows"].sum()
+        by_type = day.groupby("type")["rows"].sum()
         series.append({
             "dt": d.isoformat(),
             "rows": int(day["rows"].sum()),
@@ -252,6 +274,7 @@ def collection_card(
             "gap": day.empty,
             "by_scope": {s: int(by_scope.get(s, 0))
                          for s in ("baseline", "targeted", "control", "other")},
+            "by_type": {str(t): int(n) for t, n in sorted(by_type.items())},
         })
 
     return available(
@@ -377,6 +400,151 @@ def pipeline_card(runs: pd.DataFrame | None, now: datetime) -> dict:
         run_days=ran_on,
         missing_run_days=missing,
         runs_persisted=int(len(runs)),
+    )
+
+
+def composition_card(collection: dict) -> dict:
+    title = "Collector composition"
+    source = "posts/ partitions: object listing and parquet footers"
+    series = collection["series"]
+    total = sum(r["rows"] for r in series)
+    if total == 0:
+        return unavailable("composition", title, reason=REASON_UNREADABLE, source=source)
+
+    by_type: dict[str, int] = {}
+    for r in series:
+        for t, n in r["by_type"].items():
+            by_type[t] = by_type.get(t, 0) + n
+    scopes = ("baseline", "targeted", "control", "other")
+
+    def share(n: int, of: int) -> float | None:
+        return None if of == 0 else round(n / of, 4)
+
+    def scope_rows(rows: list[dict]) -> dict[str, int]:
+        return {s: sum(r["by_scope"][s] for r in rows) for s in scopes}
+
+    half = len(series) // 2
+    first, second = series[:half], series[half:]
+    first_total, second_total = sum(r["rows"] for r in first), sum(r["rows"] for r in second)
+    first_rows, second_rows = scope_rows(first), scope_rows(second)
+    return available(
+        "composition", title, source=source,
+        basis=(
+            f"Rows written to posts/ over the last {collection['series_days']} closed "
+            "UTC days, by the partition's own post type and by scope. Shares are of "
+            "those rows: not distinct posts, not Kenyan posts, not a sample of the "
+            "discourse. The mix is set by the collector's own target list, so a "
+            "change between the two halves is the collector changing, not Kenya "
+            "changing."
+        ),
+        window_days=collection["series_days"],
+        total_rows=total,
+        by_type=[
+            {"type": t, "scope": _scope_of(t), "rows": n, "share": share(n, total)}
+            for t, n in sorted(by_type.items(), key=lambda kv: (-kv[1], kv[0]))
+        ],
+        by_scope=[
+            {"scope": s, "rows": n, "share": share(n, total)}
+            for s, n in scope_rows(series).items()
+        ],
+        halves={
+            "first_days": len(first),
+            "second_days": len(second),
+            "first_share": {s: share(n, first_total) for s, n in first_rows.items()},
+            "second_share": {s: share(n, second_total) for s, n in second_rows.items()},
+        },
+    )
+
+
+def control_arm_card(collection: dict) -> dict:
+    title = "Control arm"
+    source = "posts/ partitions, type=control: object listing and parquet footers"
+    series = collection["series"]
+    total = sum(r["rows"] for r in series)
+    if total == 0:
+        return unavailable("control_arm", title, reason=REASON_UNREADABLE, source=source)
+    control = [r["by_scope"]["control"] for r in series]
+    return available(
+        "control_arm", title, source=source,
+        basis=(
+            "Rows written to the control partition, the only arm that is not drawn "
+            "from the collector's target list, over the last "
+            f"{collection['series_days']} closed UTC days. Its share of rows is how "
+            "much of the corpus is control, not a rate of anything. A day with no "
+            "control rows is counted, not filled."
+        ),
+        window_days=collection["series_days"],
+        control_rows=sum(control),
+        window_rows=total,
+        control_share=round(sum(control) / total, 4),
+        days_with_control=sum(1 for n in control if n > 0),
+        days_without_control=sum(1 for n in control if n == 0),
+    )
+
+
+def data_quality_card(collection: dict) -> dict:
+    title = "Data quality"
+    source = "posts/ partitions: object listing and parquet footers"
+    series = collection["series"]
+    present = [r for r in series if not r["gap"]]
+    if not present:
+        return unavailable("data_quality", title, reason=REASON_UNREADABLE, source=source)
+    rows = sorted(r["rows"] for r in present)
+    mid = len(rows) // 2
+    median = rows[mid] if len(rows) % 2 else (rows[mid - 1] + rows[mid]) / 2
+    low = [r["dt"] for r in present if r["rows"] < LOW_VOLUME_FRACTION * median]
+    return available(
+        "data_quality", title, source=source,
+        basis=(
+            f"Over the last {collection['series_days']} closed UTC days: days with "
+            "no partition at all (gap days, never recoverable), and days whose row "
+            f"count is under {int(LOW_VOLUME_FRACTION * 100)}% of the median "
+            "day's (low-volume days, which usually mean a partial collection). "
+            "Counted from partition listings and parquet footers, not from post "
+            "content."
+        ),
+        window_days=collection["series_days"],
+        days_with_data=len(present),
+        gap_days_in_window=len(series) - len(present),
+        gap_days_total=collection["gap_days_total"],
+        median_rows_per_day=median,
+        low_volume_fraction=LOW_VOLUME_FRACTION,
+        low_volume_days=low,
+        min_objects_per_day=min(r["objects"] for r in present),
+        max_objects_per_day=max(r["objects"] for r in present),
+    )
+
+
+def stage_coverage_card(enrichment: dict) -> dict:
+    title = "Rows per stage against posts"
+    source = "posts/, embeddings/, relevance/, hatespeech/, incitement/: listings and footers"
+    stages = {s["stage"]: s for s in enrichment["stages"]}
+    base = stages.get("posts", {}).get("rows_last_7d")
+    if not base:
+        return unavailable("stage_coverage", title, reason=REASON_UNREADABLE, source=source)
+    out = []
+    for name, st in stages.items():
+        if name == "posts":
+            continue
+        n = st["rows_last_7d"]
+        out.append({
+            "stage": name,
+            "rows": n,
+            "rows_per_posts_row": None if n is None else round(n / base, 3),
+        })
+    return available(
+        "stage_coverage", title, source=source,
+        basis=(
+            f"Rows each stage wrote over the last {enrichment['window_days']} closed "
+            "UTC days, divided by rows posts/ wrote over the same days. A stage's dt "
+            "is when it ran, not the date of the posts it scored, and posts/ counts "
+            "re-collections, so this is a throughput ratio and not the share of "
+            "posts a stage has covered. Coverage by distinct post needs a join "
+            "that has not been measured."
+        ),
+        window_days=enrichment["window_days"],
+        posts_rows=base,
+        stages=out,
     )
 
 
@@ -529,6 +697,21 @@ def build_summary(
     if all(c["status"] != "ok" for c in live.values()):
         raise RuntimeError("no live source could be read; not publishing an empty page")
 
+    def derived(card_id: str, title: str, parent: dict, build: Callable[[dict], dict]) -> dict:
+        if parent["status"] != "ok":
+            return unavailable(card_id, title, reason=REASON_UNREADABLE, source=parent["source"])
+        return guarded(card_id, title, parent["source"], lambda: build(parent))
+
+    derived_cards = {
+        "composition": derived("composition", "Collector composition", live["collection"],
+                               composition_card),
+        "control_arm": derived("control_arm", "Control arm", live["collection"],
+                               control_arm_card),
+        "data_quality": derived("data_quality", "Data quality", live["collection"],
+                                data_quality_card),
+        "stage_coverage": derived("stage_coverage", "Rows per stage against posts",
+                                  live["enrichment"], stage_coverage_card),
+    }
     cards = {
         "benchmark": benchmark_card(recorded["benchmark_reproduction"]),
         "relevance_gate": relevance_gate_card(recorded["relevance_error"]),
@@ -536,6 +719,7 @@ def build_summary(
                             lambda: detector_card(recorded["adjudication"], runs(), now)),
         "negative_results": negative_results_card(recorded["negative_results"]),
         **live,
+        **derived_cards,
     }
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -544,7 +728,8 @@ def build_summary(
         "platform": PLATFORM,
         "scope": (
             "Aggregate descriptions of this project's own method and pipeline. "
-            "No prevalence figure, no account, no handle."
+            "No prevalence figure and nothing per account: account-level views "
+            "live in the explorer, not in this summary."
         ),
         "cards": cards,
         "withheld": [dict(w) for w in WITHHELD],

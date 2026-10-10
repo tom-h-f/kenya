@@ -171,7 +171,7 @@ def test_no_archive_flag_writes_one_object(payload):
 
 def test_withheld_names_the_unpublishable_items(payload):
     items = " ".join(w["item"].lower() for w in payload["withheld"])
-    for needle in ("prevalence", "account", "coordinated", "toxicity", "corroboration"):
+    for needle in ("prevalence", "account", "surfaced", "toxicity", "corroboration", "flags"):
         assert needle in items
 
 
@@ -425,3 +425,95 @@ def test_negative_results_carry_a_figure_a_basis_and_a_source(payload):
 def test_provenance_travels_with_every_recorded_card(payload):
     for name in ("benchmark", "relevance_gate", "detector", "negative_results"):
         assert payload["cards"][name]["measured"], name
+
+
+# --- v3 aggregates ----------------------------------------------------------
+
+
+def test_summary_is_schema_3_with_the_new_cards(payload):
+    assert payload["schema_version"] == 3
+    for card_id in d.DERIVED_CARDS:
+        assert payload["cards"][card_id]["status"] == "ok", card_id
+
+
+def test_collection_days_carry_rows_by_type():
+    posts = _posts(["2026-10-10"], types=("search", "replies", "control"))
+    card = d.collection_card(posts, _rows(posts, 4), TODAY, days=1)
+
+    assert card["series"][0]["by_type"] == {"control": 4, "replies": 4, "search": 4}
+
+
+def test_composition_shares_are_of_window_rows_and_split_into_halves():
+    posts = _posts(["2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10"],
+                   types=("search", "control"))
+    coll = d.collection_card(posts, _rows(posts, 5), TODAY, days=4)
+    card = d.composition_card(coll)
+
+    assert card["total_rows"] == 40
+    assert {r["type"]: r["share"] for r in card["by_type"]} == {"control": 0.5, "search": 0.5}
+    assert card["halves"]["first_days"] == 2 and card["halves"]["second_days"] == 2
+    assert card["halves"]["first_share"]["control"] == 0.5
+    assert "not distinct posts" in card["basis"]
+
+
+def test_composition_halves_expose_a_shift_in_the_mix():
+    early = _posts(["2026-10-09"], types=("search",))
+    late = _posts(["2026-10-10"], types=("replies",))
+    posts = pd.concat([early, late], ignore_index=True)
+    coll = d.collection_card(posts, _rows(posts, 5), TODAY, days=2)
+    card = d.composition_card(coll)
+
+    assert card["halves"]["first_share"]["baseline"] == 1.0
+    assert card["halves"]["second_share"]["baseline"] == 1.0
+    assert {r["type"] for r in card["by_type"]} == {"search", "replies"}
+
+
+def test_control_arm_counts_days_without_control_rather_than_filling_them():
+    posts = pd.concat([_posts(["2026-10-09"], types=("search",)),
+                       _posts(["2026-10-10"], types=("search", "control"))], ignore_index=True)
+    coll = d.collection_card(posts, _rows(posts, 10), TODAY, days=2)
+    card = d.control_arm_card(coll)
+
+    assert card["control_rows"] == 10
+    assert card["window_rows"] == 30
+    assert card["days_with_control"] == 1 and card["days_without_control"] == 1
+    assert card["control_share"] == pytest.approx(1 / 3, abs=1e-4)
+
+
+def test_data_quality_flags_gap_and_low_volume_days():
+    posts = _posts(["2026-10-07", "2026-10-09", "2026-10-10"])
+    coll = d.collection_card(posts, _rows(posts, 10), TODAY, days=4)
+    coll["series"][-1]["rows"] = 1
+    card = d.data_quality_card(coll)
+
+    assert card["gap_days_in_window"] == 1
+    assert card["days_with_data"] == 3
+    assert card["low_volume_days"] == ["2026-10-10"]
+    assert card["low_volume_fraction"] == d.LOW_VOLUME_FRACTION
+
+
+def test_stage_coverage_is_a_throughput_ratio_not_a_coverage_claim(payload):
+    card = payload["cards"]["stage_coverage"]
+    stages = {s["stage"]: s for s in card["stages"]}
+
+    assert "posts" not in stages
+    assert stages["hatespeech"]["rows_per_posts_row"] is not None
+    assert stages["incitement"]["rows"] is None
+    assert stages["incitement"]["rows_per_posts_row"] is None
+    assert "not the share" in card["basis"]
+
+
+def test_derived_cards_go_unavailable_with_their_parent(recorded):
+    src = _sources(runs=_runs())
+    src.list_prefix = lambda p: (_ for _ in ()).throw(RuntimeError("secret/key"))
+    payload = d.build_summary(src, recorded, now=NOW)
+
+    for card_id in d.DERIVED_CARDS:
+        assert payload["cards"][card_id]["status"] == "not_available"
+    assert "secret" not in json.dumps(payload)
+
+
+def test_withheld_follows_the_publishing_policy(payload):
+    items = " ".join(w["item"].lower() for w in payload["withheld"])
+    for needle in ("named account", "suspension", "location", "raw toxicity"):
+        assert needle in items
