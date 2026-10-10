@@ -21,6 +21,11 @@ runs end-to-end against live R2.
 - **[code-map.md](code-map.md)** - how the `kma` package is organised: a
   module-by-module map, the data-flow diagram, the notebooks, and the
   investigation-folder pattern.
+- **[incitement-backlog.md](incitement-backlog.md)** - the incitement NLI pass on
+  the RTX 3070: measured throughput, fp16 agreement, ordering, resume rules, and the
+  twice-weekly keep-up job.
+- **[topics-incremental.md](topics-incremental.md)** - nearest-neighbour topic
+  assignment for posts embedded after the fit.
 
 The ethnic-incitement lens (`kma.incitement`, coded-term lexicon + zero-shot
 NLI) and the 2026-07 manipulation sweep
