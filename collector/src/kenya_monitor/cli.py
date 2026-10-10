@@ -695,15 +695,17 @@ def hate_mine_cmd(
 def adapt(
     dry_run: bool = typer.Option(False, "--dry-run", help="compute promotions without saving"),
 ) -> None:
-    """Run one adaptive-promotion pass (bursting hashtags + cluster accounts)."""
+    """Run one adaptive-promotion pass (bursting hashtags, flagged stories, v2 ranks)."""
     from kenya_monitor import adaptive
 
     storage = _storage()
     entries = adaptive.promote(
         storage.con,
         storage.posts_view(platform="x"),
-        storage.clusters_view(platform="x"),
         storage.authors_view(platform="x"),
+        stories_view=storage.stories_view(platform="x"),
+        hatespeech_view=storage.hatespeech_view(platform="x"),
+        scores_view=storage.coord2_scores_view(platform="x"),
         dry_run=dry_run,
     )
     for e in entries:
@@ -713,7 +715,7 @@ def adapt(
 
 @app.command()
 def follows(
-    handle: list[str] = typer.Option(None, "--handle", help="explicit handles (else flagged clusters)"),
+    handle: list[str] = typer.Option(None, "--handle", help="explicit handles"),
     limit: int = typer.Option(None, help="max edges per direction per account (default from env)"),
     max_accounts: int = typer.Option(None, help="cap accounts per run (default from env)"),
     top_suspicious: int = typer.Option(
@@ -723,7 +725,7 @@ def follows(
         None, "--top-hate", help="fetch follows for top-N hate-network seed accounts"
     ),
 ) -> None:
-    """Fetch follower/following edges for flagged-cluster members."""
+    """Fetch follower/following edges for explicit or top-ranked accounts."""
     from kenya_monitor.config import FOLLOW_FETCH_LIMIT, FOLLOW_MAX_ACCOUNTS
     from kenya_monitor.scheduler import run_follows_once
 

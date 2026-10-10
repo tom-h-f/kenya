@@ -48,7 +48,6 @@ HATE_MIN_POSTS = 10  # too few posts to estimate a rate from
 HATE_MIN_TOXIC_POSTS = 3  # one bad day is not a pattern
 BRIGADE_MIN_AUTHORS = 3  # distinct toxic repliers before a thread is a pile-on
 SCORES_STALE_HOURS = 24
-COORD_STALE_HOURS = 24
 
 # Toxic object selection was pinned to 2 days, so an object created 3 days ago
 # and scored today was invisible to the census forever - the enrich backlog could
@@ -129,26 +128,6 @@ def scores_are_stale(
     return bool(row[0])
 
 
-def edges_are_stale(
-    con: duckdb.DuckDBPyConnection, edges_view: str, max_age_hours: int = COORD_STALE_HOURS
-) -> bool:
-    """True when persisted coordination edges are missing or older than the
-    refresh interval. The 6-hourly refresh lives in the analysis worker; if that
-    is not running, these edges freeze and the local projection is the honest
-    fallback."""
-    try:
-        row = con.sql(
-            f"""
-            SELECT max(computed_at) IS NULL
-                OR max(computed_at) < now() - INTERVAL {int(max_age_hours)} HOUR
-            FROM {edges_view}
-            """
-        ).fetchone()
-    except duckdb.Error:
-        return True
-    return bool(row[0])
-
-
 def _hate_account_sql(
     hatespeech_view: str,
     posts_view: str,
@@ -199,8 +178,7 @@ def _hate_account_sql(
     #                                 amplifying pairs barely overlap
     #   toxic projection alone     -> 50 cohort, signal intact
     #
-    # So the guards are reproduced here rather than borrowed. `coordination/`
-    # keeps its proper role: cluster-membership promotion in `adaptive`.
+    # So the guards are reproduced here rather than borrowed.
     amp_cte = f"""
         objdeg AS (
             SELECT obj, count(DISTINCT author_id) AS deg FROM trt GROUP BY obj

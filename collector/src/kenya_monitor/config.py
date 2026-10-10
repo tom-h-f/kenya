@@ -308,52 +308,30 @@ DYNAMIC_HASHTAG_MIN_COUNT = int(os.getenv("DYNAMIC_HASHTAG_MIN_COUNT", "20"))  #
 DYNAMIC_HASHTAG_RATIO = float(os.getenv("DYNAMIC_HASHTAG_RATIO", "5.0"))  # vs prior-7d daily avg
 # Min story_suspicion_index for a flagged story's terms to be promoted (Phase 4).
 STORY_FLAG_MIN_INDEX = float(os.getenv("STORY_FLAG_MIN_INDEX", "0.6"))
-# Min supporting channels for a coordination cluster to drive targeting.
-# Promoting at n_channels >= 1 hands nearly the whole active author base to the
-# expansion passes, which is not a signal: on 2026-07-28, 894 of 906 clusters
-# rested on a single channel.
-#
-# This was lowered to 1 on 2026-08-01 because corroboration was then structurally
-# 0 - the co_retweet and co_reply layers observed disjoint account populations,
-# so a floor of 2 promoted nobody and cluster targeting was inert. That premise
-# died with the census conversation-band fix: measured 2026-08-13, 446 bridge
-# accounts and 485 pairs validated in both channels.
-# Promotion of coordination-cluster members to timeline targets. Off during the
-# v2 methodology rebuild (docs/plans/2026-09-05-v2-methodology.md §11): v2
-# predicts accounts rather than clusters, so this path has no input until
-# promotion is re-pointed at v2 centrality ranks.
-CLUSTER_PROMOTION_ENABLED = os.getenv("CLUSTER_PROMOTION_ENABLED", "1") not in ("0", "false", "False")
-# The re-point: promote from the latest v2 scores run instead of v1 clusters.
-# Its own flag, default off, so turning it on is a config flip on pi0 and v1
-# promotion stays off either way.
+# Promotion of accounts to timeline targets, from the latest v2 scores run
+# (docs/plans/2026-09-05-v2-methodology.md section 11). v1 cluster promotion was
+# removed with v1 on 2026-10-10 (docs/plans/2026-10-10-retire-v1.md).
 V2_PROMOTION_ENABLED = os.getenv("V2_PROMOTION_ENABLED", "0") not in ("0", "false", "False")
 # At most this many accounts not already live may be added per pass. The live
 # set is still capped by DYNAMIC_MAX_ACCOUNTS; this bounds the rate, which is
 # what the 6.6x targeting blowup at Leiden resolution 0.001 threatened. The v2
 # gates do not bound it: in the 2026-09-14 runs `predicted` is true for 500 of
-# 500 and `kenya_share >= CLUSTER_MIN_KENYA_SHARE` passes 499 of 500.
+# 500 and `kenya_share >= V2_PROMOTION_MIN_KENYA_SHARE` passes 499 of 500.
 V2_PROMOTION_MAX_NEW_PER_PASS = int(os.getenv("V2_PROMOTION_MAX_NEW_PER_PASS", "10"))
 # Refuse a scores run older than this. The latest on 2026-09-22 was 8 days old;
 # promoting from it would chase last week's ranking.
 V2_PROMOTION_MAX_AGE_HOURS = float(os.getenv("V2_PROMOTION_MAX_AGE_HOURS", "72"))
-CLUSTER_MIN_CHANNELS = int(os.getenv("CLUSTER_MIN_CHANNELS", "2"))
-# Min share of a cluster's scored posts that must reference Kenya before it can
-# promote accounts. Corroboration alone is the WRONG gate on its own: measured
-# 2026-08-12, corroborated clusters are 8.3% Kenya-referencing against 51.5% for
-# single-channel ones, because reciprocal engagement pods are the most abundant
-# coordination on the platform and co_reply detects them best. Without this,
-# raising the channel floor targets Ugandan, Nigerian and US pods harder.
-CLUSTER_MIN_KENYA_SHARE = float(os.getenv("CLUSTER_MIN_KENYA_SHARE", "0.15"))
+# Min Kenya share of an account's scored posts before it can be promoted. Kept
+# as a gate from the cluster path it replaced: corroboration alone selected the
+# wrong population there (measured 2026-08-12, corroborated clusters 8.3%
+# Kenya-referencing against 51.5% for single-channel ones, because reciprocal
+# engagement pods are the most abundant coordination on the platform).
+V2_PROMOTION_MIN_KENYA_SHARE = float(os.getenv("V2_PROMOTION_MIN_KENYA_SHARE", "0.15"))
 # Same gate for promoted keywords. A burst detector that measures only volume
 # and acceleration promotes whatever is globally trending: #bbnaija,
 # #thirstyformore and #citizenweekend all cleared it, and their posts landed in
 # the BASELINE search partition.
 KEYWORD_MIN_KENYA_SHARE = float(os.getenv("KEYWORD_MIN_KENYA_SHARE", "0.10"))
-# Where a post's learned relevance probability counts as Kenyan. The analysis
-# side persists probabilities rather than verdicts because this cut is not
-# tuned: 0.5 is where the classifier was evaluated (precision 0.918, recall
-# 1.000 against hand labels, against 0.971 / 0.655 for the keyword gate).
-CLUSTER_RELEVANCE_THRESHOLD = float(os.getenv("CLUSTER_RELEVANCE_THRESHOLD", "0.5"))
 
 # Hate-seeking collection (docs/collection/hate-seeking.md). Runs as its own
 # cycle step with its own concurrency, never merged into the baseline keyword

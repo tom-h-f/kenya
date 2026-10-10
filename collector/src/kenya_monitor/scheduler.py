@@ -228,11 +228,9 @@ def _adaptive_targets(
         entries = adaptive.promote(
             storage.con,
             storage.posts_view(platform="x"),
-            storage.clusters_view(platform="x"),
             storage.authors_view(platform="x"),
             stories_view=storage.stories_view(platform="x"),
             hatespeech_view=storage.hatespeech_view(platform="x"),
-            relevance_view=storage.relevance_view(platform="x"),
             scores_view=storage.coord2_scores_view(platform="x"),
             dry_run=dry_run,
         )
@@ -620,8 +618,9 @@ async def run_follows_once(
     top_suspicious: int | None = None,
     top_hate: int | None = None,
 ) -> dict[str, int]:
-    """Follower/following edges for explicit handles, flagged-cluster members,
-    the top-N hate-network seeds, or the top-N most suspicious accounts."""
+    """Follower/following edges for explicit handles, the top-N hate-network
+    seeds, or the top-N most suspicious accounts. With none of those there is
+    nothing to select from and the pass does nothing."""
     from kenya_monitor.suspicion import top_suspicious_handles
 
     storage = Storage(R2Config.from_env())
@@ -636,13 +635,11 @@ async def run_follows_once(
             n=top_suspicious,
         )
         log.info("follows: selected %d suspicious accounts (requested top %d)", len(handles), top_suspicious)
-    elif handles is None:
-        handles = adaptive.cluster_accounts(
-            storage.con, storage.clusters_view(platform="x"), storage.authors_view(platform="x")
-        )
-    handles = handles[:max_accounts]
+    handles = (handles or [])[:max_accounts]
     if not handles:
-        log.info("follows: no accounts to fetch")
+        log.warning(
+            "follows: no accounts to fetch; pass handles, top_suspicious or top_hate"
+        )
         return {"follow_edges": 0}
     collector = await build_x_collector(load_accounts())
     counts = await collect_follows(collector, storage, handles, limit)

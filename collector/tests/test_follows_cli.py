@@ -55,3 +55,19 @@ def test_follows_top_suspicious():
             top_suspicious=1000,
             top_hate=None,
         )
+
+
+def test_run_follows_once_with_nothing_to_select_does_nothing():
+    """Handles used to fall back to the members of the latest v1 clusters. With
+    that source gone, no selector means no accounts - not a silent substitute."""
+    import asyncio
+
+    from kenya_monitor import scheduler
+
+    with patch.object(scheduler, "Storage"), patch.object(scheduler, "R2Config"), patch.object(
+        scheduler, "build_x_collector", new_callable=AsyncMock
+    ) as build:
+        got = asyncio.run(scheduler.run_follows_once(handles=None))
+
+    assert got == {"follow_edges": 0}
+    build.assert_not_awaited()

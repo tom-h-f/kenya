@@ -90,7 +90,6 @@ def test_promote_adds_v2_accounts_under_the_cap_and_tags_their_source(tmp_path, 
     import kenya_monitor.adaptive as ad
 
     monkeypatch.setattr(ad, "bursting_hashtags", lambda *a, **k: [])
-    monkeypatch.setattr(ad, "cluster_accounts", lambda *a, **k: [])
     monkeypatch.setattr(ad, "V2_PROMOTION_STATE_PATH", tmp_path / "v2.json")
     ids = [str(i) for i in range(30)]
     con = _con(
@@ -103,7 +102,7 @@ def test_promote_adds_v2_accounts_under_the_cap_and_tags_their_source(tmp_path, 
     )
 
     entries = promote(
-        con, "posts_unused", "clusters_unused", "authors_tbl",
+        con, "posts_unused", "authors_tbl",
         state_path=tmp_path / "dynamic.json",
         scores_view="scores_tbl", v2_enabled=True, v2_max_new=5,
     )
@@ -118,7 +117,6 @@ def test_promote_ignores_v2_when_disabled(tmp_path, monkeypatch):
     import kenya_monitor.adaptive as ad
 
     monkeypatch.setattr(ad, "bursting_hashtags", lambda *a, **k: [])
-    monkeypatch.setattr(ad, "cluster_accounts", lambda *a, **k: [])
 
     def boom(*a, **k):
         raise AssertionError("v2 path must not run when disabled")
@@ -126,7 +124,7 @@ def test_promote_ignores_v2_when_disabled(tmp_path, monkeypatch):
     monkeypatch.setattr(ad, "v2_accounts", boom)
 
     entries = promote(
-        duckdb.connect(), "p", "c", "a",
+        duckdb.connect(), "p", "a",
         state_path=tmp_path / "dynamic.json", scores_view="s", v2_enabled=False,
     )
     assert entries == []

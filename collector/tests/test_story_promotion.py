@@ -70,9 +70,6 @@ _POST_SCHEMA = pa.schema(
         ("dt", pa.date32()),
     ]
 )
-_CLUSTER_SCHEMA = pa.schema(
-    [("author_id", pa.string()), ("computed_at", pa.timestamp("us", tz="UTC"))]
-)
 _AUTHOR_SCHEMA = pa.schema(
     [
         ("platform", pa.string()),
@@ -93,7 +90,6 @@ def test_promote_tags_story_keywords(tmp_path):
             schema=_POST_SCHEMA,
         ),
     )
-    con.register("clusters_tbl", pa.Table.from_pylist([], schema=_CLUSTER_SCHEMA))
     con.register("authors_tbl", pa.Table.from_pylist([], schema=_AUTHOR_SCHEMA))
     con.register(
         "stories_tbl",
@@ -104,7 +100,7 @@ def test_promote_tags_story_keywords(tmp_path):
         ),
     )
     entries = promote(
-        con, "posts_tbl", "clusters_tbl", "authors_tbl", stories_view="stories_tbl",
+        con, "posts_tbl", "authors_tbl", stories_view="stories_tbl",
         state_path=tmp_path / "dynamic.json", dry_run=True,
     )
     story_entries = {e.value: e for e in entries if e.source == "story-flag"}
