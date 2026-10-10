@@ -13,15 +13,16 @@ uv="${UV:-$HOME/.local/bin/uv}"
 unit_dir=/etc/systemd/system
 failed=0
 
+# Runs under the identity and environment the service has (tom, group debian,
+# /etc/kma/v2-daily.env), because the textfile directory is writable only through
+# that group: a plain shell would report a failure the timer will not have.
 stage() {
-  (
-    set -a
-    # shellcheck disable=SC1091
-    . /etc/kma/v2-daily.env
-    set +a
-    cd "$repo/analysis" && "$uv" run --frozen --no-dev python -m kma.v2_daily_check "$1" \
-      --textfile-dir "$textfile"
-  ) || failed=1
+  sudo systemd-run --pipe --wait --collect --quiet \
+    -p User="$(id -un)" -p SupplementaryGroups=debian \
+    -p EnvironmentFile=/etc/kma/v2-daily.env \
+    -p WorkingDirectory="$repo/analysis" \
+    "$uv" run --frozen --no-dev python -m kma.v2_daily_check "$1" \
+      --textfile-dir "$textfile" || failed=1
 }
 
 units() {
