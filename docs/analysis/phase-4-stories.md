@@ -87,8 +87,7 @@ amplifiers, volume timeline), the corroboration panel with the caveat, and a
 
 ## Collector handoff (targeted collection)
 
-Mirrors the coordination-cluster promotion path exactly
-(`storage.clusters_view` -> `adaptive.cluster_accounts`/`promote` ->
+Rides the promotion path (`storage.stories_view` -> `adaptive.promote` ->
 `scheduler._adaptive_targets`):
 
 - `collector/config/targets.yaml`: `PesaCheck` + `AfricaCheck` added to

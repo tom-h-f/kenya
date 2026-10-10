@@ -23,7 +23,7 @@ here; the per-subsystem docs go deeper.
                               │
   ┌──────────────────────────────────────────────────────────┐
   │  kma-enrich --loop                          tf1 (x86_64) │
-  │   embed ─► classify ─► hate-score ─► [coordination/6h]   │
+  │   embed ─► classify ─► incitement ─► hate-score          │
   └──────────────────────────────────────────────────────────┘
 ```
 
@@ -61,23 +61,27 @@ by wall-clock scheduling. Cycles run back to back.
 
 ### Adaptive targeting
 Targets are not static. `adaptive.promote` adds bursting hashtags, flagged-story
-terms and coordination-cluster members to the live target set, capped and expiring
-after 7 days. This is the loop closing: analysis output becomes collection input.
+terms and v2 centrality-ranked accounts (`V2_PROMOTION_ENABLED`, off by default)
+to the live target set, capped and expiring after 7 days. This is the loop
+closing: analysis output becomes collection input.
 
 ---
 
 ## 3. Enrichment (tf1)
 
-`kma-enrich --loop` runs three model passes, each in its own subprocess so their
+`kma-enrich --loop` runs four model passes, each in its own subprocess so their
 weights never coexist in memory:
 
 | pass | model | writes |
 |---|---|---|
 | embed | `paraphrase-multilingual-mpnet-base-v2` | `embeddings/` |
 | classify | sentiment / emotion / stance | `labels/` |
+| incitement | zero-shot NLI for coded incitement | `incitement/` |
 | hate | fine-tuned afro-xlmr, 3-class | `hatespeech/` |
 
-Every 6 hours it also rebuilds and persists coordination clusters.
+It does not detect coordination. The v1 detector that used to refresh clusters
+here every 6 hours was retired 2026-10-10; v2 detection runs off this host
+(`docs/plans/2026-10-10-retire-v1.md`).
 
 All passes are incremental - they anti-join against what is already scored - so
 falling behind is self-healing, and a large backlog can be drained on GPU via
@@ -167,7 +171,7 @@ monitor hate-seek --dry-run        # render queries, no requests
 monitor adapt --dry-run            # what would be promoted
 monitor hate-mine --cohort 30      # coded-term candidates for review
 python -m kma.enrich --once        # one enrichment pass
-python -m kma.coordination_run --persist
+python -m kma.coordination_run --persist   # v1 run, on demand only
 modal run --detach modal_backfill.py   # GPU drain when scoring falls behind
 ```
 

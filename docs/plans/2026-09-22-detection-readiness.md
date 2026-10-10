@@ -30,11 +30,11 @@ reversed; each says what would reverse it.
    because a coord2 pass takes over an hour, and Kenyan hashtag campaigns run
    for hours to days. The window builder reuses the snapshot code, so a
    production run is still reproducible from its window id.
-2. **Adjudication stays on Modal; alerting runs on tf1.** ntfy lives on tf1 and
-   is tailnet-only, so Modal cannot reach it, and the 2026-09-08 decision keeps
-   `ANTHROPIC_API_KEY` off tf1. Modal writes verdicts to R2; a small tf1 job
-   reads new verdicts and posts to ntfy topic `kenya-leads`. Secrets stay where
-   they already are.
+2. **Adjudication stays on Modal; alerting reads verdicts back from R2.** The
+   2026-09-08 decision keeps `ANTHROPIC_API_KEY` off tf1, so Modal writes
+   verdicts to R2 and a separate job reads them. The tf1 ntfy poller named here
+   was dropped 2026-10-10: no ntfy token will exist, and alerts go to Grafana
+   from the iot repo.
 3. **Adjudication budget: at most 10 candidates per daily run**, ranked, new or
    materially changed since the previous run. The cap is a cost bound, and the
    run reports what it skipped.
@@ -54,8 +54,11 @@ reversed; each says what would reverse it.
 8. **Concealment features are validated on the IO archive before use.** A
    signal is kept only if it separates known operation accounts from matched
    controls - the same test that refuted the self-amplification filter.
-9. **v1 keeps running until v2 has run daily for two weeks**, then retires
-   (Track C, C5).
+9. **v1 retired 2026-10-10**, replacing "v1 keeps running until v2 has run
+   daily for two weeks". The two-week wait is dropped: v1 is 18.6% recall on the
+   IO archive and 0 of 11 Kenya-relevant in the blind read, so there is nothing
+   to compare it against that v2 does not already beat. What stopped and what
+   stayed is in `2026-10-10-retire-v1.md`.
 
 ## Workstreams
 

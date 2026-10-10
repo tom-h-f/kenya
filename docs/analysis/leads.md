@@ -1,25 +1,29 @@
-# Leads: from a daily listing to a phone
+# Leads: from a daily listing to a verdict
 
 Workstream B of `docs/plans/2026-09-22-detection-readiness.md`. This is the
-contract between the three pieces that meet here - the daily v2 listing
-(workstream A), the canary (workstream C), and the leads pass and poller built
-on `feat/leads-alerts`.
+contract between the pieces that meet here - the daily v2 listing (workstream
+A), the canary (workstream C), and the leads pass built on `feat/leads-alerts`.
 
 ```
-v2 daily (Modal, A) --> coord2/kind=communities --+
+v2 daily (A) --> coord2/kind=daily_members -------+
 trend discovery (pi0) --> trend_candidates/ ------+--> leads pass (Modal)
 canary (Modal, C) --> injected listing rows ------+      |  diff, queue <= 10, dossiers, reader
                   --> leads/kind=canary_expected         v
                                                   leads/kind=verdicts
                                                          |
-                                           kma-leads-notify (tf1) --> ntfy kenya-leads
+                                              alerting (iot repo, Grafana)
 ```
 
-## What A writes: the community listing
+Nothing in this repo reads `leads/kind=verdicts` and sends it anywhere. The
+tf1 ntfy poller (`kma.leads_notify`) was removed 2026-10-10: no ntfy token will
+exist. Whatever alerts reads the verdicts and the canary expectation from R2.
 
-`coord2/platform=x/kind=communities/dt=<day>/run=<run>.parquet`, one row per
-account in every community of four or more, the shape `03_communities.py`
-already produces:
+## What A writes: the community membership
+
+`coord2/platform=x/kind=daily_members/dt=<day>/run=<run>.parquet`, one row per
+member of every community of four or more (`kma.v2_daily`; `leads_run.py`
+reads this kind, not the `daily_accounts` listing, which carries only the
+accounts that made the triage budget). The contract:
 
 | column | type | required | meaning |
 |---|---|---|---|
@@ -31,6 +35,12 @@ already produces:
 
 All members, not only the top 25 listed per community: the diff matches
 communities by membership, and a truncated membership reads as churn.
+
+`v2_daily` writes `user_id`, `community`, `within_score`, `centrality` and the
+run tags (`run_id`, `window_id`, `window_end`, `window_days`). The optional
+columns above are used when present and are absent from it today, so the Kenya
+share floor does not act on a daily run and runs are compared on `window_days`
+alone.
 
 ## What the leads pass decides
 
@@ -71,13 +81,13 @@ Kenya-relevant `political_campaign` or `unclear` call.
    | `deadline` | timestamptz | when its absence becomes an alert |
 
    Set the deadline after the next leads pass could have judged it plus the
-   poller's interval - with the daily pass at 06:30 UTC, injection before that
-   pass plus 36 hours is safe.
+   consumer's interval - with the daily pass at 06:30 UTC, injection before
+   that pass plus 36 hours is safe.
 
-3. The poller sends every verdict with a `canary_id` whatever the reader said,
-   titled `[CANARY] <canary_id>: ...`, and sends `[CANARY] MISSING <canary_id>`
-   at high priority once the deadline passes with no verdict for it. The
-   `[CANARY]` prefix is never rewritten.
+3. An alerting consumer should send every verdict with a `canary_id` whatever
+   the reader said, titled `[CANARY] <canary_id>: ...` (`canary.alert_title`),
+   and `[CANARY] MISSING <canary_id>` once the deadline passes with no verdict
+   for it. The `[CANARY]` prefix is never rewritten.
 
 Canary accounts have no posts in R2 - the canary never touches the archive -
 so their dossier is empty and the reader will usually say `unclear`. That is
@@ -90,17 +100,11 @@ Under `leads/platform=x/`, all private (dossiers carry handles and text):
 - `kind=queue/dt=/run=<run>.parquet` - every candidate, queued or skipped
 - `kind=dossiers/dt=/run=<run>/<candidate>.parquet` - packet JSON and prompt
 - `kind=verdicts/dt=/run=<run>.parquet` - judged candidates; `mode` is
-  `production` or `validation`, and the poller reads only `production`
+  `production` or `validation`, and an alerting consumer reads only
+  `production`
 
 ## Going live
 
 1. Modal: the `kenya-r2` and `anthropic` secrets already exist. Nothing new.
 2. `modal deploy analysis/modal_leads.py` - schedules the daily pass at
    06:30 UTC. Move the cron if A's daily listing lands later.
-3. tf1 ntfy: create a token that can write topic `kenya-leads`, and subscribe
-   the phone to that topic.
-4. tf1: add `NTFY_TOKEN=<token>` to `~/kenya-monitor-2027/.env`, then
-   `docker compose --profile leads up -d --build leads-notify` in
-   `~/kenya-monitor-2027/analysis`.
-5. Before step 4, `docker compose --profile leads run --rm leads-notify --dry-run`
-   shows what the first pass would send.

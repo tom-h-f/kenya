@@ -99,7 +99,7 @@ The default Docker entrypoint. One asyncio scheduler coordinates:
 Each **posts** pass:
 
 1. Merges static `config/targets.yaml` with live `state/dynamic_targets.json`
-   (hashtag bursts + coordination-cluster accounts).
+   (hashtag bursts, flagged-story terms, v2-ranked accounts).
 2. Sweeps **recent search windows** (`SEARCH_RECENT_DAYS`, default 2 calendar days).
 3. Once per UTC day, adds **older backfill windows** (`SEARCH_BACKFILL_WINDOW_DAYS`).
 4. Fetches **account timelines** for configured + promoted accounts.
@@ -232,7 +232,8 @@ post-derived retweets.
 | Source | Rule | Promoted as |
 |--------|------|-------------|
 | Hashtag burst | 24h count >= floor AND >= ratio x 7d daily avg (or new tag) | keyword |
-| Coordination cluster | member of latest `coordination/kind=clusters` run on R2 | account timeline target |
+| Flagged story | terms of a story at or above `STORY_FLAG_MIN_INDEX` | keyword |
+| v2 ranking | top of the latest `coord2/kind=scores` run, at most `V2_PROMOTION_MAX_NEW_PER_PASS` new per pass; `V2_PROMOTION_ENABLED`, off by default | account timeline target |
 
 Caps: `DYNAMIC_MAX_KEYWORDS`, `DYNAMIC_MAX_ACCOUNTS`. Entries expire after
 `DYNAMIC_EXPIRY_DAYS` without re-confirmation.
@@ -465,8 +466,10 @@ them - they have been removed rather than left as knobs that do nothing.
 | `DYNAMIC_HASHTAG_RATIO` | 5.0 | Burst ratio vs 7d avg |
 | `BURST_ZSCORE` | 3.0 | Volume spike threshold |
 | `BURST_MIN_POSTS` | 100 | Hourly floor for burst |
-| `CLUSTER_MIN_CHANNELS` | 2 | Corroboration floor before a cluster promotes |
-| `CLUSTER_MIN_KENYA_SHARE` | 0.15 | Min Kenya-domain share before a cluster promotes |
+| `V2_PROMOTION_ENABLED` | 0 | Promote accounts from the latest v2 scores run |
+| `V2_PROMOTION_MAX_NEW_PER_PASS` | 10 | New accounts admitted per pass |
+| `V2_PROMOTION_MAX_AGE_HOURS` | 72 | Refuse a scores run older than this |
+| `V2_PROMOTION_MIN_KENYA_SHARE` | 0.15 | Min Kenya share before an account promotes |
 | `KEYWORD_MIN_KENYA_SHARE` | 0.10 | Same gate for bursting hashtags |
 
 ### Follow graph
