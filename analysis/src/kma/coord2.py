@@ -579,17 +579,28 @@ def text_rows(
     *,
     min_words: int = MIN_TEXT_WORDS,
     stopwords: frozenset[str] | None = None,
+    missing_from: str | None = None,
 ) -> pd.DataFrame:
     """Non-retweets whose cleaned text carries at least `min_words` words.
 
     Retweets are excluded because a retweet is not the retweeter's own text;
     short texts because the paper found them noise rather than signal.
+
+    `missing_from` is a relation expression with a `post_id` column; posts it
+    holds are dropped before the text is cleaned. That is how the embedding
+    stage asks "which eligible posts have no vector" under this exact
+    definition, without cleaning the whole window to find out.
     """
+    absent = (
+        f"AND NOT EXISTS (SELECT 1 FROM ({missing_from}) m WHERE m.post_id = v.post_id)"
+        if missing_from else ""
+    )
     df = con.sql(
         f"""
         SELECT post_id, user_id, created_at, text
-        FROM ({view})
+        FROM ({view}) v
         WHERE NOT coalesce(is_retweet, false) AND text IS NOT NULL AND user_id IS NOT NULL
+        {absent}
         -- Ordered so a bounded read is the SAME bounded read next time. Without
         -- it, three runs over one pinned snapshot returned 16,478, 15,085 and
         -- 10,883 rows for an identical limit, which silently made a threshold

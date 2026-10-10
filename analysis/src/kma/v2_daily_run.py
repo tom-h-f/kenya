@@ -11,6 +11,9 @@ stays where it is: this reads whatever scores `relevance/` already holds.
 
 ## What it writes (R2 mode)
 
+- `embeddings/` runs for the window's text-eligible posts that had no vector
+  (`embed_window`), BEFORE the manifest is built so the trace sees them. A
+  covered window writes nothing and loads no model. `--no-embed` skips it.
 - `bench/snapshot=<window id>/manifest.parquet` and the text trace under
   `coord2/kind=textsim`, keyed by window id and reused on a re-run.
 - `coord2/kind=daily_*`, from `v2_daily.rank`.
@@ -51,7 +54,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from kma import canary, coord2, coord2_run, textsim_run, v2_daily, window, windowed
+from kma import canary, coord2, coord2_run, embed_window, textsim_run, v2_daily, window, windowed
 
 log = logging.getLogger(__name__)
 
@@ -136,15 +139,20 @@ def run(
     with_canary: bool = False,
     windowed_width: str | None = None,
     textfile_dir: Path | None = None,
+    embed: bool = True,
 ) -> dict:
     uri = local_uri(out_dir) if out_dir else None
     held: dict = {}
+    # `ru_maxrss` only rises, so the value after each stage is the job's peak
+    # so far: the stage where it jumps is the stage that sets the peak.
+    rss_after: dict[str, float] = {}
 
     def ensure(w: window.Window) -> pd.DataFrame:
         if out_dir:
             held["manifest"] = window.build(w, con=con, write=False)
         else:
             held["manifest"] = window.ensure(w, con=con)
+        rss_after["window"] = peak_rss_mb()
         return held["manifest"]
 
     def build_trace(window_id: str) -> dict:
@@ -164,6 +172,7 @@ def run(
                     window_id, info["threshold"], overlap=info["overlap"] or None, bucket=bucket
                 )
                 frame.to_parquet(uri(key), compression="zstd")
+        rss_after["textsim"] = peak_rss_mb()
         return info
 
     def rank(w: window.Window) -> dict:
@@ -189,14 +198,22 @@ def run(
             text_threshold=v2_daily.TEXT_THRESHOLD, text_overlap=coord2.TEXT_MIN_OVERLAP,
             min_entities=min_entities, since=w.start.isoformat(), until=until, uri=uri,
         )
+        rss_after["rank"] = peak_rss_mb()
         return {**result.summary, "keys": {**result.keys, "scores": scores_key},
                 "scores_rows": len(scores)}
 
+    if embed and out_dir:
+        log.info("embedding stage skipped: --out-dir writes nothing to R2")
+    embed_stage = (
+        (lambda w: embed_window.embed_missing(con, w)) if embed and not out_dir else None
+    )
+
     out = v2_daily.orchestrate(
         end or None, days, textsim=build_trace, rank_fn=rank, con=con, ensure=ensure,
-        trace_exists=(lambda _: False) if out_dir else None,
+        trace_exists=(lambda _: False) if out_dir else None, embed=embed_stage,
     )
     out["peak_rss_mb"] = peak_rss_mb()
+    out["peak_rss_mb_after"] = rss_after
     if textfile_dir is not None:
         out["gauge"] = str(write_gauge(textfile_dir))
     return out
@@ -212,6 +229,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="union the active planted canary into the window")
     ap.add_argument("--windowed", choices=windowed.WIDTHS,
                     help="also run the windowed detector at its decided floor for that width")
+    ap.add_argument("--no-embed", action="store_true",
+                    help="skip the stage that embeds the window's eligible posts with no vector")
     ap.add_argument("--out-dir", type=Path,
                     help="write results here and nothing to R2 (measurement, tests)")
     ap.add_argument("--textfile-dir", type=Path,
@@ -233,6 +252,7 @@ def main(argv: list[str] | None = None) -> None:
         args.end, args.days, con=con, out_dir=args.out_dir,
         min_entities=args.min_entities, with_canary=args.canary,
         windowed_width=args.windowed, textfile_dir=args.textfile_dir,
+        embed=not args.no_embed,
     )
     print(json.dumps(out, default=str, indent=2))
 

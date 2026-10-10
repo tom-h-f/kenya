@@ -56,13 +56,24 @@ def test_posts_are_windowed_by_collection_day(corpus):
     assert posts["rows"].sum() == 8
 
 
-def test_embeddings_are_kept_from_before_the_window_but_not_after(corpus):
+def test_embeddings_are_kept_whatever_their_date(corpus):
     """A post re-collected inside the window may have been embedded weeks
-    earlier; windowing the start of embeddings would drop its vector."""
+    earlier, and the daily embeds yesterday's posts today, just before it pins
+    the window. Bounding either end of the embeddings would hide vectors the
+    trace needs."""
     con, root, client = corpus
     w = window.Window(date(2026, 9, 3), 2)
     m = window.build(w, con=con, client=client, uri=_uri(root), write=False)
-    assert sorted(m.loc[m["prefix"] == "embeddings", "dt"]) == ["2026-08-20", "2026-09-03"]
+    assert sorted(m.loc[m["prefix"] == "embeddings", "dt"]) == [
+        "2026-08-20", "2026-09-03", "2026-09-04",
+    ]
+
+
+def test_posts_after_the_end_are_still_left_out(corpus):
+    con, root, client = corpus
+    m = window.build(window.Window(date(2026, 9, 3), 30), con=con, client=client,
+                     uri=_uri(root), write=False)
+    assert "2026-09-04" not in set(m.loc[m["prefix"] == "posts", "dt"])
 
 
 def test_prefixes_the_detector_does_not_read_are_left_out(corpus):
