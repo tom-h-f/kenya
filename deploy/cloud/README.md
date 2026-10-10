@@ -137,3 +137,35 @@ The rolling rank keeps floor 2. `windowed.DETECTION` (day, 3) and
 `windowed.SERIES` (week, 5) are the decided floors for per-day and per-week
 windows and apply under `--windowed`. Whether the rolling rank's floor should
 move is undecided; see the plan.
+
+## Public dashboard summary
+
+`kma.dashboard` reads the daily's persisted output and writes one public JSON
+blob, `public/summary.json`, to the separate bucket `kenya-monitor-dashboard`.
+The kenya.tomfr.net Worker binds that bucket only. The design is in
+`docs/plans/2026-10-10-dashboard-v2.md`.
+
+Not deployed. Units: `kma-dashboard.service`, `kma-dashboard.timer`,
+`kma-v2-daily.service.d/dashboard.conf`.
+
+| name | file | meaning |
+|---|---|---|
+| `R2_DASHBOARD_ACCESS_KEY_ID` | `/etc/kma/dashboard.env` | token scoped to `kenya-monitor-dashboard`, Object Read & Write |
+| `R2_DASHBOARD_SECRET_ACCESS_KEY` | `/etc/kma/dashboard.env` | its secret |
+| `R2_DASHBOARD_BUCKET` | `/etc/kma/dashboard.env` | defaults to `kenya-monitor-dashboard`; the producer refuses `kenya-monitor-2027` |
+
+The read side reuses `/etc/kma/v2-daily.env`.
+
+```sh
+sudo install -m 0640 -o root -g tom /dev/null /etc/kma/dashboard.env      # then fill it in
+sudo cp deploy/cloud/kma-dashboard.service deploy/cloud/kma-dashboard.timer /etc/systemd/system/
+sudo install -d /etc/systemd/system/kma-v2-daily.service.d
+sudo cp deploy/cloud/kma-v2-daily.service.d/dashboard.conf /etc/systemd/system/kma-v2-daily.service.d/
+sudo systemctl daemon-reload && sudo systemctl enable --now kma-dashboard.timer
+sudo systemctl start kma-dashboard.service && journalctl -u kma-dashboard -n 20
+cd ~/kenya-monitor-2027/analysis && uv run --frozen --no-dev python -m kma.dashboard --out-dir /tmp/dash   # trial, publishes nothing
+```
+
+Runs after every successful daily (`OnSuccess=`) and once at 12:00 UTC. Measured
+2026-10-10 on a Mac: 92 s, 344 MB peak, almost all of it footer reads over the
+`posts/` prefix. The `cloud` box is not measured; `MemoryMax=1G`.

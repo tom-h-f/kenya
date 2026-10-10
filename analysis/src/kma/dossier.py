@@ -20,9 +20,9 @@ actually need to judge a cluster:
 
 PRIVATE BY CONSTRUCTION. Unlike everything in `dashboard.py`, this deliberately
 carries post text and account handles, because an adjudicator cannot work
-without them. It must never reach `DASHBOARD_BUCKET`, and no field here may be
-copied into `build_summary`. `tests/test_dossier.py` asserts the dashboard
-payload stays clean; keep it that way.
+without them. It must never reach the dashboard bucket, and no field here may be
+copied into `kma.dashboard`'s payload. `tests/test_dossier.py` asserts the
+dashboard guard rejects every dossier field; keep it that way.
 """
 
 from __future__ import annotations

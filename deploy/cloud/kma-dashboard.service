@@ -1,0 +1,27 @@
+[Unit]
+Description=Kenya monitor public dashboard summary (persisted R2 output in, one JSON blob out)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Restart=on-failure
+RestartSec=300
+User=tom
+WorkingDirectory=/home/tom/kenya-monitor-2027/analysis
+# The first file is the read key for the data bucket the daily already uses.
+# The second adds the publish key, which can write kenya-monitor-dashboard and
+# nothing else.
+EnvironmentFile=/etc/kma/v2-daily.env
+EnvironmentFile=/etc/kma/dashboard.env
+ExecStart=/home/tom/.local/bin/uv run --frozen --no-dev python -m kma.dashboard
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kma-dashboard
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=1G
+TimeoutStartSec=30min
