@@ -2,9 +2,16 @@
 Description=Kenya monitor v2 daily detector (CPU, no Modal)
 Wants=network-online.target
 After=network-online.target
+# A re-run reuses the window manifest and text trace, so a retry after a
+# transient R2 or network failure costs only the rank. Three tries in six hours,
+# then it stays failed and the stale-gauge alert pages.
+StartLimitIntervalSec=21600
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
+Restart=on-failure
+RestartSec=900
 User=tom
 # /opt/iot-cloud/state/textfile is debian:debian 775. The group is enough to
 # write the gauge; the iot secrets stay unreadable to this unit.
