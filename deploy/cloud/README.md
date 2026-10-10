@@ -170,3 +170,39 @@ cd ~/kenya-monitor-2027/analysis && uv run --frozen --no-dev python -m kma.dashb
 Runs after every successful daily (`OnSuccess=`) and once at 12:00 UTC. Measured
 2026-10-10 on a Mac: 92 s, 344 MB peak, almost all of it footer reads over the
 `posts/` prefix. The `cloud` box is not measured; `MemoryMax=1G`.
+
+## Explorer bundle
+
+`kma.explorer_export` reads the daily's persisted tables (`daily_runs`,
+`daily_communities`, `daily_members`, and the new `daily_edges` and
+`daily_traces`) and the window's posts, and writes the explorer bundle to
+`kenya-monitor-dashboard` under `explorer/v1/`. Contract:
+`docs/plans/explorer-contract/schema.json`. Design:
+`docs/plans/2026-10-10-explorer.md`.
+
+Not deployed. Units: `kma-explorer-export.service`,
+`kma-v2-daily.service.d/explorer-export.conf` (adds to the dashboard drop-in; `OnSuccess=` is a list).
+The unit is `After=kma-dashboard.service`, `Nice=15`, `IOSchedulingClass=idle`,
+`MemoryMax=4G`, `TimeoutStartSec=45min`, retried at most 3 times in an hour. There is no timer: if the daily
+fails the previous bundle stays and the manifest's stamp ages.
+
+The daily now writes two more kinds, `daily_edges` (every fused edge, trace mask, largest weight,
+shared retweets) and `daily_traces` (trace rows of kept members). A run made before this change has
+no edges and the exporter refuses it.
+
+Env: the same two files as the dashboard (`/etc/kma/v2-daily.env`, `/etc/kma/dashboard.env`). No new secret.
+
+```sh
+sudo cp deploy/cloud/kma-explorer-export.service /etc/systemd/system/
+sudo cp deploy/cloud/kma-v2-daily.service.d/explorer-export.conf /etc/systemd/system/kma-v2-daily.service.d/
+sudo systemctl daemon-reload
+cd ~/kenya-monitor-2027/analysis && uv run --frozen --no-dev python -m kma.explorer_export --out-dir /tmp/explorer   # trial, publishes nothing
+sudo systemctl start kma-explorer-export.service && journalctl -u kma-explorer-export -n 30
+```
+
+Safety: the bundle is staged, then checked (contract validator, language lint, id checks) before any
+upload. Files under `runs/{run}/` go first, `manifest.json` last, then runs past the 30 kept are pruned.
+A failure before the manifest leaves the previous run live. Remove an account by adding its id to
+`explorer/denylist.txt`; it is gone from every file on the next run.
+
+MEASUREMENTS_PLACEHOLDER

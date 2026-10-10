@@ -1,0 +1,31 @@
+[Unit]
+Description=Kenya monitor explorer bundle (persisted daily output and window posts in, bundle out)
+Wants=network-online.target
+# After the dashboard, so the two public producers never overlap, and neither
+# overlaps the daily: the explorer is queued by the daily's OnSuccess=, which
+# fires once the 12 GiB daily has exited.
+After=network-online.target kma-v2-daily.service kma-dashboard.service
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Restart=on-failure
+RestartSec=300
+User=tom
+WorkingDirectory=/home/tom/kenya-monitor-2027/analysis
+# The first file is the read key for the data bucket the daily already uses.
+# The second adds the publish key, which can write kenya-monitor-dashboard and
+# nothing else. The producer refuses to publish into the data bucket.
+EnvironmentFile=/etc/kma/v2-daily.env
+EnvironmentFile=/etc/kma/dashboard.env
+ExecStart=/home/tom/.local/bin/uv run --frozen --no-dev python -m kma.explorer_export
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kma-explorer-export
+Nice=15
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=4G
+TimeoutStartSec=45min
