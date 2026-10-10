@@ -13,7 +13,10 @@ on it.
 The gauge is the alert signal (`CloudKenyaV2DailyStale`); these checks are what
 the gauge cannot say: that the run listed accounts, that `kind=scores` carries
 the `community` column the collector reads, that no planted canary id leaked
-into it, and that the gauge was written after its data and not before.
+into it, that the gauge was written after its data and not before, and whether
+the run had a text trace. A run whose trace never arrived from the Modal job
+still lists accounts and still writes the gauge, so only these checks say that
+its ranking has no text similarity in it.
 """
 
 from __future__ import annotations
@@ -30,7 +33,8 @@ from pathlib import Path
 import duckdb
 
 from kma import canary, db
-from kma.v2_daily_run import GAUGE_FILE, GAUGE_METRIC
+from kma.text_trace import BUILT, REUSED, SKIPPED
+from kma.v2_daily_run import GAUGE_FILE, GAUGE_METRIC, TEXT_TRACE_METRIC
 
 # Peak RSS of the 7 day window measured 2026-10-10 (deploy/cloud/README.md). It
 # grows with embedded vectors, so a run at fuller coverage needs more: this is a
@@ -167,18 +171,72 @@ def read_gauge(directory: Path) -> tuple[float | None, str]:
     return None, f"{path}: no valid {GAUGE_METRIC} sample"
 
 
+def read_text_trace_gauge(directory: Path) -> float | None:
+    """The text-trace sample beside the freshness gauge, or None when the file
+    has none (it was written by a run that predates the sample)."""
+    try:
+        text = (directory / GAUGE_FILE).read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith(TEXT_TRACE_METRIC + " "):
+            try:
+                return float(line.split()[1])
+            except ValueError:
+                return None
+    return None
+
+
+def check_text_trace(con: duckdb.DuckDBPyConnection, runs_source: str,
+                     gauge: float | None) -> list[Check]:
+    """What the latest `daily_runs` row and the gauge say about the text trace.
+
+    `missing` fails: the run ranked without text similarity, which is over half
+    the fused edges, and nothing else about it looks wrong. `skipped` passes,
+    since `--text-trace none` is a decision. A row with no `text_trace` field
+    was written by code that predates it and cannot be vouched for."""
+    try:
+        row = con.sql(
+            f"SELECT * FROM {runs_source} ORDER BY filename DESC LIMIT 1"
+        ).df()
+    except duckdb.Error as exc:
+        return [Check("text trace in the latest run", False, str(exc).splitlines()[0][:160])]
+    if row.empty:
+        return [Check("text trace in the latest run", False, "no daily_runs row")]
+    if "text_trace" not in row.columns or row["text_trace"].isna().all():
+        return [Check("text trace in the latest run", False,
+                      "latest daily_runs row has no text_trace field")]
+    state = str(row["text_trace"].iloc[0])
+    mode = str(row["text_trace_mode"].iloc[0]) if "text_trace_mode" in row.columns else "?"
+    window_id = str(row["window_id"].iloc[0]) if "window_id" in row.columns else "?"
+    checks = [Check("text trace in the latest run", state in (BUILT, REUSED, SKIPPED),
+                    f"{state} (mode {mode}) for {window_id}")]
+    present = state in (BUILT, REUSED)
+    if gauge is None:
+        checks.append(Check("text trace gauge", False, f"no {TEXT_TRACE_METRIC} sample"))
+    else:
+        checks.append(Check("text trace gauge", int(gauge) == int(present),
+                            f"{TEXT_TRACE_METRIC} {int(gauge)}, run says {state}"))
+    return checks
+
+
 def postrun(
     *,
     con: duckdb.DuckDBPyConnection,
     textfile_dir: Path,
     scores_source: str | None = None,
     members_source: str | None = None,
+    runs_source: str | None = None,
     now: Callable[[], float] = time.time,
     max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
 ) -> list[Check]:
     scores_source = scores_source or db.coord2_scores_source("x")
     members_source = members_source or (
         f"read_parquet('r2://{db.BUCKET}/coord2/platform=x/kind=daily_members/dt=*/run=*.parquet', "
+        "union_by_name=true, hive_partitioning=true, filename=true)"
+    )
+    runs_source = runs_source or (
+        f"read_parquet('r2://{db.BUCKET}/coord2/platform=x/kind=daily_runs/dt=*/run=*.parquet', "
         "union_by_name=true, hive_partitioning=true, filename=true)"
     )
     checks: list[Check] = []
@@ -209,6 +267,8 @@ def postrun(
             computed = frame["computed_at"].max().timestamp()
             checks.append(Check("gauge written after its data", gauge >= computed - 1,
                                 f"gauge {gauge - computed:+.0f} s from scores"))
+
+    checks.extend(check_text_trace(con, runs_source, read_text_trace_gauge(textfile_dir)))
 
     try:
         latest = con.sql(

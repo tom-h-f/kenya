@@ -22,7 +22,20 @@ stays where it is: this reads whatever scores `relevance/` already holds.
   only a hand run wrote it before. One row per LISTED account: the report's
   output, ranked within community, not a second top-N. Canary accounts are
   left out - they are not real ids and the collector would try to fetch them.
-- the freshness gauge, last, only after everything above succeeded.
+- the freshness gauge, last, only after everything above succeeded, with a
+  second sample `kma_v2_daily_text_trace_present` (1 or 0) in the same file.
+
+## Where the text trace comes from (`--text-trace`)
+
+- `modal` (the CLI default): the trace the `kma-text-trace` Modal job persisted
+  for this window id. Nothing is embedded or searched here. If it is absent the
+  rank runs WITHOUT text similarity, never with a locally built one - at full
+  coverage that is the out-of-memory this mode exists to avoid - and the run
+  says so: `text_trace=missing` on the `daily_runs` row, a WARNING in the
+  journal, and a 0 on the text-trace gauge. This host needs no Modal
+  credentials: the only coupling is R2.
+- `local`: embed the window's missing posts and build the trace on this host.
+- `none`: no text similarity, on purpose (`text_trace=skipped`).
 
 `--out-dir` keeps the manifest and the text trace in memory and writes every
 other table under that directory, so a measurement or a test touches no R2
@@ -54,23 +67,28 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from kma import canary, coord2, coord2_run, embed_window, textsim_run, v2_daily, window, windowed
+from kma import canary, coord2, coord2_run, embed_window, text_trace, v2_daily, window, windowed
 
 log = logging.getLogger(__name__)
 
 TEXTFILE_DIR_ENV = "KMA_TEXTFILE_DIR"
 GAUGE_FILE = "kma_v2_daily.prom"
 GAUGE_METRIC = "kma_v2_daily_last_success_timestamp_seconds"
+TEXT_TRACE_METRIC = "kma_v2_daily_text_trace_present"
 
 # Measured 2026-10-10, see docs/plans/2026-10-10-cloud-v2-daily.md.
 DEFAULT_DAYS = 21
 
 
-def gauge_text(epoch_seconds: int) -> str:
-    return f"# TYPE {GAUGE_METRIC} gauge\n{GAUGE_METRIC} {epoch_seconds}\n"
+def gauge_text(epoch_seconds: int, text_trace_present: bool | None = None) -> str:
+    text = f"# TYPE {GAUGE_METRIC} gauge\n{GAUGE_METRIC} {epoch_seconds}\n"
+    if text_trace_present is not None:
+        text += f"# TYPE {TEXT_TRACE_METRIC} gauge\n{TEXT_TRACE_METRIC} {int(text_trace_present)}\n"
+    return text
 
 
-def write_gauge(directory: Path, now: float | None = None) -> Path:
+def write_gauge(directory: Path, now: float | None = None,
+                text_trace_present: bool | None = None) -> Path:
     """Write the freshness gauge atomically.
 
     The temp file sits in the same directory (a rename across filesystems is
@@ -83,7 +101,7 @@ def write_gauge(directory: Path, now: float | None = None) -> Path:
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{GAUGE_FILE}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as handle:
-            handle.write(gauge_text(int(time.time() if now is None else now)))
+            handle.write(gauge_text(int(time.time() if now is None else now), text_trace_present))
         os.chmod(tmp, 0o644)
         os.replace(tmp, target)
     except BaseException:
@@ -140,7 +158,12 @@ def run(
     windowed_width: str | None = None,
     textfile_dir: Path | None = None,
     embed: bool = True,
+    text_trace_mode: str = "local",
 ) -> dict:
+    """`text_trace_mode` defaults to `local`, what this function did before
+    the mode existed; the CLI's default is `modal`."""
+    if text_trace_mode not in text_trace.MODES:
+        raise ValueError(f"text_trace_mode must be one of {text_trace.MODES}, got {text_trace_mode!r}")
     uri = local_uri(out_dir) if out_dir else None
     held: dict = {}
     # `ru_maxrss` only rises, so the value after each stage is the job's peak
@@ -155,13 +178,34 @@ def run(
         rss_after["window"] = peak_rss_mb()
         return held["manifest"]
 
-    def build_trace(window_id: str) -> dict:
-        edges, info = textsim_run.build(
-            con, window_id,
-            threshold=v2_daily.TEXT_THRESHOLD, overlap=-1.0,
-            similarity_for=coord2.gpu_cosine_pairs, time_bucket="day",
-            persist=out_dir is None, manifest=held["manifest"],
+    def trace_reused(window_id: str) -> bool:
+        present = v2_daily.text_trace_exists(con, window_id)
+        if present:
+            held["text_trace"] = text_trace.REUSED
+        return present
+
+    def trace_missing(window_id: str) -> dict:
+        held["text_trace"] = text_trace.MISSING
+        key = coord2_run.textsim_key(
+            window_id, v2_daily.TEXT_THRESHOLD, overlap=coord2.TEXT_MIN_OVERLAP
         )
+        log.warning(
+            "TEXT TRACE MISSING for window %s: ranking WITHOUT text similarity. Expected %s, "
+            "written by the kma-text-trace Modal job; check its logs and `modal app list`.",
+            window_id, key,
+        )
+        return {"status": text_trace.MISSING, "expected_key": key}
+
+    def trace_skipped(window_id: str) -> dict:
+        held["text_trace"] = text_trace.SKIPPED
+        log.info("text trace skipped on purpose (--text-trace none)")
+        return {"status": text_trace.SKIPPED}
+
+    def build_trace(window_id: str) -> dict:
+        edges, info = text_trace.build(
+            con, window_id, manifest=held["manifest"], persist=out_dir is None,
+        )
+        held["text_trace"] = text_trace.BUILT
         if out_dir:
             plain = edges.groupby(["source", "target"], as_index=False).agg(
                 weight=("weight", "mean")
@@ -179,13 +223,22 @@ def run(
         planted = canary.load_active(con) if with_canary else None
         if with_canary:
             log.info("canary: %d planted post(s) active", 0 if planted is None else len(planted))
+        # A run without a trace must not claim a threshold it never applied:
+        # `text_threshold` null on the row and on `kind=scores` is how a reader
+        # tells a no-text rank from a 0.85 one.
+        has_text = held["text_trace"] in (text_trace.BUILT, text_trace.REUSED)
+        threshold = v2_daily.TEXT_THRESHOLD if has_text else None
+        overlap = coord2.TEXT_MIN_OVERLAP if has_text else None
         extra = []
         if windowed_width:
             spec = windowed.DETECTION if windowed_width == windowed.DETECTION.width else windowed.SERIES
             extra.append(windowed_pass(spec))
         result = v2_daily.rank(
             con, w, min_entities=min_entities, extra_passes=extra, canary_posts=planted,
-            persist=True, uri=uri, manifest=held["manifest"], text_edges=held.get("text_edges"),
+            persist=True, uri=uri, manifest=held["manifest"],
+            text_edges=held.get("text_edges") if has_text else None,
+            text_threshold=threshold, text_overlap=overlap,
+            summary_extra={"text_trace": held["text_trace"], "text_trace_mode": text_trace_mode},
         )
         scores = scores_frame(result.tables["accounts"])
         if scores.empty:
@@ -195,27 +248,35 @@ def run(
         until = (w.end + timedelta(days=1)).isoformat()
         scores_key = coord2_run.persist(
             con, scores, snapshot=w.id, trace_sizes=result.trace_sizes,
-            text_threshold=v2_daily.TEXT_THRESHOLD, text_overlap=coord2.TEXT_MIN_OVERLAP,
+            text_threshold=threshold, text_overlap=overlap,
             min_entities=min_entities, since=w.start.isoformat(), until=until, uri=uri,
         )
         rss_after["rank"] = peak_rss_mb()
         return {**result.summary, "keys": {**result.keys, "scores": scores_key},
                 "scores_rows": len(scores)}
 
-    if embed and out_dir:
+    local = text_trace_mode == "local"
+    if embed and local and out_dir:
         log.info("embedding stage skipped: --out-dir writes nothing to R2")
     embed_stage = (
-        (lambda w: embed_window.embed_missing(con, w)) if embed and not out_dir else None
+        (lambda w: embed_window.embed_missing(con, w)) if embed and local and not out_dir else None
     )
+    textsim, exists = {
+        "local": (build_trace, (lambda _: False) if out_dir else trace_reused),
+        "modal": (trace_missing, trace_reused),
+        "none": (trace_skipped, lambda _: False),
+    }[text_trace_mode]
 
     out = v2_daily.orchestrate(
-        end or None, days, textsim=build_trace, rank_fn=rank, con=con, ensure=ensure,
-        trace_exists=(lambda _: False) if out_dir else None, embed=embed_stage,
+        end or None, days, textsim=textsim, rank_fn=rank, con=con, ensure=ensure,
+        trace_exists=exists, embed=embed_stage,
     )
+    out["text_trace"] = held["text_trace"]
     out["peak_rss_mb"] = peak_rss_mb()
     out["peak_rss_mb_after"] = rss_after
     if textfile_dir is not None:
-        out["gauge"] = str(write_gauge(textfile_dir))
+        present = held["text_trace"] in (text_trace.BUILT, text_trace.REUSED)
+        out["gauge"] = str(write_gauge(textfile_dir, text_trace_present=present))
     return out
 
 
@@ -229,8 +290,13 @@ def main(argv: list[str] | None = None) -> None:
                     help="union the active planted canary into the window")
     ap.add_argument("--windowed", choices=windowed.WIDTHS,
                     help="also run the windowed detector at its decided floor for that width")
+    ap.add_argument("--text-trace", choices=text_trace.MODES, default="modal",
+                    dest="text_trace_mode",
+                    help="modal: reuse the trace the Modal job persisted, and rank without text "
+                         "if it is absent; local: embed and build it on this host; none: no text")
     ap.add_argument("--no-embed", action="store_true",
-                    help="skip the stage that embeds the window's eligible posts with no vector")
+                    help="with --text-trace local, skip the stage that embeds the window's "
+                         "eligible posts with no vector")
     ap.add_argument("--out-dir", type=Path,
                     help="write results here and nothing to R2 (measurement, tests)")
     ap.add_argument("--textfile-dir", type=Path,
@@ -252,7 +318,7 @@ def main(argv: list[str] | None = None) -> None:
         args.end, args.days, con=con, out_dir=args.out_dir,
         min_entities=args.min_entities, with_canary=args.canary,
         windowed_width=args.windowed, textfile_dir=args.textfile_dir,
-        embed=not args.no_embed,
+        embed=not args.no_embed, text_trace_mode=args.text_trace_mode,
     )
     print(json.dumps(out, default=str, indent=2))
 

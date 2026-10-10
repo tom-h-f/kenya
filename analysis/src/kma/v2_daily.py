@@ -245,6 +245,7 @@ def rank(
     manifest: pd.DataFrame | None = None,
     text_edges: pd.DataFrame | None = None,
     traces: dict[str, pd.DataFrame] | None = None,
+    summary_extra: dict | None = None,
 ) -> RankResult:
     """Rank one window and persist every table. `networks` injects prebuilt
     `(networks, sizes, view)` in place of `coord2_run.snapshot_networks`, which
@@ -252,7 +253,8 @@ def rank(
     just the window manifest and the pair-level text trace, for a caller that
     holds them in memory, and `traces` the per-trace (user_id, entity) rows that
     `networks` was built from; without them `daily_edges.shared_retweets` is
-    null for co_retweet pairs and `daily_traces` is empty."""
+    null for co_retweet pairs and `daily_traces` is empty. `summary_extra` adds
+    fields to the `daily_runs` row."""
     uri = uri or (lambda key: f"r2://{BUCKET}/{key}")
     stamp = run_stamp(now)
     run_id = f"{stamp:%Y%m%dT%H%M%SZ}"
@@ -365,6 +367,7 @@ def rank(
         "min_kenya": min_kenya,
         **{f"edges_{r['trace']}": int(r["edges"]) for _, r in sizes.iterrows()},
         **{k: round(v, 1) for k, v in timings.items()},
+        **(summary_extra or {}),
     }
     result = RankResult(tables=tables, summary=summary, trace_sizes=sizes)
 
