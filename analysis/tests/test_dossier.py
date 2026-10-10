@@ -311,16 +311,16 @@ def test_both_scopes_can_apply_at_once():
     assert max(sql.index("_a"), sql.index("_p")) < sql.index("QUALIFY")
 
 
-def test_the_dashboard_payload_never_carries_dossier_fields():
+def test_the_dashboard_guard_rejects_every_dossier_field():
     """The safety boundary. `dashboard.py` is public-by-construction and this
     module is the opposite; nothing here may be copied across."""
     from kma import dashboard as d
 
-    forbidden = {
+    dossier_fields = {
         "shared_objects", "representative_posts", "amplification_targets",
         "object_text", "object_author", "target_handle", "author_handle", "text",
     }
-    assert not (set(d.TRIAGE_COLUMNS) & forbidden)
+    assert dossier_fields <= d.FORBIDDEN_KEYS
 
 
 def _pool():

@@ -1,0 +1,12 @@
+[Unit]
+Description=Kenya monitor public dashboard summary, safety run 12:00 UTC
+
+[Timer]
+# The normal run is chained to the daily's success (see
+# kma-v2-daily.service.d/dashboard.conf). This one exists so that a daily that
+# failed or never started is still reported on the page the same day.
+OnCalendar=*-*-* 12:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,562 +1,427 @@
 """Unit tests for kma.dashboard (no R2, no models).
 
-The public-safety tests here are the reason the summary blob can be trusted.
-"Public-safe by construction" is a docstring claim; these assert it against the
-built payload, using fabricated data seeded with exactly the things that must
-never reach the page.
+The producer's contract is that the payload is public by construction and that
+a missing source reads as "not available" rather than as a number. Both are
+asserted against a built payload, not trusted from the docstring.
 """
 
+from __future__ import annotations
+
+import json
 import re
+from datetime import date, datetime, timezone
 
 import pandas as pd
 import pytest
 
 from kma import dashboard as d
+from kma import figures
 
-SNOWFLAKE = re.compile(r"^[0-9]{15,20}$")
-
-FORBIDDEN_KEYS = {
-    "author_id", "author_handle", "platform_user_id", "platform_post_id",
-    "handle", "screen_name", "display_name", "text", "url", "bio",
-    "profile_image_url", "src", "dst", "member_post_ids",
-}
-
-# Values planted in the fixtures below. None may appear anywhere in the payload.
-LEAKY_VALUES = {
-    "1234567890123456789", "9876543210987654321", "1111111111111111111",
-    "2222222222222222222", "3333333333333333333",
-    "kenyanpatriot", "wanjiku254", "@rutoWatch",
-}
+NOW = datetime(2026, 10, 11, 4, 0, tzinfo=timezone.utc)
+TODAY = NOW.date()
 
 
-def _walk(node, path="$"):
-    """Yield (path, key, value) for every scalar in a nested structure."""
-    if isinstance(node, dict):
-        for k, v in node.items():
-            yield from _walk(v, f"{path}.{k}")
-            if not isinstance(v, (dict, list)):
-                yield (path, k, v)
-    elif isinstance(node, list):
-        for i, v in enumerate(node):
-            yield from _walk(v, f"{path}[{i}]")
-            if not isinstance(v, (dict, list)):
-                yield (f"{path}[{i}]", None, v)
+def _key(prefix: str, dt: str, n: int = 0, **parts) -> dict:
+    mid = "/".join(f"{k}={v}" for k, v in parts.items())
+    return {"Key": f"{prefix}/platform=x/{mid + '/' if mid else ''}dt={dt}/run={n}.parquet",
+            "Size": 1000}
 
 
-class _Rel:
-    """Stands in for a DuckDB relation: the readers only ever have .df() called."""
-
-    def __init__(self, frame):
-        self._frame = frame
-
-    def df(self):
-        return self._frame
+def _posts(days: list[str], types=("search", "replies", "hate_search")) -> pd.DataFrame:
+    return d.parse_listing(_key("posts", dt, i, type=t)
+                           for dt in days for i, t in enumerate(types))
 
 
-def _members():
-    """Two clusters: one corroborated (2 channels), one candidate. Author ids are
-    snowflakes and one cluster name carries a curated handle as bare prose."""
-    return pd.DataFrame({
-        "author_id": [
-            "1234567890123456789", "9876543210987654321",
-            "1111111111111111111", "2222222222222222222",
-            "3333333333333333333",
-        ],
-        "cluster_id": [0, 0, 0, 0, 1],
-        "size": [4, 4, 4, 4, 1],
-        "channels": [["co_retweet", "co_reply"]] * 4 + [["co_retweet"]],
-        "n_channels": [2, 2, 2, 2, 1],
-        "internal_edge_share": [0.62, 0.62, 0.62, 0.62, 0.0],
-        "name": ["wantam ruto"] * 4 + ["kenyanpatriot rigged"],
-        "label": ["wantam ruto (n=4)"] * 4 + ["kenyanpatriot rigged (n=1)"],
-    })
+def _rows(listing: pd.DataFrame, per_object: int = 10):
+    def fn(keys: list[str]) -> dict[str, int]:
+        return {k: per_object for k in keys}
+    return fn
 
 
-def _scorecards():
-    """Triage scores for the same two clusters, so the public-safety walk runs
-    against a payload that actually carries these columns.
-
-    `topic_entropy` is all-NaN on purpose: that is its real state, because it
-    needs a topic model over the whole embedding matrix that the automated pass
-    does not run."""
-    return pd.DataFrame({
-        "cluster_id": [0, 1],
-        "inauthenticity_index": [0.83, 0.21],
-        "near_dup_rate": [0.54, 0.11],
-        "self_amplification": [0.41, 0.02],
-        "self_amplification_z": [6.2, 0.3],
-        "hate_index": [0.19, 0.0],
-        "topic_entropy": [float("nan"), float("nan")],
-    })
+def _runs(computed_at: str = "2026-10-11T03:50:00+00:00", **over) -> pd.DataFrame:
+    row = {
+        "run_id": "20261011T033000Z", "window_id": "daily-2026-10-10-30d",
+        "window_end": "2026-10-10", "window_days": 30, "computed_at": computed_at,
+        "text_threshold": 0.85, "text_overlap": 0.1, "min_entities": 2, "min_kenya": 0.5,
+        "networks_s": 12.3, "fuse_centrality_s": 4.5, "relevance_s": 8.0,
+        "communities_s": 2.2,
+        # Account-level and count columns the real table carries and the
+        # payload must not.
+        "listed_accounts": 355, "listed_communities": 17, "accounts_in_graph": 588,
+        "communities": 40, "edges_in_graph": 9999,
+    }
+    return pd.DataFrame([{**row, **over}])
 
 
-def _verdicts():
-    """One cluster judged, one not. A cluster the adjudication queue never
-    reached must read as unjudged, not as judged-and-harmless."""
-    return pd.DataFrame({
-        "cluster_id": [0],
-        "cluster_type": ["engagement_pod"],
-        "kenya_relevant": [False],
-        "confidence": ["high"],
-        "rationale": ["Jointly amplifying one account's engagement bait."],
-        "adjudicator": ["claude-sonnet-5"],
-    })
-
-
-def _edges():
-    return pd.DataFrame({
-        "src": [
-            "1234567890123456789", "1234567890123456789",
-            "9876543210987654321", "1111111111111111111",
-        ],
-        "dst": [
-            "9876543210987654321", "1111111111111111111",
-            "2222222222222222222", "2222222222222222222",
-        ],
-        "weight": [5.0, 3.0, 2.0, 1.0],
-        "min_gap": [4.0, 9.0, 30.0, 60.0],
-        "channel": ["co_retweet", "co_retweet", "co_reply", "co_retweet"],
-    })
-
-
-def _metrics():
-    return pd.DataFrame({
-        "computed_at": pd.to_datetime(["2026-08-04T12:00:00Z", "2026-08-04T12:00:00Z"]),
-        "code_version": ["bb56440", "bb56440"],
-        "channel": ["co_retweet", "co_reply"],
-        "method": ["bonferroni", "bonferroni"],
-        "resolution": [0.05, 0.05],
-        "min_size": [3, 3],
-        "lookback_days": [14, 14],
-        "n_clusters": [2, 2],
-        "n_accounts": [5, 5],
-        "n_corroborated_clusters": [1, 1],
-        "n_corroborated_accounts": [4, 4],
-        "bridge_accounts": [446, 446],
-        "shared_pairs": [485, 485],
-    })
-
-
-def _toxicity_rows():
-    """Two Kenyan days either side of the MIN_DAY_N floor, plus an off-domain
-    row that must not reach the denominator. Post text is present here precisely
-    because it must NOT survive into the payload."""
-    rows = []
-    day_one = pd.Timestamp('2026-07-20T09:00:00Z')
-    for i in range(40):
-        rows.append({
-            'platform_post_id': f'{7000000000000000000 + i}',
-            'created_at': day_one + pd.Timedelta(minutes=i),
-            'text': 'wantam ruto must go',
-            'label': 'offensive' if i < 8 else ('hate' if i < 10 else 'neither'),
-            'p_hate': 0.3 if i < 10 else 0.01,
-            'hate_flag': i < 10,
-            'domain': 'kenya',
-            'in_kenya_scope': True,
-            'coded_suspect': i < 3,
-            'explicit_toxic': i < 10,
-            'first_type': 'search' if i < 30 else 'replies',
-            'dehumanisation_score': 0.7 if i < 3 else None,
-        })
-    thin_day = pd.Timestamp('2026-07-21T09:00:00Z')
-    for i in range(5):
-        rows.append({
-            'platform_post_id': f'{7100000000000000000 + i}',
-            'created_at': thin_day + pd.Timedelta(minutes=i),
-            'text': 'a thin day', 'label': 'neither', 'p_hate': 0.01,
-            'hate_flag': False, 'domain': 'kenya', 'in_kenya_scope': True,
-            'coded_suspect': False, 'explicit_toxic': False,
-            'first_type': 'search',
-            'dehumanisation_score': None,
-        })
-    rows.append({
-        'platform_post_id': '7200000000000000000',
-        'created_at': day_one, 'text': 'US politics', 'label': 'hate',
-        'p_hate': 0.9, 'hate_flag': True, 'domain': 'offdomain',
-        'in_kenya_scope': False, 'coded_suspect': False, 'explicit_toxic': True,
-        'first_type': 'search',
-        'dehumanisation_score': None,
-    })
-    df = pd.DataFrame(rows)
-    df['created_at'] = pd.to_datetime(df['created_at'], utc=True)
-    df['is_offensive'] = df['label'] == 'offensive'
-    df['is_hate'] = df['label'] == 'hate'
-    return df
+def _sources(days: int = 40, runs=None, rows=10) -> d.Sources:
+    all_days = [date.fromordinal(TODAY.toordinal() - i).isoformat() for i in range(1, days + 1)]
+    listings = {
+        "posts/platform=x/": _posts(all_days),
+        "embeddings/platform=x/": d.parse_listing(
+            _key("embeddings", dt, 0, model="m") for dt in all_days[:30]),
+        f"relevance/platform=x/model={d.relevance.MODEL}/": d.parse_listing(
+            _key("relevance", dt, 0, model=d.relevance.MODEL) for dt in all_days[1:20]),
+        "hatespeech/platform=x/": d.parse_listing(_key("hatespeech", dt) for dt in all_days),
+        "incitement/platform=x/": d.parse_listing([]),
+    }
+    return d.Sources(
+        list_prefix=lambda p: listings[p],
+        object_rows=lambda keys: {k: rows for k in keys},
+        daily_runs=lambda: runs,
+    )
 
 
 @pytest.fixture
-def stub_tox(monkeypatch):
-    """Patch out everything statistic B would otherwise reach R2 for."""
-    def apply(rows=None):
-        monkeypatch.setattr(
-            d, "_toxicity_frame", lambda con, platform="x": rows if rows is not None else _toxicity_rows()
-        )
-        monkeypatch.setattr(
-            d, "_collection_start", lambda con, platform="x": "2026-07-04T13:17:40+00:00"
-        )
-        monkeypatch.setattr(d, "_start_cache", None)
-        return d.build_toxicity(object())
-    return apply
+def recorded():
+    return figures.load_recorded()
 
 
 @pytest.fixture
-def payload(monkeypatch):
-    """A full summary built from the fabricated frames, with R2 stubbed out."""
-    def fake_run_latest(con, kind="clusters", platform="x", channel="*", method="*"):
-        return _Rel({"clusters": _members(), "scorecards": _scorecards(),
-                     "verdicts": _verdicts()}.get(kind, _edges()))
-
-    monkeypatch.setattr(d.db, "coordination_run_latest", fake_run_latest)
-    monkeypatch.setattr(d.db, "prefix_readable", lambda con, src: True)
-    monkeypatch.setattr(d.db, "coordination_metrics", lambda con, platform="x": _Rel(_metrics()))
-    # `leak_corrected` calls this positionally, `build_coordination` by keyword.
-    monkeypatch.setattr(
-        d.db, "curated_handles", lambda *a, **kw: {"kenyanpatriot", "wanjiku254"}
-    )
-    monkeypatch.setattr(d, "_collection_start", lambda con, platform="x": "2026-07-04T13:17:40+00:00")
-    # Statistic B has its own frame-level tests below; here it only needs to not
-    # reach R2, so the public-safety walk covers a payload with both sections.
-    monkeypatch.setattr(
-        d, "_toxicity_frame", lambda con, platform="x": _toxicity_rows()
-    )
-    monkeypatch.setattr(d, "NET_MIN_SIZE", 2)
-    monkeypatch.setattr(d, "_start_cache", None)
-    return d.build_summary(object(), platform="x")
-
-
-def test_no_identifying_keys(payload):
-    offenders = [
-        f"{path}.{key}" for path, key, _ in _walk(payload) if key in FORBIDDEN_KEYS
-    ]
-    assert not offenders, f"identifying keys in public payload: {offenders}"
-
-
-def test_no_author_ids_or_snowflakes(payload):
-    hits = []
-    for path, _, value in _walk(payload):
-        if isinstance(value, str):
-            if value in LEAKY_VALUES or SNOWFLAKE.match(value):
-                hits.append(f"{path}={value}")
-    assert not hits, f"identifiers leaked into public payload: {hits}"
-
-
-def test_cluster_name_carrying_a_handle_is_dropped(payload):
-    names = [
-        c["name"]
-        for c in payload["coordination"]["network"]["clusters"]
-        + payload["coordination"]["corroborated"]["clusters"]
-    ]
-    assert "wantam ruto" in names
-    assert not any(n and "kenyanpatriot" in n for n in names)
-
-
-def test_safe_name_passes_clean_names():
-    assert d._safe_name("wantam ruto", {"kenyanpatriot"}) == "wantam ruto"
-    assert d._safe_name("kenyanpatriot rigged", {"kenyanpatriot"}) is None
-    assert d._safe_name(None, set()) is None
-    assert d._safe_name("   ", set()) is None
+def payload(recorded):
+    return d.build_summary(_sources(runs=_runs()), recorded, now=NOW, code_version="abc1234")
 
 
-def test_node_and_cluster_ids_are_opaque_ints(payload):
-    net = payload["coordination"]["network"]
-    assert net["nodes"], "fixture should produce a drawable network"
-    assert all(isinstance(n["id"], int) for n in net["nodes"])
-    assert all(isinstance(c["id"], int) for c in net["clusters"])
-    assert all(isinstance(e["s"], int) and isinstance(e["t"], int) for e in net["edges"])
-    ids = [n["id"] for n in net["nodes"]]
-    assert len(ids) == len(set(ids))
-
-
-def test_corroborated_and_candidates_are_never_summed(payload):
-    co = payload["coordination"]
-    head = co["headline"]
-    assert head["clusters_corroborated"] == 1
-    assert co["candidates"]["n"] == 1
-    assert head["clusters_total"] == 2
-    # The two are reported separately; the total is not a third blended count.
-    assert head["clusters_total"] == head["clusters_corroborated"] + co["candidates"]["n"]
-    assert len(co["corroborated"]["clusters"]) == head["clusters_corroborated"]
+# --- public safety ----------------------------------------------------------
 
-
-def test_cluster_cards_carry_the_triage_scores(payload):
-    """The point of persisting scorecards: a reader can sort clusters by
-    reciprocity and by narrative coherence, which is what distinguishes an
-    influence operation from an engagement pod at a glance."""
-    card = payload["coordination"]["corroborated"]["clusters"][0]
 
-    assert card["inauthenticity_index"] == 0.83
-    assert card["self_amplification_z"] == 6.2
-    assert card["near_dup_rate"] == 0.54
-
-
-def test_hate_index_stays_separate_from_the_inauthenticity_index(payload):
-    """Coordination and hate are different claims. A reader who cannot see which
-    one fired cannot act on either, so they travel as two fields."""
-    card = payload["coordination"]["corroborated"]["clusters"][0]
-
-    assert card["hate_index"] == 0.19
-    assert card["inauthenticity_index"] != card["hate_index"]
-
-
-def test_an_unmeasured_score_is_absent_rather_than_zero(payload):
-    """`topic_entropy` is NaN in every real run. Defaulting it to 0 would
-    publish "measured, single-topic" - the most incriminating reading available
-    - for a cluster whose topics were never computed at all."""
-    card = payload["coordination"]["corroborated"]["clusters"][0]
+def test_the_built_payload_is_public_safe(payload):
+    assert d.public_violations(payload) == []
+    d.assert_public(payload)
 
-    assert "topic_entropy" not in card
-    assert card["near_dup_rate"] == 0.54, "measured columns still come through"
 
+def test_payload_is_json_serialisable_without_coercion(payload):
+    assert json.loads(json.dumps(payload))["schema_version"] == d.SCHEMA_VERSION
 
-def test_a_missing_scorecard_run_leaves_the_cards_bare(monkeypatch, payload):
-    """Scorecards ride a slower timer than the coordination pass, so a fresh
-    bucket - or any run where scoring failed - has clusters but no scores. That
-    must degrade the cards, not the build."""
-    monkeypatch.setattr(d, "_triage_by_cluster", lambda con, platform: {})
 
-    out = d.build_coordination(object(), platform="x")
-    card = out["corroborated"]["clusters"][0]
+@pytest.mark.parametrize("bad", [
+    {"cards": {"x": {"user_id": "1"}}},
+    {"note": "see @someaccount for more"},
+    {"note": "https://x.com/someaccount/status/1"},
+    {"id": "1234567890123456789"},
+    {"id": 1234567890123456789},
+    {"rows": [{"handle": "a"}]},
+    {"author_id": 5},
+])
+def test_the_guard_rejects_identifying_values(bad):
+    assert d.public_violations(bad)
+    with pytest.raises(ValueError, match="not public-safe"):
+        d.assert_public(bad)
 
-    assert card["size"] == 4
-    assert "inauthenticity_index" not in card
 
+def test_the_guard_passes_run_ids_and_dates():
+    assert d.public_violations({"run_id": "20261011T033000Z", "dt": "2026-10-10", "n": 2469983}) == []
 
-def test_triage_survives_an_unreadable_scorecard_prefix(monkeypatch):
-    """A zero-file hive glob raises rather than returning no rows, and that must
-    not take down the hourly build."""
-    def boom(*a, **k):
-        raise RuntimeError("no files found")
 
-    monkeypatch.setattr(d.db, "prefix_readable", boom)
+def test_no_account_level_column_of_the_daily_run_reaches_the_payload(payload):
+    pipeline = json.dumps(payload["cards"]["pipeline"])
+    for leaked in ("355", "588", "9999", "listed_accounts", "accounts_in_graph",
+                   "listed_communities", "edges_in_graph"):
+        assert leaked not in pipeline, leaked
+    assert "user_id" not in json.dumps(payload)
 
-    assert d._triage_by_cluster(object(), "x") == {}
 
+def test_the_daily_listing_is_reported_only_as_non_empty(payload):
+    card = payload["cards"]["pipeline"]
+    assert card["listing_nonempty"] is True
+    assert "listed_accounts" not in card
+    assert payload["cards"]["detector"]["live_listing"]["published"] is False
 
-def test_a_judged_cluster_carries_its_verdict_and_reason(payload):
-    """The verdict is what turns a cluster count into a finding, and the
-    rationale is what lets a reader disagree with it."""
-    card = payload["coordination"]["corroborated"]["clusters"][0]
 
-    assert card["verdict"] == "engagement_pod"
-    assert card["verdict_confidence"] == "high"
-    assert "engagement bait" in card["verdict_rationale"]
-    assert card["verdict_adjudicator"] == "claude-sonnet-5"
+def test_publish_refuses_the_raw_data_bucket(payload):
+    from kma import db
 
+    with pytest.raises(ValueError, match="raw data bucket"):
+        d.publish(payload, bucket=db.BUCKET, client=object())
 
-def test_an_unjudged_cluster_has_no_verdict_field(monkeypatch, payload):
-    """Adjudication is capped, so most clusters legitimately have no verdict.
-    A default would make "never looked at" read as "looked at and fine"."""
-    monkeypatch.setattr(d, "_verdicts_by_cluster", lambda con, platform: {})
 
-    card = d.build_coordination(object(), platform="x")["corroborated"]["clusters"][0]
+def test_publish_refuses_an_unsafe_payload():
+    with pytest.raises(ValueError, match="not public-safe"):
+        d.publish({"generated_at": NOW.isoformat(), "x": "@someone"},
+                  bucket="kenya-monitor-dashboard", client=object())
 
-    assert "verdict" not in card
-    assert card["inauthenticity_index"] == 0.83, "scores still come through"
 
+class _Client:
+    def __init__(self):
+        self.puts = []
 
-def test_the_verdict_rationale_is_walked_for_leaks(payload):
-    """`rationale` is the only free text in the payload. It is model-written
-    from a dossier full of handles and post text, so the public-safety walk has
-    to cover it - which it does, since it walks every scalar."""
-    rationales = [
-        v for path, key, v in _walk(payload)
-        if key == "verdict_rationale"
-    ]
+    def put_object(self, **kw):
+        self.puts.append(kw)
 
-    assert rationales, "the walk must actually reach the rationale"
-    for text in rationales:
-        assert not any(leak in str(text) for leak in LEAKY_VALUES)
-
 
-def test_edges_respect_the_payload_cap(payload, monkeypatch):
-    assert len(payload["coordination"]["network"]["edges"]) <= d.NET_MAX_EDGES
+def test_publish_writes_the_blob_and_a_dated_archive(payload):
+    client = _Client()
+    keys = d.publish(payload, bucket="kenya-monitor-dashboard", client=client)
 
+    assert keys[0] == d.PUBLIC_KEY
+    assert re.fullmatch(r"public/archive/dt=2026-10-11/run=20261011T040000Z\.json", keys[1])
+    assert {p["Bucket"] for p in client.puts} == {"kenya-monitor-dashboard"}
+    assert client.puts[0]["Metadata"] == {"generated_at": NOW.isoformat()}
+    assert json.loads(client.puts[0]["Body"])["schema_version"] == d.SCHEMA_VERSION
 
-def test_multiplex_scales_layers_by_mass():
-    """A layer with many edges must not dominate the ranking by count alone."""
-    agg = d._multiplex(_edges())
-    assert set(agg.columns) >= {"src", "dst", "weight", "channels", "n_channels"}
-    # co_reply carries one edge of weight 2.0, so mass-normalised it is 1.0 -
-    # heavier than any single co_retweet edge despite the layer being smaller.
-    reply = agg[agg["channels"].apply(lambda c: c == ["co_reply"])]
-    assert float(reply["weight"].iloc[0]) == pytest.approx(1.0)
 
+def test_no_archive_flag_writes_one_object(payload):
+    client = _Client()
+    d.publish(payload, bucket="kenya-monitor-dashboard", client=client, archive=False)
 
-def test_unpublished_phases_are_null_not_missing(payload):
-    """Phases 3 and 5 are keys with null values, not absent keys, so the site can
-    reserve their layout instead of shifting when they land."""
-    for key in ("share_of_voice", "targeting"):
-        assert key in payload
-        assert payload[key] is None
-    assert payload["toxicity"] is not None
+    assert len(client.puts) == 1
 
 
-def test_meta_carries_the_methodology_rules(payload):
-    meta = payload["meta"]
-    assert meta["scope"] == "baseline"
-    assert meta["search_horizon_days"] == 14
-    assert isinstance(meta["leak_corrected"], bool)
-    assert meta["collection_start"].startswith("2026-07-04")
-    assert "hate_search" in meta["excluded_types"]
-    assert meta["model_limits"]["hate_classifier"]
+# --- what must be withheld --------------------------------------------------
 
 
-def test_toxicity_drops_thin_days_but_reports_them(stub_tox):
-    tox = stub_tox()
-    dates = [p["date"] for p in tox["series"]]
-    assert dates == ["2026-07-20"]
-    # The thin day is reported as suppressed, not silently absent - a reader
-    # must be able to tell a suppressed day from a day with no activity.
-    assert [s["date"] for s in tox["suppressed_days"]] == ["2026-07-21"]
-    assert tox["suppressed_days"][0]["n"] == 5
+def test_withheld_names_the_unpublishable_items(payload):
+    items = " ".join(w["item"].lower() for w in payload["withheld"])
+    for needle in ("prevalence", "account", "coordinated", "toxicity", "corroboration"):
+        assert needle in items
 
 
-def test_toxicity_excludes_offdomain_from_the_denominator(stub_tox):
-    tox = stub_tox()
-    day = tox["series"][0]
-    # 41 rows land on that day; one is off-domain and must not be counted.
-    assert day["n"] == 40
-    assert day["offensive"]["k"] == 8
-    assert day["hate"]["k"] == 2
-    assert day["coded"]["k"] == 3
+def test_no_toxicity_or_prevalence_or_coordination_figure_is_emitted(payload):
+    keys = set()
 
+    def walk(v):
+        if isinstance(v, dict):
+            keys.update(v)
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
 
-def test_toxicity_series_carries_wilson_bounds(stub_tox):
-    tox = stub_tox()
-    for point in tox["series"]:
-        for key in ("offensive", "hate", "coded"):
-            r = point[key]
-            assert r["lo"] <= r["p"] <= r["hi"], (point["date"], key)
+    walk({k: v for k, v in payload["cards"].items()})
+    for banned in ("p_hate", "toxicity", "prevalence", "kenya_share", "n_clusters",
+                   "clusters", "corroborated", "n_accounts", "edges_total"):
+        assert banned not in keys, banned
 
 
-def test_toxicity_keeps_the_two_registers_separate(stub_tox):
-    """Explicit toxicity and coded incitement must never be merged into one
-    series: the classifier is good at the first and poor at the second."""
-    tox = stub_tox()
-    keys = set(tox["series"][0])
-    assert {"offensive", "hate", "coded"} <= keys
-    assert not any(k in keys for k in ("toxicity", "combined", "all_hate"))
+def test_the_payload_has_no_v1_sections(payload):
+    assert not ({"coordination", "toxicity", "network", "share_of_voice", "targeting"}
+                & set(payload))
 
 
-def test_toxicity_days_are_kenyan_days(stub_tox):
-    """22:00 UTC is the next calendar day in Nairobi. Publishing UTC days would
-    misattribute late-evening Kenyan activity."""
-    rows = _toxicity_rows()
-    rows["created_at"] = pd.to_datetime(
-        ["2026-07-20T22:30:00Z"] * len(rows), utc=True
-    )
-    tox = stub_tox(rows)
-    assert tox["timezone"] == "Africa/Nairobi"
-    assert [p["date"] for p in tox["series"]] == ["2026-07-21"]
+def test_every_ok_card_states_its_basis_and_source(payload):
+    for card in payload["cards"].values():
+        assert card["status"] in {"ok", "not_available"}
+        assert card["source"]
+        if card["status"] == "ok":
+            assert card["basis"].strip(), card["id"]
 
 
-@pytest.mark.parametrize(
-    "k,n",
-    [(0, 100), (1, 100), (5, 20), (11, 1843), (96, 1843), (50, 100), (100, 100), (3, 3)],
-)
-def test_wilson_matches_statsmodels(k, n):
-    sm = pytest.importorskip("statsmodels.stats.proportion")
-    lo, hi = d._wilson(k, n)
-    elo, ehi = sm.proportion_confint(k, n, alpha=0.05, method="wilson")
-    assert lo == pytest.approx(elo, abs=1e-9)
-    assert hi == pytest.approx(ehi, abs=1e-9)
+# --- missing sources --------------------------------------------------------
 
 
-def test_wilson_stays_in_bounds_on_zero_and_empty():
-    assert d._wilson(0, 0) == (0.0, 0.0)
-    lo, hi = d._wilson(0, 50)
-    assert lo == pytest.approx(0.0, abs=1e-12) and 0.0 < hi < 1.0
+def test_no_daily_run_yet_reads_as_not_available_not_zero(recorded):
+    out = d.build_summary(_sources(runs=None), recorded, now=NOW)
 
+    card = out["cards"]["pipeline"]
+    assert card["status"] == "not_available"
+    assert card["reason"] == d.REASON_NO_DAILY
+    assert not ({"computed_at", "age_hours", "run_id", "stale"} & set(card))
+    assert out["cards"]["detector"]["live_listing"]["status"] == "not_available"
+    assert out["cards"]["detector"]["live_listing"]["listing_nonempty"] is None
+    assert out["cards"]["collection"]["status"] == "ok"
 
-# --- composition standardisation --------------------------------------------
 
+def test_an_unreadable_source_publishes_a_fixed_reason_not_the_exception(recorded):
+    src = _sources(runs=_runs())
 
-def test_toxicity_publishes_raw_and_standardised(stub_tox):
-    """The raw daily series moves with collection policy as well as discourse,
-    so a standardised counterpart must ship alongside it."""
-    tox = stub_tox()
-    block = tox["standardised"]
+    def boom():
+        raise OSError("r2://secret-bucket/key=abc could not be opened")
 
-    assert block["weekly"], "a standardised weekly series must be published"
-    assert block["reference_week"] == "2026-07-06"
-    week = block["weekly"][0]
-    for series in ("explicit_toxic", "is_hate"):
-        assert set(week[series]) == {"raw", "standardised"}
-    assert "NOT comparable across time" in block["note"]
+    src.daily_runs = boom
+    out = d.build_summary(src, recorded, now=NOW)
 
+    card = out["cards"]["pipeline"]
+    assert card["status"] == "not_available"
+    assert card["reason"] == d.REASON_UNREADABLE
+    assert "secret-bucket" not in json.dumps(out)
 
-def test_toxicity_publishes_the_composition_that_drives_the_gap(stub_tox):
-    tox = stub_tox()
-    comp = tox["standardised"]["composition"]
 
-    assert comp, "composition must be published next to the standardised rate"
-    shares = {k: v for k, v in comp[0].items() if k != "week"}
-    assert sum(shares.values()) == pytest.approx(1.0, abs=1e-6)
-    assert set(shares) <= {"search", "replies", "hydrated", "timeline"}
+def test_it_refuses_to_publish_when_no_live_source_can_be_read(recorded):
+    def boom(*_a, **_k):
+        raise OSError("down")
 
+    src = d.Sources(list_prefix=boom, object_rows=boom, daily_runs=boom)
 
-def test_toxicity_reports_rates_within_each_partition(stub_tox):
-    """So a reader can see that the mix, not the discourse, moved."""
-    tox = stub_tox()
-    rows = tox["standardised"]["by_partition"]
+    with pytest.raises(RuntimeError, match="not publishing"):
+        d.build_summary(src, recorded, now=NOW)
 
-    assert rows
-    assert {r["first_type"] for r in rows} <= {"search", "replies", "hydrated", "timeline"}
-    assert all("explicit_toxic" in r and "n" in r for r in rows)
 
+def test_an_empty_posts_prefix_is_not_available(recorded):
+    src = _sources(runs=_runs())
+    inner = src.list_prefix
+    src.list_prefix = lambda p: d.parse_listing([]) if p.startswith("posts") else inner(p)
+    out = d.build_summary(src, recorded, now=NOW)
 
-def test_missing_strata_are_reported_not_hidden(stub_tox):
-    """Renormalising over the strata present changes what the rate means, so
-    the periods where that happened have to be visible."""
-    tox = stub_tox()
-    weeks = tox["standardised"]["weekly"]
+    assert out["cards"]["collection"]["status"] == "not_available"
+    assert out["cards"]["enrichment"]["status"] == "not_available"
 
-    # The fixture only carries `search` and `replies`, so the reference strata
-    # `hydrated` and `timeline` are absent and must be declared.
-    missing = {m for w in weeks for v in w.get("missing_strata", {}).values() for m in v}
-    assert {"hydrated", "timeline"} <= missing
 
+# --- pipeline card ----------------------------------------------------------
 
-# --- corroboration evidence --------------------------------------------------
 
+def test_pipeline_freshness_and_stale_flag():
+    fresh = d.pipeline_card(_runs("2026-10-11T03:50:00+00:00"), NOW)
+    old = d.pipeline_card(_runs("2026-10-09T03:50:00+00:00"), NOW)
 
-def test_corroborated_count_ships_with_its_regime_indicators(payload):
-    """One bridge account can manufacture a corroborated cluster, which is what
-    the 0/1 flicker was for 23 passes. The count is not readable alone."""
-    ev = payload["coordination"]["corroborated"]["evidence"]
+    assert fresh["age_hours"] == pytest.approx(0.2, abs=0.05)
+    assert fresh["stale"] is False
+    assert old["stale"] is True
+    assert old["age_hours"] == pytest.approx(48.2, abs=0.1)
 
-    assert ev["bridge_accounts"] == 446
-    assert ev["shared_pairs"] == 485
-    assert "bridge_accounts" in ev["regime_note"]
 
+def test_pipeline_uses_the_newest_run_when_several_exist():
+    runs = pd.concat([_runs("2026-10-08T03:50:00+00:00", run_id="old"),
+                      _runs("2026-10-10T03:50:00+00:00", run_id="new")])
+    card = d.pipeline_card(runs, NOW)
 
-def test_kenya_caveat_ships_even_when_its_measurement_fails(payload):
-    """The payload fixture passes a bare object as the connection, so the share
-    query cannot run. The caveat must survive that: its absence would leave a
-    corroborated count with nothing saying it is mostly engagement farming."""
-    ev = payload["coordination"]["corroborated"]["evidence"]
+    assert card["run_id"] == "new"
+    assert card["runs_persisted"] == 2
 
-    assert ev["kenya_share"] is None
-    assert "not of election-related coordination" in ev["kenya_note"]
 
+def test_missing_run_days_are_counted_after_the_first_run_only():
+    runs = pd.concat([_runs("2026-10-07T03:50:00+00:00"), _runs("2026-10-10T03:50:00+00:00")])
+    card = d.pipeline_card(runs, NOW)
 
-def test_overlap_counters_are_omitted_before_a_pass_writes_them(monkeypatch):
-    """New metric columns are unbindable, not NULL, until the first post-deploy
-    pass writes one - readers must guard on presence."""
-    metrics = _metrics().drop(columns=["bridge_accounts", "shared_pairs"])
-    ev = d._corroboration_evidence(object(), _members(), metrics, "x")
+    assert card["missing_run_days"] == ["2026-10-08", "2026-10-09"]
+    assert card["run_days"] == ["2026-10-07", "2026-10-10"]
 
-    assert "bridge_accounts" not in ev
-    assert "regime_note" in ev, "the caveat still ships without the numbers"
 
+def test_a_single_run_has_no_missing_days():
+    card = d.pipeline_card(_runs("2026-10-10T03:50:00+00:00"), NOW)
 
-def test_meta_leak_flag_follows_the_generated_sql(monkeypatch):
-    """It used to report whether targets.yaml was readable, while the toxicity
-    query it described never applied the correction."""
-    monkeypatch.setattr(d, "_collection_start", lambda con, platform="x": None)
+    assert card["missing_run_days"] == []
 
-    monkeypatch.setattr(d.db, "curated_handles", lambda *a, **kw: set())
-    assert d.build_meta(object())["leak_corrected"] is False
 
-    monkeypatch.setattr(d.db, "curated_handles", lambda *a, **kw: {"williamsruto"})
-    assert d.build_meta(object())["leak_corrected"] is True
+def test_a_null_timing_stays_null():
+    card = d.pipeline_card(_runs(relevance_s=None), NOW)
+
+    assert card["stage_seconds"]["relevance_s"] is None
+
+
+# --- collection card --------------------------------------------------------
+
+
+def test_collection_sums_rows_per_day_and_splits_by_scope():
+    posts = _posts(["2026-10-09", "2026-10-10"], types=("search", "replies", "hate_search", "control"))
+    card = d.collection_card(posts, _rows(posts, 5), TODAY, days=2)
+
+    last = card["series"][-1]
+    assert last["dt"] == "2026-10-10"
+    assert last["rows"] == 20
+    assert last["objects"] == 4
+    assert last["by_scope"] == {"baseline": 10, "targeted": 5, "control": 5, "other": 0}
+
+
+def test_collection_excludes_the_open_day():
+    posts = _posts(["2026-10-10", "2026-10-11"])
+    card = d.collection_card(posts, _rows(posts), TODAY, days=3)
+
+    assert [r["dt"] for r in card["series"]] == ["2026-10-08", "2026-10-09", "2026-10-10"]
+
+
+def test_a_day_with_no_partition_is_a_gap_with_zero_rows():
+    posts = _posts(["2026-10-07", "2026-10-09", "2026-10-10"])
+    card = d.collection_card(posts, _rows(posts), TODAY, days=4)
+
+    by_day = {r["dt"]: r for r in card["series"]}
+    assert by_day["2026-10-08"]["gap"] is True
+    assert by_day["2026-10-08"]["rows"] == 0
+    assert by_day["2026-10-09"]["gap"] is False
+    assert card["gap_days"] == ["2026-10-08"]
+    assert card["gap_days_total"] == 1
+
+
+def test_unknown_post_types_are_other_not_dropped():
+    posts = _posts(["2026-10-10"], types=("brand_new_type",))
+    card = d.collection_card(posts, _rows(posts, 7), TODAY, days=1)
+
+    assert card["series"][0]["by_scope"]["other"] == 7
+    assert card["series"][0]["rows"] == 7
+
+
+def test_collection_refuses_a_partial_footer_answer():
+    posts = _posts(["2026-10-10"])
+
+    with pytest.raises(ValueError, match="every posts key"):
+        d.collection_card(posts, lambda keys: {keys[0]: 1}, TODAY, days=1)
+
+
+def test_collection_basis_says_rows_not_posts(payload):
+    basis = payload["cards"]["collection"]["basis"]
+
+    assert "not distinct posts" in basis
+    assert "gap day" in basis
+
+
+# --- enrichment card --------------------------------------------------------
+
+
+def test_enrichment_lag_is_measured_against_the_newest_posts_partition(payload):
+    stages = {s["stage"]: s for s in payload["cards"]["enrichment"]["stages"]}
+
+    assert stages["posts"]["lag_days"] == 0
+    assert stages["relevance"]["latest_dt"] == "2026-10-09"
+    assert stages["relevance"]["lag_days"] == 1
+    assert stages["embeddings"]["rows_last_7d"] == 70
+
+
+def test_a_stage_with_no_partitions_has_null_figures_not_zero(payload):
+    stage = {s["stage"]: s for s in payload["cards"]["enrichment"]["stages"]}["incitement"]
+
+    assert stage["latest_dt"] is None
+    assert stage["lag_days"] is None
+    assert stage["rows_last_7d"] is None
+
+
+# --- recorded cards ---------------------------------------------------------
+
+
+def test_benchmark_card_separates_paper_from_reference_code(payload):
+    card = payload["cards"]["benchmark"]
+    iran = next(r for r in card["rows"] if r["dataset"] == "iran")
+
+    assert iran["paper"] == 60.83
+    assert iran["reference_code"] == 71.31
+    assert iran["ours"] == 71.43
+    assert abs(iran["delta"]) > 10
+    assert card["datasets"] == 6
+    assert card["within_0_2"] == 5
+    assert card["metric"] == "Macro-F1"
+
+
+def test_benchmark_headline_is_computed_from_rows_not_transcribed(recorded):
+    block = json.loads(json.dumps(recorded["benchmark_reproduction"], default=str))
+    block["rows"][0]["ours"] = block["rows"][0]["published"] + 3.0
+    card = d.benchmark_card(block)
+
+    assert card["within_0_2"] == 4
+
+
+def test_relevance_gate_card_carries_the_label_count(payload):
+    card = payload["cards"]["relevance_gate"]
+
+    assert card["labelled_posts"] == 88
+    assert {r["method"] for r in card["rows"]} == {"keyword gate", "learned classifier"}
+
+
+def test_detector_card_is_framed_as_output_not_prevalence(payload):
+    card = payload["cards"]["detector"]
+
+    assert card["influence_operations_found"] == 0
+    assert "not a rate" in card["basis"]
+    assert card["snapshot"]
+    assert all("accounts" not in r for r in card["rows"])
+
+
+def test_negative_results_carry_a_figure_a_basis_and_a_source(payload):
+    items = payload["cards"]["negative_results"]["items"]
+
+    assert {i["id"] for i in items} == {
+        "self_amplification", "text_similarity_threshold", "composition_drift"}
+    for item in items:
+        assert item["figure"] and item["basis"] and item["source"], item["id"]
+
+
+def test_provenance_travels_with_every_recorded_card(payload):
+    for name in ("benchmark", "relevance_gate", "detector", "negative_results"):
+        assert payload["cards"][name]["measured"], name
