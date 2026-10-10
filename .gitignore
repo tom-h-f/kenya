@@ -33,3 +33,4 @@ node_modules/
 
 # Generated figures - recomputed by `uv run python -m kma.figures`.
 analysis/figures/figures.json
+!docs/plans/explorer-contract/fixtures/**/*.parquet
