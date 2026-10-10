@@ -102,7 +102,7 @@ against `relevance/model=<MODEL>/`, with no `dt` window by design (its
 docstring: a window would strand history). The schedule stopping 09-15 left a
 backlog, and the next run drains all of it.
 
-Measured 2026-10-10 14:30 UTC from R2, reads only: posts with `dt` from
+Measured 2026-10-10 14:20 UTC from R2, reads only: posts with `dt` from
 2026-09-14 to 2026-10-10 with non-empty text, anti-joined on `platform_post_id`
 to the 2,453,427 ids scored under `kenya-relevance-afroxlmr-2026-09-13`.
 
@@ -115,7 +115,8 @@ to the 2,453,427 ids scored under `kenya-relevance-afroxlmr-2026-09-13`.
 
 So there is no standing gap. The 09-30 run (706,255 posts, $1.15) closed the
 09-14 to 09-30 backlog, and every run since has been current. The 26,282 are
-the ordinary one-day lag and clear on the 14:45 UTC run. The 09-10 to 09-13
+the ordinary one-day lag; the 14:45 UTC run on 2026-10-10 (256 s) cleared them
+and a re-measure found 0 pending for dt 10-09 and 10-10. The 09-10 to 09-13
 partitions are also at 0. Posts older than 09-10 were not re-measured here; the
 09-13 full pass covered 1,312,692 of 1,312,692.
 
