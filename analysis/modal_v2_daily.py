@@ -1,9 +1,12 @@
-"""Modal app: v2 over a rolling window of the live corpus, every day.
+"""Modal app: v2 over a rolling window of the live corpus, run by hand.
 
     cd analysis
     uv run --with modal modal run modal_v2_daily.py --days 7 --no-persist   # smoke
     uv run --with modal modal run modal_v2_daily.py                         # one real run
-    uv run --with modal modal deploy modal_v2_daily.py                      # the schedule
+
+Not scheduled and not meant to be deployed. The daily run is the systemd timer
+on host `cloud` (`deploy/cloud/`, `kma.v2_daily_run`), which costs no Modal
+spend; the 90-day window below has no measured per-run cost on Modal.
 
 Until this existed v2 ran only by hand, against frozen snapshots, while the
 continuous detector was v1 (18.6% recall on the IO archive, 0 of 11
@@ -13,8 +16,8 @@ Kenya-relevant in the size-matched blind read). See
 Stages, each on the hardware it needs:
 
 1. `run_daily` (small CPU) pins the window - `kma.window`, a bench snapshot
-   named `daily-<end>-<days>d` - and drives the rest. It is the scheduled
-   function: 03:30 UTC, so yesterday's `dt` partition is closed.
+   named `daily-<end>-<days>d` - and drives the rest. It is the entry point
+   of a hand run; `end` defaults to yesterday, so its `dt` partition is closed.
 2. Relevance: calls the deployed `kma-relevance` app's `score_pending` first.
    Its own daily schedule stopped writing after 2026-09-14 15:57 (last
    `scored_at`, measured 2026-09-22), and the community report filters on it.
@@ -124,7 +127,6 @@ def rank_window(end: str, days: int, persist: bool = True) -> dict:
     cpu=1,
     memory=4096,
     timeout=60 * 60 * 20,
-    schedule=modal.Cron("30 3 * * *"),
 )
 def run_daily(end: str = "", days: int = 90, persist: bool = True,
               score_relevance: bool = True) -> dict:
