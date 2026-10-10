@@ -19,7 +19,7 @@ dry-run anywhere with R2 access.
 - `kind=dossiers/dt=/run=<run_id>/<candidate_id>.parquet` - the packet, as
   JSON, and the exact prompt the reader saw.
 - `kind=verdicts/dt=/run=<run_id>.parquet` - one row per judged candidate,
-  with `worth_a_look` and the dossier key. The tf1 poller reads only this.
+  with `worth_a_look` and the dossier key. Alerting reads only this.
 
 ## The first run judges nothing
 
@@ -502,7 +502,7 @@ def main() -> None:
     ap.add_argument("--max-judged", type=int, default=0, help="hard cap on reader calls, 0 for none")
     ap.add_argument("--persist", action="store_true", help="write queue, dossiers and verdicts to R2")
     ap.add_argument("--mode", choices=(MODE_PRODUCTION, MODE_VALIDATION), default=MODE_VALIDATION,
-                    help="validation verdicts are never sent by the poller")
+                    help="validation verdicts are never alerted on")
     args = ap.parse_args()
 
     con = connect()

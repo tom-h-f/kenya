@@ -3,6 +3,8 @@
     python -m kma.scorecard_run                 # dry run, prints the top clusters
     python -m kma.scorecard_run --persist       # write to R2
 
+On demand only since v1 was retired 2026-10-10: nothing schedules it.
+
 Until this existed the triage layer was computed only when a human opened
 `notebooks/coordination.py` and was then discarded: `persist_clusters` stores
 membership and channel counts, so `inauthenticity_index`, `near_dup_rate` and

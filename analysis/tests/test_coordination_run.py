@@ -265,8 +265,8 @@ def test_metrics_are_written_before_the_edge_and_cluster_artifacts(stub):
 
 
 def test_a_metrics_write_failure_does_not_fail_the_run(stub, monkeypatch):
-    """`enrich._coordination_pass` reschedules the whole 6-hourly pass on a
-    non-zero rc. A flaky ~4KB write must not cost a full re-projection."""
+    """A non-zero rc makes a scheduler rerun the whole pass. A flaky ~4KB write
+    must not cost a full re-projection."""
     def boom(*a, **k):
         raise RuntimeError("r2 unavailable")
 
@@ -280,8 +280,8 @@ def test_a_metrics_write_failure_does_not_fail_the_run(stub, monkeypatch):
 
 def test_a_persist_run_does_not_score_by_default(stub):
     """Measured 2026-08-14: scoring one run took 2,276s on an idle laptop, against
-    a 6-hourly timer on a contended 2-core host. `kma.scorecard_run` owns this in
-    production, so the detection pass must not pick it up by accident."""
+    a 6-hourly timer on a contended 2-core host. `kma.scorecard_run` owns this,
+    so the detection pass must not pick it up by accident."""
     out = cr.run(None, channels=["co_retweet"], persist=True)
 
     assert stub["scorecards"] == 0
@@ -291,8 +291,8 @@ def test_a_persist_run_does_not_score_by_default(stub):
 
 
 def test_scorecards_are_written_after_the_artifacts_of_record(stub):
-    """Edges and clusters feed the collector's targeting; the triage scores feed
-    a dashboard. Order encodes which one a partial run should keep."""
+    """Edges and clusters are the artifacts of record; the triage scores are a
+    series nothing blocks on. Order encodes which one a partial run should keep."""
     cr.run(None, channels=["co_retweet"], persist=True, scorecards=True)
 
     order = stub["order"]

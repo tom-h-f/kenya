@@ -7,8 +7,8 @@
 Everything but the reader lives in `kma.leads_run`, so the decisions are tested
 without Modal or a key. This file is only where it runs, on what schedule, and
 with which secrets: the reader needs `ANTHROPIC_API_KEY`, which by the
-2026-09-08 decision stays off tf1 and pi0, so judging happens here and tf1 only
-ever reads the verdicts back out of R2 (`kma.leads_notify`).
+2026-09-08 decision stays off tf1 and pi0, so judging happens here and anything
+that alerts only ever reads the verdicts back out of R2.
 
 The schedule sits after the daily v2 pass, which writes the community listing
 this diffs. If the listing has not moved since the last pass, the diff finds
