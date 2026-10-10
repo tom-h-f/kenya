@@ -3,8 +3,9 @@
 Embeddings are expensive so they are persisted to the R2 `embeddings/` prefix
 and built incrementally (only posts not already embedded for a given model).
 Topic assignments are persisted too, to `topics/`: the UMAP fit is a batch job
-(see `persist_topics`), and readers take the result via `load_topics`. Search
-computes live.
+(see `persist_topics`), and readers take the result via `load_topics`. Posts
+embedded after a fit get the topic of their nearest fitted posts from
+`kma.topics_assign`. Search computes live.
 
     from kma.db import connect
     from kma.semantic import embed_new, search
@@ -355,13 +356,41 @@ def persist_topics(
     return n
 
 
+def _load_topics_sql(topics_src: str, posts_src: str) -> str:
+    # `assignment_method` is derived from `params`, so rows written before knn
+    # assignment existed read as 'fit' without a schema change.
+    return f"""
+        WITH t AS (
+            SELECT * FROM {topics_src}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform_post_id ORDER BY assigned_at DESC
+            ) = 1
+        ), lp AS (
+            SELECT * FROM {posts_src}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
+            ) = 1
+        )
+        SELECT t.platform_post_id, t.topic, p.author_handle, p.text,
+               p.created_at, p.lang,
+               CASE WHEN t.params LIKE 'method=knn,%' THEN 'knn' ELSE 'fit' END
+                   AS assignment_method
+        FROM t JOIN lp p USING (platform_post_id)
+        ORDER BY t.platform_post_id
+        """
+
+
 def load_topics(
     con: duckdb.DuckDBPyConnection, platform: str = "x", model: str = MODEL
 ):
     """Persisted topic assignments joined back to post text.
 
-    Shaped exactly like `assign_topics` output minus the embedding vector, so
-    `topic_summary` consumes it unchanged.
+    Shaped like `assign_topics` output minus the embedding vector, so
+    `topic_summary` consumes it unchanged, plus `assignment_method`: ``fit``
+    for a post the UMAP/HDBSCAN fit placed, ``knn`` for one given the topic of
+    its nearest fitted posts by `kma.topics_assign`. Topic ids mean the same in
+    both; knn rows are approximate, so filter on this column when a count must
+    be the fit's own.
     """
     try:
         con.sql(f"SELECT 1 FROM {topics_source(platform, _slug(model))} LIMIT 1").fetchall()
@@ -372,23 +401,7 @@ def load_topics(
             "`modal run --detach modal_backfill.py --topic --spawn` (from analysis/)."
         ) from exc
     return con.sql(
-        f"""
-        WITH t AS (
-            SELECT * FROM {topics_source(platform, _slug(model))}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform_post_id ORDER BY assigned_at DESC
-            ) = 1
-        ), lp AS (
-            SELECT * FROM {posts_source(platform)}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-            ) = 1
-        )
-        SELECT t.platform_post_id, t.topic, p.author_handle, p.text,
-               p.created_at, p.lang
-        FROM t JOIN lp p USING (platform_post_id)
-        ORDER BY t.platform_post_id
-        """
+        _load_topics_sql(topics_source(platform, _slug(model)), posts_source(platform))
     ).df()
 
 
