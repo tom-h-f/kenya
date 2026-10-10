@@ -28,6 +28,7 @@ hate-speech corpora is a documented future option, not part of this pass.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from datetime import datetime, timezone
 
@@ -35,7 +36,7 @@ import duckdb
 import pandas as pd
 import pyarrow as pa
 
-from kma.classify import STANCE_MODEL, _pipe, _run
+from kma.classify import STANCE_MODEL, _device, _pipe, _run
 from kma.db import BUCKET, connect, incitement_source, pending_posts, posts_source
 
 # category -> lexicon entries. `pattern` is a case-insensitive regex fragment;
@@ -92,6 +93,22 @@ HYPOTHESES: dict[str, str] = {
 }
 
 MODEL = STANCE_MODEL
+
+# Inference batch ceiling on a host with no accelerator. Each post is four
+# NLI pairs and mDeBERTa's disentangled attention keeps several L x L score
+# tensors per head, so activations grow with batch x 256^2. Measured
+# 2026-10-10, 2 CPU threads, 128 recent posts: batch 64 adds 1391 MB of
+# transient activations (2246 MB peak RSS, 0.7 posts/s); batch 16 adds 56 MB
+# (840 MB peak, 1.1 posts/s). tf1's 2 GiB cap killed the pass at 64 (rc=-9).
+CPU_NLI_BATCH = int(os.getenv("INCITEMENT_CPU_BATCH_SIZE", "16"))
+
+
+def nli_batch_size(requested: int) -> int:
+    """`requested`, capped at `CPU_NLI_BATCH` when running on CPU. Accelerators
+    keep the caller's batch: the Modal backfill depends on large GPU batches."""
+    if _device() == -1:
+        return max(1, min(requested, CPU_NLI_BATCH))
+    return requested
 
 
 def _compiled() -> list[tuple[str, str, re.Pattern]]:
@@ -196,7 +213,7 @@ def score_new(
     res = _run(
         _pipe("zero-shot-classification", MODEL),
         df["text"].tolist(),
-        batch_size=batch_size,
+        batch_size=nli_batch_size(batch_size),
         candidate_labels=list(HYPOTHESES.values()),
         multi_label=True,
     )
