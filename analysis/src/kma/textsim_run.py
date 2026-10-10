@@ -34,6 +34,7 @@ def build(
     similarity_for: Callable[[float], coord2.PairSimilarity] | None = None,
     persist: bool = True,
     time_bucket: str | None = None,
+    manifest: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Text-eligible posts, their latest embeddings, and the thresholded
     user-pair network. Returns the edges and a summary; writes the edges to
@@ -45,8 +46,12 @@ def build(
     key, so a windowed run can slice it. The persisted whole-snapshot trace has
     no time axis, which is why windowed detection has been blind to the trace
     carrying over half the fused edges.
+
+    `manifest` supplies the pinned objects directly, for a caller that has not
+    written one to R2.
     """
-    manifest = bench.load(snapshot, con=con)
+    if manifest is None:
+        manifest = bench.load(snapshot, con=con)
     posts = bench.pinned_source(manifest, "posts")
     embeddings = bench.pinned_source(manifest, "embeddings")
 
