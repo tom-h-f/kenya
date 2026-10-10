@@ -1,7 +1,7 @@
 # Explorer contract, schema_version 1
 
 `schema.json` (JSON Schema 2020-12) is the source of truth. `types.ts` is generated
-from it (`bun gen-types.mjs`). Producer (`kma.explorer_export`) and app build against
+from it (`bun install && bun gen-types.mjs`). Producer (`kma.explorer_export`) and app build against
 these two files. Any change bumps `schema_version` and both sides in one PR.
 
 Where it lives: bucket `kenya-monitor-dashboard`, prefix `explorer/v1/`. Layout in
@@ -40,3 +40,20 @@ backbone edges rest on exactly one shared retweet, so the default hides them.
 
 `fixtures/` is built by stream E from synthetic ids (clearly fake, e.g. 9000000000000000001+)
 and synthetic handles. Never from live data. Both repos validate against `schema.json`.
+
+## Tooling (stream E)
+
+- `fixtures/` : full synthetic bundle in bucket layout (`fixtures/explorer/v1/...`), two runs,
+  3 kept communities of 60, 30 and 12, one dropped, `time_coverage` unavailable. Regenerate
+  with `cd analysis && uv run python tests/explorer/make_fixtures.py`. Output is byte-stable.
+- `validate_bundle.py ROOT [--denylist FILE]` : schema plus cross-file checks (manifest hashes,
+  shard placement, edge indices, dropped communities, unavailable views, forbidden field names
+  including parquet columns). The producer's `assert_explorer_safe` should call it.
+- `lint_language.py PATH... [--allowlist lint-allowlist.json] [--include-user-content]` : fails
+  on verdict wording. Allowlist entries are exact phrases per file glob, each with a reason.
+- `copy/site-copy.json` : caveat, edge phrases, methodology language rule, corrections config.
+  `corrections.contact` is a marked placeholder; the site must refuse to deploy while
+  `contact_is_placeholder` is true.
+- Tests: `cd analysis && uv run pytest tests/explorer` and `cd docs/plans/explorer-contract && bun test`
+  (independent ajv validation of every fixture).
+- Hosting: DuckDB-WASM is served from the bucket at `explorer/v1/vendor/{file}` (`$defs.Files.vendor`).

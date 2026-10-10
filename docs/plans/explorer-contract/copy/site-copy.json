@@ -1,0 +1,23 @@
+{
+  "caveat": {
+    "id": "caveat-v1",
+    "text": "Co-activity is evidence that accounts act together. It is not evidence that any account is inauthentic, and it does not show what any account intends. Every link shows the evidence behind it. See the methodology."
+  },
+  "edge_phrases": {
+    "co_retweet": "shares retweets with",
+    "text_similarity": "posted near-identical text to",
+    "hashtag_sequence": "used the same hashtag sequence as",
+    "co_url": "shared the same link as",
+    "fast_retweet": "retweeted within seconds of",
+    "any": "co-active with"
+  },
+  "corrections": {
+    "contact": "CONFIGURE_CORRECTIONS_CONTACT_BEFORE_DEPLOY",
+    "contact_is_placeholder": true,
+    "removal_hours": 72,
+    "issue_url": null
+  },
+  "methodology_negative_results": {
+    "language_rule": "This site does not call any account coordinated, a bot, a troll or inauthentic. The detector surfaces accounts that are co-active under stated parameters, and nothing more."
+  }
+}
