@@ -35,6 +35,7 @@ def build(
     persist: bool = True,
     time_bucket: str | None = None,
     manifest: pd.DataFrame | None = None,
+    uri: Callable[[str], str] | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Text-eligible posts, their latest embeddings, and the thresholded
     user-pair network. Returns the edges and a summary; writes the edges to
@@ -48,7 +49,8 @@ def build(
     carrying over half the fused edges.
 
     `manifest` supplies the pinned objects directly, for a caller that has not
-    written one to R2.
+    written one to R2. `uri` maps a key to where it is written, for a caller
+    that wants the trace under a scratch prefix.
     """
     if manifest is None:
         manifest = bench.load(snapshot, con=con)
@@ -115,13 +117,15 @@ def build(
 
     r2_key = textsim_key(snapshot, float(cut), overlap=floor or None, bucket=time_bucket)
 
+    target = uri or (lambda key: f"r2://{BUCKET}/{key}")
+
     def _write(frame: pd.DataFrame, key: str) -> None:
         con.register("_ts", frame)
         try:
-            con.execute(f"COPY _ts TO 'r2://{BUCKET}/{key}' (FORMAT parquet, COMPRESSION zstd)")
+            con.execute(f"COPY _ts TO '{target(key)}' (FORMAT parquet, COMPRESSION zstd)")
         finally:
             con.unregister("_ts")
-        log.info("wrote r2://%s/%s (%d rows)", BUCKET, key, len(frame))
+        log.info("wrote %s (%d rows)", target(key), len(frame))
 
     if persist:
         _write(edges, r2_key)

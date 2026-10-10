@@ -140,13 +140,25 @@ def _members(tmp_path, rows=5):
     return f"read_parquet('{path}', filename=true)"
 
 
-def _post(tmp_path, *, gauge_at=NOW + 60, **scores_kwargs):
+def _runs(tmp_path, state="reused", *, field=True):
+    frame = pd.DataFrame({"window_id": ["daily-2026-10-09-30d"], "text_trace_mode": ["modal"]})
+    if field:
+        frame["text_trace"] = state
+    path = tmp_path / "runs.parquet"
+    frame.to_parquet(path)
+    return f"read_parquet('{path}', filename=true)"
+
+
+def _post(tmp_path, *, gauge_at=NOW + 60, text_trace="reused", trace_gauge=None,
+          runs_field=True, **scores_kwargs):
     textfile = tmp_path / "textfile"
-    v2_daily_run.write_gauge(textfile, now=gauge_at)
+    present = text_trace in ("built", "reused") if trace_gauge is None else trace_gauge
+    v2_daily_run.write_gauge(textfile, now=gauge_at, text_trace_present=present)
     return _by_name(v2_daily_check.postrun(
         con=duckdb.connect(), textfile_dir=textfile, now=lambda: NOW + 3600,
         scores_source=_scores(tmp_path, **scores_kwargs),
         members_source=_members(tmp_path),
+        runs_source=_runs(tmp_path, text_trace, field=runs_field),
     ))
 
 
@@ -162,6 +174,7 @@ def test_a_stale_gauge_fails_at_the_alert_threshold(tmp_path):
         con=duckdb.connect(), textfile_dir=textfile,
         now=lambda: NOW + 31 * 3600,
         scores_source=_scores(tmp_path), members_source=_members(tmp_path),
+        runs_source=_runs(tmp_path),
     ))
     assert not old["gauge fresh"].ok
 
@@ -170,6 +183,7 @@ def test_a_missing_gauge_fails(tmp_path):
     checks = _by_name(v2_daily_check.postrun(
         con=duckdb.connect(), textfile_dir=tmp_path / "nothing", now=lambda: NOW,
         scores_source=_scores(tmp_path), members_source=_members(tmp_path),
+        runs_source=_runs(tmp_path),
     ))
     assert not checks["gauge present"].ok
 
@@ -195,8 +209,47 @@ def test_empty_daily_members_fail(tmp_path):
     checks = _by_name(v2_daily_check.postrun(
         con=duckdb.connect(), textfile_dir=tmp_path / "nothing", now=lambda: NOW,
         scores_source=_scores(tmp_path), members_source=_members(tmp_path, rows=0),
+        runs_source=_runs(tmp_path),
     ))
     assert not checks["daily members written"].ok
+
+
+@pytest.mark.parametrize("state", ["built", "reused", "skipped"])
+def test_a_run_with_a_trace_or_a_deliberate_skip_passes(tmp_path, state):
+    checks = _post(tmp_path, text_trace=state)
+    assert checks["text trace in the latest run"].ok
+    assert checks["text trace gauge"].ok
+    assert state in checks["text trace in the latest run"].detail
+
+
+def test_a_run_that_ranked_without_its_trace_fails_and_names_the_window(tmp_path):
+    checks = _post(tmp_path, text_trace="missing")
+    failed = checks["text trace in the latest run"]
+    assert not failed.ok
+    assert "missing" in failed.detail and "daily-2026-10-09-30d" in failed.detail
+    assert checks["text trace gauge"].ok  # the gauge says 0 and so does the row
+    assert checks["gauge fresh"].ok and checks["scores listed accounts"].ok
+
+
+def test_a_gauge_that_disagrees_with_the_run_row_fails(tmp_path):
+    assert not _post(tmp_path, text_trace="reused", trace_gauge=False)["text trace gauge"].ok
+
+
+def test_a_run_row_from_before_the_flag_cannot_be_vouched_for(tmp_path):
+    checks = _post(tmp_path, runs_field=False)
+    assert not checks["text trace in the latest run"].ok
+    assert "no text_trace field" in checks["text trace in the latest run"].detail
+
+
+def test_a_gauge_file_without_the_text_sample_fails_that_check(tmp_path):
+    textfile = tmp_path / "textfile"
+    v2_daily_run.write_gauge(textfile, now=NOW + 60)
+    checks = _by_name(v2_daily_check.postrun(
+        con=duckdb.connect(), textfile_dir=textfile, now=lambda: NOW + 3600,
+        scores_source=_scores(tmp_path), members_source=_members(tmp_path),
+        runs_source=_runs(tmp_path),
+    ))
+    assert not checks["text trace gauge"].ok
 
 
 def _unit(name: str) -> configparser.ConfigParser:

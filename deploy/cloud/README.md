@@ -90,6 +90,8 @@ trace for that window id and writes a new rank.
 | `--min-entities` | `coord2.MIN_ENTITIES_PER_USER` (2) | the rolling rank's activity floor |
 | `--canary` | off | union the active planted canary into the window |
 | `--windowed day\|week` | off | add the windowed pass at `windowed.DETECTION` / `SERIES` |
+| `--text-trace` | `modal` | `modal`: reuse the trace the Modal job persisted, rank without text if absent; `local`: embed and build here; `none`: no text |
+| `--no-embed` | off | with `--text-trace local`, skip the embed stage |
 | `--out-dir` | none | write everything here, nothing to R2 |
 
 To change a flag in production, add it to `ExecStart` in the unit.
@@ -118,6 +120,40 @@ window ending 2026-10-09. The 4 vCPU x86 box has not been measured.
   x86 host will be slower by a factor that has to be measured on the box.
 - `--windowed` added 3.3 GB peak and 36 s on the 7 d window.
 
+## The text trace
+
+Default `--text-trace modal`. The text trace (embed the window's missing
+posts, pairwise cosine search) is built by the Modal app `kma-text-trace`
+(`analysis/modal_text_trace.py`, 02:30 UTC once its schedule is on) and left in
+R2 under `coord2/kind=textsim`, keyed by window id. This host reads it back and
+ranks. It holds no Modal credentials and imports no `modal`; R2 is the only
+link. The pair search at full embedding coverage does not fit in `MemoryMax`
+here, which is why it is not built on this host.
+
+If the trace is not there at 03:30 the run does NOT build one (that is the
+out-of-memory). It ranks without text similarity and says so:
+
+- journal: a WARNING, `TEXT TRACE MISSING for window <id>`, with the key
+  expected;
+- `kind=daily_runs`: `text_trace` is `missing`, `text_threshold` is null (and
+  null on the `kind=scores` rows too);
+- the gauge file: `kma_v2_daily_text_trace_present 0`;
+- `deploy/cloud/verify.sh postrun`: `text trace in the latest run` fails.
+
+The unit still finishes successfully and the freshness gauge still advances:
+the accounts are listed and the collector keeps its targets. The next day's
+run is unaffected. To fill the day in, run the Modal job by hand
+(`modal run modal_text_trace.py`), then re-run the unit: it reuses the
+manifest and the trace and writes a new rank.
+
+The Modal job's window must match this host's: it reads `DEFAULT_DAYS` from the
+code deployed there, so redeploy `kma-text-trace` when `DEFAULT_DAYS` changes.
+
+Deploy order: turn the Modal schedule on (or run the job by hand each day)
+BEFORE this change reaches `cloud`, otherwise every run until then is a
+`missing` run. `--text-trace local` in `ExecStart` keeps today's behaviour in
+the meantime.
+
 ## The gauge
 
 After the whole run succeeds the job writes, atomically (temp file in the same
@@ -128,8 +164,18 @@ directory, `chmod 644`, rename), `$KMA_TEXTFILE_DIR/kma_v2_daily.prom`:
 kma_v2_daily_last_success_timestamp_seconds <epoch seconds>
 ```
 
+A second sample sits in the same file, written in the same atomic rename:
+
+```
+# TYPE kma_v2_daily_text_trace_present gauge
+kma_v2_daily_text_trace_present <1 if the rank used a text trace, else 0>
+```
+
 A failed or killed run leaves the previous file in place, so staleness is the
-alert signal. An empty listing is a failure, not a healthy run.
+alert signal. An empty listing is a failure, not a healthy run. A rank without
+a text trace is not a failure, so the freshness sample advances and the second
+sample is what shows it; an alert on `kma_v2_daily_text_trace_present == 0` is
+the iot stack's to add.
 
 ## Floors
 

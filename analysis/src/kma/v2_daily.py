@@ -141,12 +141,13 @@ def rank(
     canary_posts: pd.DataFrame | None = None,
     manifest: pd.DataFrame | None = None,
     text_edges: pd.DataFrame | None = None,
+    summary_extra: dict | None = None,
 ) -> RankResult:
     """Rank one window and persist every table. `networks` injects prebuilt
     `(networks, sizes, view)` in place of `coord2_run.snapshot_networks`, which
     is how the offline tests run without R2. `manifest` and `text_edges` inject
     just the window manifest and the pair-level text trace, for a caller that
-    holds them in memory."""
+    holds them in memory. `summary_extra` adds fields to the `daily_runs` row."""
     uri = uri or (lambda key: f"r2://{BUCKET}/{key}")
     stamp = run_stamp(now)
     run_id = f"{stamp:%Y%m%dT%H%M%SZ}"
@@ -236,6 +237,7 @@ def rank(
         "min_kenya": min_kenya,
         **{f"edges_{r['trace']}": int(r["edges"]) for _, r in sizes.iterrows()},
         **{k: round(v, 1) for k, v in timings.items()},
+        **(summary_extra or {}),
     }
     result = RankResult(tables=tables, summary=summary, trace_sizes=sizes)
 
