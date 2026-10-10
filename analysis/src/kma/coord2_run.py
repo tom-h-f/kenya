@@ -59,6 +59,7 @@ def build_networks(
     *,
     traces: dict | None = None,
     min_entities: int = coord2.MIN_ENTITIES_PER_USER,
+    trace_sink: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
     """Every bipartite trace, from corpus rows to a filtered similarity network.
 
@@ -69,6 +70,10 @@ def build_networks(
     deepening such accounts removed 390 of 390 from the top 500. Sweeping it is
     how the floor gets set by measurement rather than by being the smallest
     number that is not 1.
+
+    `trace_sink`, when given, receives each trace's (user_id, entity) rows as
+    extracted, before the activity floor, so a caller that needs the evidence
+    behind an edge does not extract the same rows a second time.
     """
     wanted = traces or BIPARTITE_TRACES
     networks: dict[str, pd.DataFrame] = {}
@@ -77,6 +82,8 @@ def build_networks(
     for name, extractor in wanted.items():
         percentile = coord2.EDGE_PERCENTILE[name]
         rows = extractor(con, view)
+        if trace_sink is not None:
+            trace_sink[name] = rows
         if rows.empty:
             log.info("%s: no trace rows", name)
             sizes.append({"trace": name, "trace_rows": 0, "users": 0, "edges": 0})
@@ -242,6 +249,7 @@ def snapshot_networks(
     transform_view: Callable[[str], str] | None = None,
     manifest: pd.DataFrame | None = None,
     text_edges: pd.DataFrame | None = None,
+    trace_sink: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, str]:
     """Every similarity network for a pinned snapshot, plus the posts view it
     was built from - the half of `run` that callers ranking differently (the
@@ -269,7 +277,9 @@ def snapshot_networks(
     if transform_view is not None:
         view = transform_view(view)
 
-    networks, sizes = build_networks(con, view, min_entities=min_entities)
+    networks, sizes = build_networks(
+        con, view, min_entities=min_entities, trace_sink=trace_sink
+    )
 
     if text_threshold is not None:
         if text_edges is None:
