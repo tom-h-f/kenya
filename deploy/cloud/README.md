@@ -86,7 +86,7 @@ trace for that window id and writes a new rank.
 
 | flag | default | |
 |---|---|---|
-| `--days` | 30 | window length; `--end` defaults to yesterday UTC |
+| `--days` | 21 | window length; `--end` defaults to yesterday UTC |
 | `--min-entities` | `coord2.MIN_ENTITIES_PER_USER` (2) | the rolling rank's activity floor |
 | `--canary` | off | union the active planted canary into the window |
 | `--windowed day\|week` | off | add the windowed pass at `windowed.DETECTION` / `SERIES` |
@@ -97,7 +97,7 @@ To change a flag in production, add it to `ExecStart` in the unit.
 ## Sizing
 
 Measured 2026-10-10 on a Mac (14 cores, 24 GB, CPU torch, home network to R2),
-window ending 2026-10-09. The 4 vCPU x86 box has not been measured.
+window ending 2026-10-09. The `cloud` row below is the 4 vCPU x86 box itself.
 
 | window | post rows | wall | peak RSS | text vectors (coverage) | trace edges |
 |---|---|---|---|---|---|
@@ -106,14 +106,15 @@ window ending 2026-10-09. The 4 vCPU x86 box has not been measured.
 | 7 d | 455,792 | 283 s | 6.6 GB | 14,396 (12%) | 506 |
 | 30 d | 2,469,983 | 802 s | 6.3 GB | 139,995 (24%) | 10,451 |
 | 90 d | 5,295,770 | 2,166 s | 13.8 GB | 678,506 (60%) | 137,656 |
+| 30 d, on `cloud` | n/a | 1,576 s (textsim 587, rank 710) | 11.85 GiB | n/a | 10,451 |
 
-- `MemoryMax=12G` caps the job below the iot stack's needs. A 90 d window
-  peaked at 13.8 GB here and does not fit; 30 d is the default for that
-  reason.
+- `MemoryMax=12G` caps the job below the iot stack's needs. On `cloud` the
+  30 d window peaked at 11.85 GiB, 0.15 GiB under the cap, at 24% embedding
+  coverage, so the default is 21 d. Its peak on `cloud` is not yet measured.
 - Memory grows with embedded vectors (about 13 KB each between the 30 d and
   90 d runs) and the pair search is quadratic in them. Embedding coverage was
   12 to 60% when measured; when the enrich backlog clears, a 30 d window holds
-  about 584,000 vectors and will exceed 12 GB. That run needs re-measuring.
+  about 584,000 vectors and will exceed 12 GB. A 21 d window needs re-measuring then.
 - On this Mac the 90 d pair search ran at 678,506 vectors in 555 s. A 4 vCPU
   x86 host will be slower by a factor that has to be measured on the box.
 - `--windowed` added 3.3 GB peak and 36 s on the 7 d window.

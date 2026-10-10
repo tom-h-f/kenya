@@ -67,7 +67,7 @@ rank 850 s (four trace extractions 600 s). Trace parquet: 8.6 KB (1 d) to
 2.8 MB (90 d). `--windowed day` on 7 d: +36 s, +3.3 GB.
 
 - The 90 d window does not fit 15 GB with the iot stack beside it. Default is
-  30 d, `MemoryMax=12G`.
+  21 d (was 30 d until the first run on `cloud` peaked at 11.85 GiB), `MemoryMax=12G`.
 - Peak RSS is a ~4 GB floor from reading the embeddings object set, plus about
   13 KB per embedded vector (30 d to 90 d slope). Coverage was 12-60%; a 30 d
   window at full coverage holds about 584,000 vectors and is projected past

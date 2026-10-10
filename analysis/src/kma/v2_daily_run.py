@@ -60,7 +60,7 @@ GAUGE_FILE = "kma_v2_daily.prom"
 GAUGE_METRIC = "kma_v2_daily_last_success_timestamp_seconds"
 
 # Measured 2026-10-10, see docs/plans/2026-10-10-cloud-v2-daily.md.
-DEFAULT_DAYS = 30
+DEFAULT_DAYS = 21
 
 
 def gauge_text(epoch_seconds: int) -> str:
