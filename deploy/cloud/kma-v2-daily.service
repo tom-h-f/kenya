@@ -1,0 +1,23 @@
+[Unit]
+Description=Kenya monitor v2 daily detector (CPU, no Modal)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=tom
+# /opt/iot-cloud/state/textfile is debian:debian 775. The group is enough to
+# write the gauge; the iot secrets stay unreadable to this unit.
+SupplementaryGroups=debian
+WorkingDirectory=/home/tom/kenya-monitor-2027/analysis
+EnvironmentFile=/etc/kma/v2-daily.env
+Environment=KMA_TEXTFILE_DIR=/opt/iot-cloud/state/textfile
+ExecStart=/home/tom/.local/bin/uv run --frozen --no-dev python -m kma.v2_daily_run
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kma-v2-daily
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=12G
+TimeoutStartSec=4h
