@@ -77,3 +77,58 @@ def test_backfill_drains_until_a_pass_returns_nothing(monkeypatch):
 
     assert incitement.backfill() == 1120
     assert remaining == []
+
+
+def test_nli_batch_is_capped_on_cpu(monkeypatch):
+    """batch 64 x 4 hypotheses measured +1.4 GB of activations on CPU and got
+    the pass OOM-killed on tf1; the cap must hold whatever the caller asks."""
+    from kma import incitement
+
+    monkeypatch.setattr(incitement, "_device", lambda: -1)
+    monkeypatch.setattr(incitement, "CPU_NLI_BATCH", 16)
+    assert incitement.nli_batch_size(64) == 16
+    assert incitement.nli_batch_size(8) == 8
+    assert incitement.nli_batch_size(0) == 1
+
+
+def test_nli_batch_is_untouched_on_an_accelerator(monkeypatch):
+    from kma import incitement
+
+    monkeypatch.setattr(incitement, "CPU_NLI_BATCH", 16)
+    for device in ("mps", 0):
+        monkeypatch.setattr(incitement, "_device", lambda d=device: d)
+        assert incitement.nli_batch_size(256) == 256
+
+
+def test_score_new_runs_inference_at_the_capped_batch(monkeypatch):
+    import pandas as pd
+
+    from kma import incitement
+
+    seen = {}
+
+    class Con:
+        def register(self, *a): pass
+        def unregister(self, *a): pass
+        def execute(self, *a): pass
+
+    df = pd.DataFrame(
+        {
+            "platform_post_id": ["1", "2"],
+            "text": ["a", "b"],
+            "lexicon_hits": [[], []],
+            "lexicon_categories": [[], []],
+        }
+    )
+    labels = list(incitement.HYPOTHESES.values())
+
+    def fake_run(pipe, texts, batch_size, **kw):
+        seen["batch_size"] = batch_size
+        return [{"labels": labels, "scores": [0.1] * len(labels)} for _ in texts]
+
+    monkeypatch.setattr(incitement, "_device", lambda: -1)
+    monkeypatch.setattr(incitement, "_pending", lambda *a, **k: df)
+    monkeypatch.setattr(incitement, "_pipe", lambda *a, **k: object())
+    monkeypatch.setattr(incitement, "_run", fake_run)
+    assert incitement.score_new(Con(), limit=2, batch_size=64) == 2
+    assert seen["batch_size"] == incitement.CPU_NLI_BATCH
