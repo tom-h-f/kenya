@@ -642,22 +642,25 @@ def build_evidence(
     text = text_evidence(text_pairs) if text_evidence and text_pairs else {}
 
     def items_for(a: str, b: str, mask: int) -> tuple[int, list[dict]]:
+        """Up to EVIDENCE_ITEMS items, taken round-robin across the traces that
+        link the pair, and the full count over all traces."""
         total = 0
-        items: list[dict] = []
+        lanes: list[list[dict]] = []
         if mask & 1:
             common = sorted((sets.get("co_retweet", {}).get(a, set())
                              & sets.get("co_retweet", {}).get(b, set())) - hidden)
             total += len(common)
-            items += [{"trace": "co_retweet", "post": p} for p in common[:EVIDENCE_ITEMS]]
+            lanes.append([{"trace": "co_retweet", "post": p} for p in common[:EVIDENCE_ITEMS]])
         if mask & 2:
             common = sorted(sets.get("co_url", {}).get(a, set()) & sets.get("co_url", {}).get(b, set()))
             total += len(common)
-            items += [{"trace": "co_url", "url": u} for u in common[:EVIDENCE_ITEMS]]
+            lanes.append([{"trace": "co_url", "url": u} for u in common[:EVIDENCE_ITEMS]])
         if mask & 4:
             common = sorted(sets.get("hashtag_sequence", {}).get(a, set())
                             & sets.get("hashtag_sequence", {}).get(b, set()))
             total += len(common)
-            items += [{"trace": "hashtag_sequence", "tags": s.split("|")} for s in common[:EVIDENCE_ITEMS]]
+            lanes.append([{"trace": "hashtag_sequence", "tags": s.split("|")}
+                          for s in common[:EVIDENCE_ITEMS]])
         if mask & 8:
             both = set(fast_by_user.get(a, {})) & set(fast_by_user.get(b, {}))
             found: list[tuple[str, int]] = []
@@ -668,12 +671,17 @@ def build_evidence(
                 if not shared:
                     found += [(p, g) for p, g in sorted(pa_.items()) if p not in hidden][:1]
             total += len(found)
-            items += [{"trace": "fast_retweet", "post": p, "gap_seconds": g}
-                      for p, g in found[:EVIDENCE_ITEMS]]
+            lanes.append([{"trace": "fast_retweet", "post": p, "gap_seconds": g}
+                          for p, g in found[:EVIDENCE_ITEMS]])
         if mask & 16:
             n, got = text.get((a, b), (0, []))
             total += n
-            items += got[:EVIDENCE_ITEMS]
+            lanes.append(got[:EVIDENCE_ITEMS])
+        items: list[dict] = []
+        for rank in range(EVIDENCE_ITEMS):
+            for lane in lanes:
+                if rank < len(lane) and len(items) < EVIDENCE_ITEMS:
+                    items.append(lane[rank])
         return total, items
 
     per_cid: dict[int, dict[str, dict]] = {}
@@ -882,11 +890,14 @@ def build_hashtags(stamp: dict, corpus: Corpus, trend: pd.DataFrame | None
                    ) -> tuple[dict[str, dict], set[str]]:
     counts = corpus.tag_counts()
     tags = list(counts["tag"])
-    emerging, emerging_run = [], None
+    emerging, emerging_run, skipped = [], None, 0
     emerging_tags: set[str] = set()
     if trend is not None and not trend.empty:
         emerging_run = str(trend["run_id"].iloc[0])
         for r in trend.sort_values("emergence", ascending=False).itertuples():
+            if not all(math.isfinite(float(v)) for v in (r.recent_rate, r.prior_rate, r.emergence)):
+                skipped += 1
+                continue
             emerging.append({"tag": str(r.tag).lower(), "recent_rate": float(r.recent_rate),
                              "prior_rate": float(r.prior_rate), "emergence": float(r.emergence),
                              "posts": int(r.posts), "censused": bool(r.censused)})
@@ -903,6 +914,8 @@ def build_hashtags(stamp: dict, corpus: Corpus, trend: pd.DataFrame | None
         "emerging": emerging,
         "emerging_run": emerging_run,
     }
+    if skipped:
+        log.warning("%d emerging tag(s) left out: no prior rate, so no finite emergence", skipped)
     files = {"hashtags/index.json": index}
     if not tags:
         return files, set()

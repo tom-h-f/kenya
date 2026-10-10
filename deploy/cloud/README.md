@@ -205,4 +205,23 @@ upload. Files under `runs/{run}/` go first, `manifest.json` last, then runs past
 A failure before the manifest leaves the previous run live. Remove an account by adding its id to
 `explorer/denylist.txt`; it is gone from every file on the next run.
 
-MEASUREMENTS_PLACEHOLDER
+### Measured (Mac, 14 cores, home link, real R2 reads, `--out-dir`, nothing written to R2; not yet measured on `cloud`)
+
+Window `daily-2026-10-09-21d`, daily tables from a local `rank` run of the same window.
+
+| | |
+|---|---|
+| Exporter wall | 334 s (window posts 103, collection listing 55, profiles 93, assemble 138, safety 34) |
+| Exporter peak RSS | 3.1 GiB (DuckDB `memory_limit` 2 GB); target under 4 GiB, so the margin is thin on a box that also counts page cache |
+| Bundle | 154 files, 60.5 MB raw, 11.1 MB gzip. accounts 25.2 / 6.6, evidence 25.8 / 2.1, graph 7.1 / 1.6, hashtags 1.2 / 0.29, search 0.52 / 0.25 (raw / gzip MB) |
+| Retention | 30 runs is about 1.8 GB raw (330 MB gzip) at this size |
+| Daily `rank` with the edge persistence | 366 s, peak 2.79 GiB; the same rank without it 353 s, peak 2.72 GiB (+63 MB). Edge frame 0.7 s, 11 MB of trace rows held |
+| Daily extra writes | `daily_edges` 459,744 rows, `daily_traces` for kept members |
+
+The counts match the inventory: 10,941 accounts, 459,744 fused edges, 46 communities, 16 kept, 10,179
+members, 256,691 co-retweet edges inside kept communities (19,095 with shared >= 2). The combined graph
+holds 7,013 nodes and 41,846 edges: the default rule over the whole fused graph gives 7,547 and 42,445,
+and the difference is edges touching accounts outside kept communities, which the contract keeps out.
+
+`profiles` reads only `authors/` objects dated inside the window (1,894 objects): scanning all of them took
+over half an hour and the signed requests expired. All 10,179 members had a snapshot in that range.

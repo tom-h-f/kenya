@@ -113,8 +113,25 @@ def to_json_bytes(doc: Any) -> bytes:
             return value.isoformat()
         raise TypeError(f"{type(value).__name__} is not JSON serialisable")
 
-    return json.dumps(doc, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
-                      default=default).encode()
+    try:
+        return json.dumps(doc, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+                          default=default).encode()
+    except ValueError:
+        raise ValueError(f"non-finite number at {_non_finite_path(doc)}") from None
+
+
+def _non_finite_path(node: Any, path: str = "$") -> str | None:
+    if isinstance(node, float) and not np.isfinite(node):
+        return path
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if (found := _non_finite_path(v, f"{path}.{k}")):
+                return found
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            if (found := _non_finite_path(v, f"{path}[{i}]")):
+                return found
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -196,13 +213,28 @@ def load_window(con: duckdb.DuckDBPyConnection, window_id: str) -> tuple[eb.Corp
     return manifest, post_rows
 
 
-def read_profiles(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
-    """Latest profile snapshot of every member. Display name and bio, never location."""
+def read_profiles(con: duckdb.DuckDBPyConnection, since: date) -> pd.DataFrame:
+    """Latest profile snapshot of every member collected on or after `since`.
+    Display name and bio, never location.
+
+    Scanning every `authors/` object is not feasible (9,000 small objects, over half an
+    hour measured, and the signed requests expire mid-scan), and a member whose posts were
+    collected in the window almost always has a snapshot dated inside it. Members with
+    none come back absent and their profile fields are null."""
+    glob = f"r2://{db.BUCKET}/authors/platform={PLATFORM}/dt=*/run=*.parquet"
+    listed = [r[0] for r in con.execute("SELECT file FROM glob(?)", [glob]).fetchall()]
+    keep = sorted(f for f in listed
+                  if (m := re.search(r"/dt=(\d{4}-\d{2}-\d{2})/", f)) and m.group(1) >= since.isoformat())
+    if not keep:
+        return pd.DataFrame(columns=["id", "handle", "display_name", "bio", "followers", "following",
+                                     "statuses", "created_at", "profile_as_of"])
+    log.info("profiles: %d author objects since %s", len(keep), since)
+    names = ", ".join(f"'{f}'" for f in keep)
     return con.execute(
         f"""SELECT platform_user_id AS id, handle, display_name, bio,
                    followers_count AS followers, following_count AS following,
                    tweet_count AS statuses, created_at, collected_at AS profile_as_of
-            FROM {db.authors_source(PLATFORM)}
+            FROM read_parquet([{names}], union_by_name=true)
             WHERE platform_user_id IN (SELECT id FROM _mem)
             QUALIFY row_number() OVER (PARTITION BY platform_user_id
                                        ORDER BY collected_at DESC) = 1"""
@@ -706,6 +738,7 @@ def run(
         t = time.monotonic()
         out = fn()
         timings[name] = round(time.monotonic() - t, 1)
+        log.info("%s %.1fs", name, timings[name])
         return out
 
     daily = timed("daily_s", lambda: read_daily(con, root, run_id))
@@ -752,7 +785,7 @@ def run(
             float(run_row["text_overlap"]))
 
     inp = Inputs(
-        daily=daily, profiles_for=lambda: timed("profiles_s", lambda: read_profiles(con)),
+        daily=daily, profiles_for=lambda: timed("profiles_s", lambda: read_profiles(con, start)),
         kenya_for=lambda ids: timed("kenya_s", lambda: read_kenya(con, ids)),
         corpus=corpus, post_rows=post_rows, trend=trend, collection=collection,
         control_arm=control_arm, previous=previous, text_evidence=text_reader,

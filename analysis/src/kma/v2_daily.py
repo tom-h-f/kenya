@@ -27,7 +27,7 @@ every row carrying `run_id` and `window_id`:
   already in memory plus the trace rows the extractors returned, so it adds a
   write and no extraction.
 - `daily_traces` - the (user, trace, entity) rows of the members of kept
-  communities, the evidence an edge rests on. Text similarity has none: its
+  communities, the evidence an edge rests on. Not written when empty. Text similarity has none: its
   trace is pair-level.
 
 A separate kind from `kind=scores` deliberately: snapshot runs made by hand and

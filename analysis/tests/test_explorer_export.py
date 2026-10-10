@@ -537,3 +537,28 @@ def test_size_report_counts_gzip_below_raw(tmp_path):
     assert report["total"]["files"] > 10
     assert 0 < report["total"]["gzip"] < report["total"]["raw"]
     assert "graph" in report["groups"] and "accounts" in report["groups"]
+
+
+def test_an_emerging_tag_with_no_prior_rate_is_left_out_not_written_as_infinity(tmp_path):
+    trend = pd.DataFrame({"run_id": ["r1", "r1"], "tag": ["Water", "Fresh"],
+                          "recent_rate": [0.2, 0.3], "prior_rate": [0.1, 0.0],
+                          "emergence": [2.0, float("inf")], "posts": [30, 5],
+                          "censused": [True, False]})
+    bundle, _ = staged(tmp_path, make_inputs(trend=trend))
+    assert [e["tag"] for e in bundle.files["hashtags/index.json"]["emerging"]] == ["water"]
+
+
+def test_an_edge_with_many_traces_still_lists_at_most_five_items_across_them(tmp_path):
+    inp = make_inputs()
+    rows = [(u, "co_url", f"https://a.example/{i}") for u in (A[0], A[1]) for i in range(8)]
+    inp.daily.traces = pd.concat(
+        [inp.daily.traces, pd.DataFrame(rows, columns=["user_id", "trace", "entity"])],
+        ignore_index=True)
+    inp.daily.edges.loc[(inp.daily.edges["source"] == A[0]) & (inp.daily.edges["target"] == A[1]),
+                        "mask"] = 3
+    bundle, _ = staged(tmp_path, inp)
+    ev = bundle.files["evidence/c0.json"]["edges"]
+    big = max(ev.values(), key=lambda e: e["total"])
+    assert big["total"] == 11 and len(big["items"]) == 5
+    assert {i["trace"] for i in big["items"]} == {"co_retweet", "co_url"}
+    ex.assert_explorer_safe(tmp_path, bundle, set())
