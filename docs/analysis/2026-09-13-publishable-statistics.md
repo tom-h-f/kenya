@@ -1,5 +1,7 @@
 # A7: what this project can publish, and what it cannot
 
+> **Superseded 2026-10-10** by `2026-10-10-publishing-policy.md`. The privacy rule below was lifted; the validity rules were kept. This document stays as the audit of each number.
+
 Written 2026-09-13, after the v2 revamp closed. A7 asks for "a small number of
 measurements that survive the criticism that they are artifacts of how the data
 was collected". This is the audit: every candidate number, what it rests on, and
