@@ -21,6 +21,14 @@ every row carrying `run_id` and `window_id`:
 - `daily_members` - every member of those communities. Leiden ids are not
   stable across runs, so "is this community new?" has to be answered by
   membership overlap, and that needs the full membership, not the listing.
+- `daily_edges` - every fused edge: who is linked to whom, a bitmask of the
+  traces that linked them (`TRACE_BITS`), the largest trace weight and the
+  number of retweeted posts both accounts retweeted. Built from the networks
+  already in memory plus the trace rows the extractors returned, so it adds a
+  write and no extraction.
+- `daily_traces` - the (user, trace, entity) rows of the members of kept
+  communities, the evidence an edge rests on. Not written when empty. Text similarity has none: its
+  trace is pair-level.
 
 A separate kind from `kind=scores` deliberately: snapshot runs made by hand and
 daily production runs answer different questions (a fixed corpus against a
@@ -47,7 +55,9 @@ from datetime import datetime, timezone
 
 import duckdb
 import networkx as nx
+import numpy as np
 import pandas as pd
+from scipy import sparse
 
 from kma import canary, coord2, coord2_communities, coord2_run, window
 from kma.db import BUCKET
@@ -56,6 +66,12 @@ log = logging.getLogger(__name__)
 
 TEXT_THRESHOLD = 0.85
 PLATFORM = "x"
+
+TRACE_BITS = {name: 1 << i for i, name in enumerate(coord2.TRACES)}
+"""`daily_edges.mask`: bit 1 co_retweet, 2 co_url, 4 hashtag_sequence,
+8 fast_retweet, 16 text_similarity. The explorer contract's TraceMask."""
+
+_SHARED_CHUNK = 100_000
 
 
 @dataclass
@@ -80,6 +96,93 @@ class RankResult:
     keys: dict[str, str] = field(default_factory=dict)
     summary: dict = field(default_factory=dict)
     trace_sizes: pd.DataFrame = field(default_factory=pd.DataFrame)
+
+
+def edges_frame(
+    networks: dict[str, pd.DataFrame],
+    retweets: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """The fused graph's edge list, one row per linked pair.
+
+    `source` < `target` as strings. `weight_max` is the largest similarity over
+    the traces that linked the pair, a cosine and not a probability.
+    `shared_retweets` counts the distinct retweeted posts both accounts
+    retweeted and is 0 for a pair with no co_retweet link; it is null when the
+    pair has one but `retweets` (the co_retweet trace rows) was not given.
+    """
+    parts = []
+    for name, edges in networks.items():
+        if edges is None or edges.empty:
+            continue
+        a = edges["source"].astype(str).to_numpy()
+        b = edges["target"].astype(str).to_numpy()
+        swap = a > b
+        one = pd.DataFrame({
+            "source": np.where(swap, b, a),
+            "target": np.where(swap, a, b),
+            "mask": np.int16(TRACE_BITS[name]),
+            "weight_max": (edges["weight"].to_numpy(dtype="float64") if "weight" in edges
+                           else np.full(len(edges), np.nan)),
+        })
+        parts.append(one.groupby(["source", "target"], as_index=False).agg(
+            mask=("mask", "first"), weight_max=("weight_max", "max")))
+    if not parts:
+        return pd.DataFrame({"source": pd.Series(dtype=str), "target": pd.Series(dtype=str),
+                             "mask": pd.Series(dtype="int16"),
+                             "weight_max": pd.Series(dtype="float64"),
+                             "shared_retweets": pd.Series(dtype="Int32")})
+    both = pd.concat(parts, ignore_index=True)
+    fused = both.groupby(["source", "target"], as_index=False, sort=True).agg(
+        mask=("mask", "sum"), weight_max=("weight_max", "max"))
+    fused["mask"] = fused["mask"].astype("int16")
+    fused["shared_retweets"] = shared_retweets(fused, retweets)
+    return fused
+
+
+def shared_retweets(edges: pd.DataFrame, retweets: pd.DataFrame | None) -> pd.Series:
+    """Per edge, the number of distinct posts both ends retweeted."""
+    has = (edges["mask"].to_numpy() & TRACE_BITS["co_retweet"]) > 0
+    out = pd.Series(np.where(has, pd.NA, 0), index=edges.index, dtype="Int32")
+    if not has.any() or retweets is None or retweets.empty:
+        return out
+    pairs = retweets[["user_id", "entity"]].astype(str).drop_duplicates()
+    users, u_idx = np.unique(pairs["user_id"].to_numpy(), return_inverse=True)
+    posts, p_idx = np.unique(pairs["entity"].to_numpy(), return_inverse=True)
+    incidence = sparse.csr_matrix(
+        (np.ones(len(pairs), dtype=np.int32), (u_idx, p_idx)), shape=(len(users), len(posts)))
+    where = np.flatnonzero(has)
+    source = np.searchsorted(users, edges["source"].to_numpy()[where])
+    target = np.searchsorted(users, edges["target"].to_numpy()[where])
+    known = (source < len(users)) & (target < len(users))
+    known[known] = (users[source[known]] == edges["source"].to_numpy()[where][known]) & (
+        users[target[known]] == edges["target"].to_numpy()[where][known])
+    counts = np.zeros(len(where), dtype=np.int64)
+    for start in range(0, len(where), _SHARED_CHUNK):
+        sl = slice(start, start + _SHARED_CHUNK)
+        ok = known[sl]
+        if not ok.any():
+            continue
+        both = incidence[source[sl][ok]].multiply(incidence[target[sl][ok]])
+        counts[sl][ok] = np.asarray(both.sum(axis=1)).ravel()
+    out.iloc[where[known]] = counts[known]
+    return out
+
+
+def traces_frame(
+    trace_rows: dict[str, pd.DataFrame], members: pd.Series | list | set,
+) -> pd.DataFrame:
+    """(user_id, trace, entity) rows of the given members, one per distinct row."""
+    keep = {str(m) for m in members}
+    parts = []
+    for name, rows in trace_rows.items():
+        if rows is None or rows.empty:
+            continue
+        sub = rows[["user_id", "entity"]].astype(str)
+        sub = sub[sub["user_id"].isin(keep)].drop_duplicates()
+        parts.append(sub.assign(trace=name)[["user_id", "trace", "entity"]])
+    if not parts:
+        return pd.DataFrame({c: pd.Series(dtype=str) for c in ("user_id", "trace", "entity")})
+    return pd.concat(parts, ignore_index=True)
 
 
 def run_stamp(now: datetime | None = None) -> datetime:
@@ -141,12 +244,15 @@ def rank(
     canary_posts: pd.DataFrame | None = None,
     manifest: pd.DataFrame | None = None,
     text_edges: pd.DataFrame | None = None,
+    traces: dict[str, pd.DataFrame] | None = None,
 ) -> RankResult:
     """Rank one window and persist every table. `networks` injects prebuilt
     `(networks, sizes, view)` in place of `coord2_run.snapshot_networks`, which
     is how the offline tests run without R2. `manifest` and `text_edges` inject
     just the window manifest and the pair-level text trace, for a caller that
-    holds them in memory."""
+    holds them in memory, and `traces` the per-trace (user_id, entity) rows that
+    `networks` was built from; without them `daily_edges.shared_retweets` is
+    null for co_retweet pairs and `daily_traces` is empty."""
     uri = uri or (lambda key: f"r2://{BUCKET}/{key}")
     stamp = run_stamp(now)
     run_id = f"{stamp:%Y%m%dT%H%M%SZ}"
@@ -157,12 +263,14 @@ def rank(
     # in afterwards. The persisted text trace is GPU-built and cannot contain
     # them, so their text edges are added here on the same cut.
     planted = canary_posts if canary_posts is not None and not canary_posts.empty else None
+    own_traces = traces is None
+    trace_rows: dict[str, pd.DataFrame] = {} if traces is None else traces
     t = time.monotonic()
     nets, sizes, view = networks or coord2_run.snapshot_networks(
         con, w.id, text_threshold=text_threshold, text_overlap=text_overlap,
         min_entities=min_entities,
         transform_view=(lambda v: canary.inject_view(con, v, planted)) if planted is not None else None,
-        manifest=manifest, text_edges=text_edges,
+        manifest=manifest, text_edges=text_edges, trace_sink=trace_rows,
     )
     if planted is not None:
         extra_text = canary.text_edges(planted, threshold=text_threshold or 0.85,
@@ -199,13 +307,34 @@ def rank(
         gate = coord2_run.attach_relevance(con, listed[["user_id", "centrality"]], view)
         listed = listed.merge(gate[["user_id", "n_posts", "kenya_share"]], on="user_id", how="left")
 
+    t = time.monotonic()
+    edges = edges_frame(nets, trace_rows.get("co_retweet"))
+    kept_ids = (
+        rep.members.loc[
+            rep.members["community"].isin(
+                rep.communities.loc[rep.communities["kept"], "community"]),
+            "user_id",
+        ]
+        if len(rep.communities) else pd.Series(dtype=str)
+    )
+    evidence = traces_frame(trace_rows, kept_ids)
+    if planted is not None:
+        edges = edges[~(edges["source"].map(canary.is_canary) | edges["target"].map(canary.is_canary))]
+        evidence = evidence[~evidence["user_id"].map(canary.is_canary)]
+    if own_traces:
+        trace_rows.clear()
+    timings["edges_s"] = time.monotonic() - t
+
     tag = {"run_id": run_id, "window_id": w.id, "window_end": w.end.isoformat(),
            "window_days": w.days}
     tables = {
         "accounts": listed.assign(**tag),
         "communities": rep.communities.assign(**tag),
         "members": rep.members[["user_id", "community", "within_score", "centrality"]].assign(**tag),
+        "edges": edges.assign(**tag),
     }
+    if not evidence.empty:
+        tables["traces"] = evidence.assign(**tag)
 
     ctx = PassContext(con=con, window=w, view=view, networks=nets, graph=graph,
                       centrality=glob, run_id=run_id)

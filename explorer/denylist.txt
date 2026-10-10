@@ -1,0 +1,2 @@
+# Account ids removed from every explorer output on the next run. One id per line.
+# Ids only: no handles, no reasons. See docs/plans/explorer-contract/README.md rule 10.

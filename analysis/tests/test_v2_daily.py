@@ -115,7 +115,7 @@ def _rank(tmp_path, **kw):
 
 def test_rank_writes_every_table_under_the_daily_kinds(tmp_path):
     result = _rank(tmp_path)
-    assert set(result.keys) == {"accounts", "communities", "members", "runs"}
+    assert set(result.keys) == {"accounts", "communities", "members", "edges", "runs"}
     for name, key in result.keys.items():
         assert key == f"coord2/platform=x/kind=daily_{name}/dt=2026-09-22/run=20260922T033000Z.parquet"
         frame = pd.read_parquet(tmp_path / key)
@@ -177,3 +177,74 @@ def test_orchestrate_refuses_an_empty_window():
             "2026-09-21", 90, textsim=lambda sid: {}, rank_fn=lambda w: {},
             con=duckdb.connect(), ensure=lambda w: _manifest(0), trace_exists=lambda sid: True,
         )
+
+
+def _retweets() -> pd.DataFrame:
+    """k0 and k1 retweet three posts together, k0 and k2 one, o0 and k0 none."""
+    rows = [("k0", "p1"), ("k0", "p2"), ("k0", "p3"), ("k1", "p1"), ("k1", "p2"), ("k1", "p3"),
+            ("k0", "p3"), ("k2", "p3"), ("o0", "p9"), ("k0", "p9")]
+    return pd.DataFrame(rows, columns=["user_id", "entity"])
+
+
+def test_edges_frame_is_one_row_per_pair_with_a_trace_mask():
+    nets = {
+        "co_retweet": pd.DataFrame({"source": ["k1", "k0", "k2"], "target": ["k0", "k2", "k0"],
+                                    "weight": [0.9, 0.5, 0.7]}),
+        "co_url": pd.DataFrame({"source": ["k0"], "target": ["k1"], "weight": [0.95]}),
+    }
+    edges = v2_daily.edges_frame(nets, _retweets()).set_index(["source", "target"])
+    assert len(edges) == 2
+    both = edges.loc[("k0", "k1")]
+    assert both["mask"] == v2_daily.TRACE_BITS["co_retweet"] | v2_daily.TRACE_BITS["co_url"]
+    assert both["weight_max"] == pytest.approx(0.95)
+    assert both["shared_retweets"] == 3
+    assert edges.loc[("k0", "k2")]["shared_retweets"] == 1
+
+
+def test_a_pair_with_no_retweet_link_shares_zero_and_one_without_rows_is_null():
+    nets = {"co_url": pd.DataFrame({"source": ["a"], "target": ["b"], "weight": [0.4]}),
+            "co_retweet": pd.DataFrame({"source": ["c"], "target": ["d"], "weight": [0.4]})}
+    edges = v2_daily.edges_frame(nets, None).set_index(["source", "target"])
+    assert edges.loc[("a", "b")]["shared_retweets"] == 0
+    assert pd.isna(edges.loc[("c", "d")]["shared_retweets"])
+
+
+def test_traces_frame_keeps_only_the_given_members_once():
+    rows = {"co_retweet": pd.DataFrame({"user_id": ["k0", "k0", "z9"], "entity": ["p1", "p1", "p1"]}),
+            "co_url": pd.DataFrame({"user_id": ["k0"], "entity": ["https://a.example/x"]})}
+    got = v2_daily.traces_frame(rows, ["k0", "k1"])
+    assert sorted(got["trace"]) == ["co_retweet", "co_url"]
+    assert set(got["user_id"]) == {"k0"}
+
+
+def test_rank_persists_edges_and_the_traces_of_kept_members(tmp_path):
+    nets = _networks()
+    result = _rank(tmp_path, traces={
+        "co_retweet": pd.DataFrame({"user_id": [f"k{i}" for i in range(8)] + ["s0"],
+                                    "entity": ["p1"] * 9}),
+    })
+    edges = pd.read_parquet(tmp_path / result.keys["edges"])
+    fused = coord2.fuse(nets)
+    assert len(edges) == fused.number_of_edges()
+    assert set(edges["run_id"]) == {"20260922T033000Z"}
+    clique = edges[edges["source"].str.startswith("k") & edges["target"].str.startswith("k")]
+    assert (clique["shared_retweets"].dropna() == 1).all()
+    traces = pd.read_parquet(tmp_path / result.keys["traces"])
+    assert set(traces["user_id"]) == {f"k{i}" for i in range(8)}
+
+
+def test_rank_hands_the_trace_sink_to_snapshot_networks(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake(con, snapshot, **kw):
+        kw["trace_sink"]["co_retweet"] = pd.DataFrame({"user_id": ["k0", "k1"], "entity": ["p", "p"]})
+        seen["sink"] = kw["trace_sink"]
+        sizes = pd.DataFrame([{"trace": t, "edges": len(e)} for t, e in _networks().items()])
+        return _networks(), sizes, "SELECT 1"
+
+    monkeypatch.setattr(v2_daily.coord2_run, "snapshot_networks", fake)
+    result = v2_daily.rank(duckdb.connect(), window.Window(date(2026, 9, 21), 90), relevance=False,
+                           uri=_uri(tmp_path), now=datetime(2026, 9, 22, 3, 30, tzinfo=timezone.utc))
+    traces = pd.read_parquet(tmp_path / result.keys["traces"])
+    assert sorted(traces["user_id"]) == ["k0", "k1"]
+    assert seen["sink"] == {}
