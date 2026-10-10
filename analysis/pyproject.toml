@@ -51,7 +51,11 @@ kma-deletions = "kma.deletions:main"
 kma-leads = "kma.leads_run:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "jsonschema>=4.26.0",
+    "pytest>=8",
+    "rfc3339-validator>=0.1.4",
+]
 
 # Linux has no GPU on our hosts (tf1/pi0): pull the CPU-only torch wheels, which
 # skip the ~5GB of CUDA/triton/nccl payload. macOS keeps the default PyPI torch

@@ -26,10 +26,10 @@
         "graph_community": {"const": "explorer/v1/runs/{run}/graph/c{cid}.json"},
         "graph_community_thin": {"const": "explorer/v1/runs/{run}/graph/c{cid}.thin.json"},
         "evidence": {"const": "explorer/v1/runs/{run}/evidence/c{cid}.json"},
-        "account_shard": {"const": "explorer/v1/runs/{run}/accounts/{shard}.json", "description": "shard = 2 hex chars of sha1(user_id)[0:2] mod 64, zero padded decimal 00..63"},
+        "account_shard": {"const": "explorer/v1/runs/{run}/accounts/{shard}.json", "description": "shard = int(sha1(user_id utf8).hexdigest()[:8], 16) % 64, written as decimal without padding, 0..63"},
         "search_accounts": {"const": "explorer/v1/runs/{run}/search/accounts.json"},
         "hashtag_index": {"const": "explorer/v1/runs/{run}/hashtags/index.json"},
-        "hashtag_shard": {"const": "explorer/v1/runs/{run}/hashtags/s{n}.json", "description": "n = 0..15, sha1(tag lowercase)[0] hex"},
+        "hashtag_shard": {"const": "explorer/v1/runs/{run}/hashtags/s{n}.json", "description": "n = int(sha1(tag lowercase utf8).hexdigest()[0], 16), 0..15"},
         "link_index": {"const": "explorer/v1/runs/{run}/links/index.json"},
         "topic_index": {"const": "explorer/v1/runs/{run}/topics/index.json"},
         "topic_detail": {"const": "explorer/v1/runs/{run}/topics/{tid}.json"},
@@ -41,7 +41,8 @@
         "slice_edges": {"const": "explorer/v1/runs/{run}/slices/edges.parquet"},
         "slice_posts": {"const": "explorer/v1/runs/{run}/slices/posts.parquet"},
         "slice_hashtags": {"const": "explorer/v1/runs/{run}/slices/hashtags.parquet"},
-        "slice_communities": {"const": "explorer/v1/runs/{run}/slices/communities.parquet"}
+        "slice_communities": {"const": "explorer/v1/runs/{run}/slices/communities.parquet"},
+        "vendor": {"const": "explorer/v1/vendor/{file}", "description": "pinned third-party assets (DuckDB-WASM), hosted from the bucket. Not per run; file is a plain filename with no slash."}
       }
     },
 

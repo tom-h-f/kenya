@@ -1,0 +1,27 @@
+[
+  {
+    "file": "*site-copy.json",
+    "phrase": "It is not evidence that any account is inauthentic",
+    "reason": "caveat states what co-activity does not show"
+  },
+  {
+    "file": "*site-copy.json",
+    "phrase": "This site does not call any account coordinated, a bot, a troll or inauthentic",
+    "reason": "methodology states the language rule as a negative"
+  },
+  {
+    "file": "*methodology*",
+    "phrase": "does not show that any account is inauthentic",
+    "reason": "methodology negative-result context"
+  },
+  {
+    "file": "*methodology*",
+    "phrase": "not evidence that any account is inauthentic",
+    "reason": "methodology negative-result context"
+  },
+  {
+    "file": "*methodology*",
+    "phrase": "this site does not call any account coordinated, a bot, a troll or inauthentic",
+    "reason": "methodology quotes the language rule"
+  }
+]
