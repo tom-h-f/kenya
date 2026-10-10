@@ -1,0 +1,413 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kma-explorer-contract/1",
+  "title": "Kenya monitor explorer bundle, schema_version 1",
+  "description": "One bundle per daily run, written by kma.explorer_export to kenya-monitor-dashboard under explorer/v1/. Every file carries `stamp`. Files are named in $defs.Files. Edge and node columns are parallel arrays (column-oriented) to keep payloads small. Nothing here may carry a per-account hate, incitement or deletion flag, a prevalence rate, or a verdict word (see README rule 3 and 4).",
+  "type": "object",
+  "oneOf": [
+    {"$ref": "#/$defs/Manifest"}, {"$ref": "#/$defs/Overview"}, {"$ref": "#/$defs/CommunityIndex"},
+    {"$ref": "#/$defs/CommunityDetail"}, {"$ref": "#/$defs/GraphMeta"}, {"$ref": "#/$defs/Graph"},
+    {"$ref": "#/$defs/Evidence"}, {"$ref": "#/$defs/AccountShard"}, {"$ref": "#/$defs/SearchAccounts"},
+    {"$ref": "#/$defs/HashtagIndex"}, {"$ref": "#/$defs/HashtagShard"}, {"$ref": "#/$defs/LinkIndex"},
+    {"$ref": "#/$defs/TopicIndex"}, {"$ref": "#/$defs/TopicDetail"}, {"$ref": "#/$defs/TimeCollection"},
+    {"$ref": "#/$defs/TimePipeline"}, {"$ref": "#/$defs/TimeCoverage"}, {"$ref": "#/$defs/Changes"}
+  ],
+  "$defs": {
+    "Files": {
+      "description": "Object layout. {run} = run_id. Manifest is the only mutable object; everything under runs/{run}/ is immutable. The Worker serves only keys matching these patterns, under the prefix explorer/v1/.",
+      "type": "object",
+      "properties": {
+        "manifest": {"const": "explorer/v1/manifest.json"},
+        "overview": {"const": "explorer/v1/runs/{run}/overview.json"},
+        "community_index": {"const": "explorer/v1/runs/{run}/communities.json"},
+        "community_detail": {"const": "explorer/v1/runs/{run}/communities/{cid}.json"},
+        "graph_meta": {"const": "explorer/v1/runs/{run}/graph/meta.json"},
+        "graph_all": {"const": "explorer/v1/runs/{run}/graph/all.json"},
+        "graph_community": {"const": "explorer/v1/runs/{run}/graph/c{cid}.json"},
+        "graph_community_thin": {"const": "explorer/v1/runs/{run}/graph/c{cid}.thin.json"},
+        "evidence": {"const": "explorer/v1/runs/{run}/evidence/c{cid}.json"},
+        "account_shard": {"const": "explorer/v1/runs/{run}/accounts/{shard}.json", "description": "shard = 2 hex chars of sha1(user_id)[0:2] mod 64, zero padded decimal 00..63"},
+        "search_accounts": {"const": "explorer/v1/runs/{run}/search/accounts.json"},
+        "hashtag_index": {"const": "explorer/v1/runs/{run}/hashtags/index.json"},
+        "hashtag_shard": {"const": "explorer/v1/runs/{run}/hashtags/s{n}.json", "description": "n = 0..15, sha1(tag lowercase)[0] hex"},
+        "link_index": {"const": "explorer/v1/runs/{run}/links/index.json"},
+        "topic_index": {"const": "explorer/v1/runs/{run}/topics/index.json"},
+        "topic_detail": {"const": "explorer/v1/runs/{run}/topics/{tid}.json"},
+        "time_collection": {"const": "explorer/v1/runs/{run}/time/collection.json"},
+        "time_pipeline": {"const": "explorer/v1/runs/{run}/time/pipeline.json"},
+        "time_coverage": {"const": "explorer/v1/runs/{run}/time/coverage.json"},
+        "changes": {"const": "explorer/v1/runs/{run}/time/changes.json"},
+        "slice_accounts": {"const": "explorer/v1/runs/{run}/slices/accounts.parquet"},
+        "slice_edges": {"const": "explorer/v1/runs/{run}/slices/edges.parquet"},
+        "slice_posts": {"const": "explorer/v1/runs/{run}/slices/posts.parquet"},
+        "slice_hashtags": {"const": "explorer/v1/runs/{run}/slices/hashtags.parquet"},
+        "slice_communities": {"const": "explorer/v1/runs/{run}/slices/communities.parquet"}
+      }
+    },
+
+    "Stamp": {
+      "description": "The freshness stamp and the parameters, shown on every view. Never omitted.",
+      "type": "object",
+      "required": ["schema_version", "run_id", "window_id", "window_start", "window_end", "window_days", "computed_at", "generated_at", "params"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "run_id": {"type": "string", "pattern": "^\\d{8}T\\d{6}Z$"},
+        "window_id": {"type": "string", "pattern": "^daily-\\d{4}-\\d{2}-\\d{2}-\\d+d$"},
+        "window_start": {"type": "string", "format": "date"},
+        "window_end": {"type": "string", "format": "date"},
+        "window_days": {"type": "integer", "minimum": 1},
+        "computed_at": {"type": "string", "format": "date-time", "description": "daily_runs.computed_at"},
+        "generated_at": {"type": "string", "format": "date-time", "description": "when the exporter wrote this file"},
+        "params": {"$ref": "#/$defs/Params"}
+      },
+      "additionalProperties": false
+    },
+    "Params": {
+      "description": "What the detector was asked, copied from daily_runs and coord2 constants. Rendered next to every count as 'surfaced under these parameters'.",
+      "type": "object",
+      "required": ["text_threshold", "text_overlap", "min_entities", "min_kenya", "leiden_resolution", "leiden_seed", "min_community_size", "edge_percentile"],
+      "properties": {
+        "text_threshold": {"type": "number"},
+        "text_overlap": {"type": "number"},
+        "min_entities": {"type": "integer"},
+        "min_kenya": {"type": "number", "description": "relevance floor on a community's mean kenya_model"},
+        "relevance_model": {"type": "string"},
+        "leiden_resolution": {"type": "number"},
+        "leiden_seed": {"type": "integer"},
+        "min_community_size": {"type": "integer"},
+        "listing_budget": {"type": "integer"},
+        "listing_per_group": {"type": "integer"},
+        "edge_percentile": {"type": "object", "additionalProperties": {"type": ["number", "null"]}, "description": "per trace; null = not edge-filtered (fast_retweet)"}
+      },
+      "additionalProperties": false
+    },
+
+    "Trace": {"enum": ["co_retweet", "co_url", "hashtag_sequence", "fast_retweet", "text_similarity"]},
+    "TraceMask": {"type": "integer", "minimum": 1, "maximum": 31, "description": "bit 1 co_retweet, 2 co_url, 4 hashtag_sequence, 8 fast_retweet, 16 text_similarity"},
+    "AccountId": {"type": "string", "pattern": "^\\d{1,20}$", "description": "X user id as string. Never a number: ids exceed 2^53."},
+    "PostId": {"type": "string", "pattern": "^\\d{1,20}$"},
+
+    "Manifest": {
+      "type": "object",
+      "required": ["kind", "schema_version", "latest_run", "generated_at", "runs", "files", "method_url", "corrections_url"],
+      "properties": {
+        "kind": {"const": "manifest"},
+        "schema_version": {"const": 1},
+        "latest_run": {"type": "string"},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "method_url": {"type": "string"},
+        "corrections_url": {"type": "string"},
+        "runs": {"type": "array", "description": "newest first, at most 30", "items": {
+          "type": "object", "required": ["run_id", "window_id", "window_end", "computed_at"],
+          "properties": {"run_id": {"type": "string"}, "window_id": {"type": "string"}, "window_end": {"type": "string"}, "computed_at": {"type": "string"}},
+          "additionalProperties": false}},
+        "files": {"type": "object", "description": "keyed by path relative to runs/{latest_run}/; the only listing the app may use", "additionalProperties": {
+          "type": "object", "required": ["bytes", "sha256"],
+          "properties": {"bytes": {"type": "integer"}, "sha256": {"type": "string"}, "rows": {"type": "integer"}},
+          "additionalProperties": false}},
+        "unavailable": {"type": "array", "description": "sources that could not be read this run; each view named here renders 'not available'", "items": {
+          "type": "object", "required": ["view", "reason"], "properties": {"view": {"type": "string"}, "reason": {"type": "string"}}, "additionalProperties": false}}
+      },
+      "additionalProperties": false
+    },
+
+    "Overview": {
+      "type": "object", "required": ["kind", "stamp", "surfaced", "trace_edges", "caveat_id"],
+      "properties": {
+        "kind": {"const": "overview"},
+        "stamp": {"$ref": "#/$defs/Stamp"},
+        "caveat_id": {"type": "string", "description": "id of the persistent method caveat text; the app owns the wording, the export only names its version"},
+        "surfaced": {
+          "description": "Counts of what the detector surfaced UNDER stamp.params. Render as 'surfaced under these parameters', never 'N coordinated accounts'.",
+          "type": "object",
+          "required": ["accounts_in_graph", "edges_in_graph", "communities", "communities_kept", "communities_unscored", "accounts_in_kept_communities"],
+          "properties": {
+            "accounts_in_graph": {"type": "integer"}, "edges_in_graph": {"type": "integer"},
+            "communities": {"type": "integer"}, "communities_kept": {"type": "integer"},
+            "communities_unscored": {"type": "integer"}, "accounts_in_kept_communities": {"type": "integer"}
+          }, "additionalProperties": false},
+        "trace_edges": {"type": "object", "description": "edges per trace, from daily_runs.edges_*", "additionalProperties": {"type": "integer"}},
+        "edge_basis": {
+          "type": "object", "description": "How many co-retweet edges rest on one shared retweet; the page states it beside any network view.",
+          "required": ["co_retweet_edges_in_kept", "with_shared_ge_2", "with_shared_ge_3"],
+          "properties": {"co_retweet_edges_in_kept": {"type": "integer"}, "with_shared_ge_2": {"type": "integer"}, "with_shared_ge_3": {"type": "integer"}}, "additionalProperties": false},
+        "window_corpus": {
+          "type": "object", "description": "posts in the window, with denominators",
+          "required": ["post_rows", "distinct_posts", "distinct_authors", "embedding_coverage", "relevance_coverage"],
+          "properties": {"post_rows": {"type": "integer"}, "distinct_posts": {"type": "integer"}, "distinct_authors": {"type": "integer"},
+            "embedding_coverage": {"type": ["number", "null"]}, "relevance_coverage": {"type": ["number", "null"]}}, "additionalProperties": false}
+      },
+      "additionalProperties": false
+    },
+
+    "CommunityIndex": {
+      "type": "object", "required": ["kind", "stamp", "communities"],
+      "properties": {
+        "kind": {"const": "community_index"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "communities": {"type": "array", "items": {"$ref": "#/$defs/CommunityRow"}}
+      }, "additionalProperties": false
+    },
+    "CommunityRow": {
+      "description": "One Leiden community of min_size+ accounts. `cid` is the per-run id and is NOT stable across runs; `lineage` is.",
+      "type": "object",
+      "required": ["cid", "lineage", "label", "size", "edges", "eigenvalue", "trace_share", "kept", "relevance_scored"],
+      "properties": {
+        "cid": {"type": "integer"},
+        "lineage": {"type": "string", "description": "stable id: sha1 of the lineage root's sorted member ids, first 10 hex; carried across runs by membership overlap"},
+        "label": {"type": "string", "description": "neutral, e.g. 'Community 07'. Never a descriptive name that characterises the members."},
+        "size": {"type": "integer"}, "edges": {"type": "integer"}, "eigenvalue": {"type": "number"},
+        "trace_share": {"type": "object", "description": "share of the community's edges per trace, from daily_communities.share_*", "additionalProperties": {"type": "number"}},
+        "kenya_model": {"type": ["number", "null"], "description": "mean share of members' scored posts the relevance model calls Kenyan"},
+        "relevance_coverage": {"type": ["number", "null"]},
+        "relevance_scored": {"type": "boolean"},
+        "kept": {"type": "boolean", "description": "false = below the relevance floor. Dropped communities are listed with counts only; no members, graph or accounts are exported for them."},
+        "listed": {"type": "integer"},
+        "top_hashtags": {"type": "array", "items": {"$ref": "#/$defs/TagCount"}, "maxItems": 10},
+        "top_domains": {"type": "array", "items": {"$ref": "#/$defs/DomainCount"}, "maxItems": 5}
+      }, "additionalProperties": false
+    },
+    "TagCount": {"type": "object", "required": ["tag", "posts", "accounts"], "properties": {"tag": {"type": "string"}, "posts": {"type": "integer"}, "accounts": {"type": "integer"}}, "additionalProperties": false},
+    "DomainCount": {"type": "object", "required": ["domain", "posts", "accounts"], "properties": {"domain": {"type": "string"}, "posts": {"type": "integer"}, "accounts": {"type": "integer"}}, "additionalProperties": false},
+
+    "CommunityDetail": {
+      "type": "object", "required": ["kind", "stamp", "community", "members", "daily_posts", "graph_available"],
+      "properties": {
+        "kind": {"const": "community_detail"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "community": {"$ref": "#/$defs/CommunityRow"},
+        "members": {"type": "object", "description": "columns, sorted by within_score descending; every member of a kept community",
+          "required": ["id", "handle", "within_score", "centrality", "posts_in_window", "kenya_model"],
+          "properties": {
+            "id": {"type": "array", "items": {"$ref": "#/$defs/AccountId"}},
+            "handle": {"type": "array", "items": {"type": "string"}},
+            "within_score": {"type": "array", "items": {"type": "number"}},
+            "centrality": {"type": "array", "items": {"type": "number"}},
+            "posts_in_window": {"type": "array", "items": {"type": "integer"}},
+            "kenya_model": {"type": "array", "items": {"type": ["number", "null"]}}
+          }, "additionalProperties": false},
+        "daily_posts": {"type": "array", "description": "members' posts per UTC created_at day in the window, split by kind. A count in a collected corpus, not a rate.", "items": {
+          "type": "object", "required": ["dt", "originals", "replies", "reposts"],
+          "properties": {"dt": {"type": "string"}, "originals": {"type": "integer"}, "replies": {"type": "integer"}, "reposts": {"type": "integer"}}, "additionalProperties": false}},
+        "amplified": {"type": "array", "description": "authors this community's members repost most, where the original is in the corpus; coverage stated",
+          "items": {"type": "object", "required": ["id", "handle", "reposts", "members"], "properties": {"id": {"$ref": "#/$defs/AccountId"}, "handle": {"type": "string"}, "reposts": {"type": "integer"}, "members": {"type": "integer"}}, "additionalProperties": false}, "maxItems": 20},
+        "amplified_coverage": {"type": ["number", "null"], "description": "share of members' reposts whose original author is known"},
+        "graph_available": {"type": "boolean"}
+      }, "additionalProperties": false
+    },
+
+    "GraphMeta": {
+      "description": "Community-level graph: one node per kept community, one edge per community pair with at least one cross edge.",
+      "type": "object", "required": ["kind", "stamp", "nodes", "edges"],
+      "properties": {
+        "kind": {"const": "graph_meta"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "nodes": {"type": "array", "items": {"type": "object", "required": ["cid", "size", "x", "y"], "properties": {"cid": {"type": "integer"}, "size": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"}}, "additionalProperties": false}},
+        "edges": {"type": "array", "items": {"type": "object", "required": ["a", "b", "edges"], "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}, "edges": {"type": "integer"}, "edges_shared_ge_2": {"type": "integer"}}, "additionalProperties": false}}
+      }, "additionalProperties": false
+    },
+    "Graph": {
+      "description": "Precomputed layout, column-oriented. graph/all.json = kept communities, edges with shared>=2 or a non-co_retweet trace, so at most ~10k nodes and ~50k edges. graph/c{cid}.json = one community, same edge rule. graph/c{cid}.thin.json = the remaining single-shared-retweet edges, opt-in. Edge indices point into nodes.",
+      "type": "object", "required": ["kind", "stamp", "scope", "edge_rule", "nodes", "edges"],
+      "properties": {
+        "kind": {"const": "graph"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "scope": {"enum": ["all", "community", "community_thin"]},
+        "cid": {"type": "integer"},
+        "edge_rule": {"type": "string", "description": "plain-language rule that produced this edge set, rendered on the view"},
+        "layout": {"type": "string", "description": "algorithm and seed, e.g. igraph drl seed 0"},
+        "nodes": {"type": "object", "required": ["id", "handle", "cid", "x", "y", "degree"],
+          "properties": {
+            "id": {"type": "array", "items": {"$ref": "#/$defs/AccountId"}},
+            "handle": {"type": "array", "items": {"type": "string"}},
+            "cid": {"type": "array", "items": {"type": "integer"}},
+            "x": {"type": "array", "items": {"type": "number"}},
+            "y": {"type": "array", "items": {"type": "number"}},
+            "degree": {"type": "array", "items": {"type": "integer"}}
+          }, "additionalProperties": false},
+        "edges": {"type": "object", "required": ["s", "t", "w", "mask", "shared"],
+          "properties": {
+            "s": {"type": "array", "items": {"type": "integer"}},
+            "t": {"type": "array", "items": {"type": "integer"}},
+            "w": {"type": "array", "items": {"type": "number"}, "description": "max similarity weight over the edge's traces; a cosine, not a probability"},
+            "mask": {"type": "array", "items": {"$ref": "#/$defs/TraceMask"}},
+            "shared": {"type": "array", "items": {"type": "integer"}, "description": "number of retweeted posts both accounts retweeted (co_retweet trace); 0 when the edge has no co_retweet trace"}
+          }, "additionalProperties": false}
+      }, "additionalProperties": false
+    },
+
+    "Evidence": {
+      "description": "Per community: the shared objects behind edges, so every drawn edge is checkable. Keyed by edge position in graph/c{cid}.json and c{cid}.thin.json (thin edges use key prefix 't').",
+      "type": "object", "required": ["kind", "stamp", "cid", "edges", "posts"],
+      "properties": {
+        "kind": {"const": "evidence"}, "stamp": {"$ref": "#/$defs/Stamp"}, "cid": {"type": "integer"},
+        "edges": {"type": "object", "description": "key 'e{index}' or 't{index}' -> items, capped at 5 per edge, with the full count", "additionalProperties": {
+          "type": "object", "required": ["total", "items"],
+          "properties": {"total": {"type": "integer"}, "items": {"type": "array", "items": {"$ref": "#/$defs/EvidenceItem"}}}, "additionalProperties": false}},
+        "posts": {"type": "object", "description": "post id -> public post, for item.post references. Absent id = original not in the corpus; the app links out to the post instead.", "additionalProperties": {"$ref": "#/$defs/PostRef"}}
+      }, "additionalProperties": false
+    },
+    "EvidenceItem": {
+      "type": "object", "required": ["trace"],
+      "properties": {
+        "trace": {"$ref": "#/$defs/Trace"},
+        "post": {"$ref": "#/$defs/PostId", "description": "co_retweet: the retweeted post both retweeted. fast_retweet: the original."},
+        "url": {"type": "string", "description": "co_url: the shared URL as persisted"},
+        "tags": {"type": "array", "items": {"type": "string"}, "description": "hashtag_sequence: the ordered, lower-cased tag sequence both posted"},
+        "post_a": {"$ref": "#/$defs/PostId"}, "post_b": {"$ref": "#/$defs/PostId"},
+        "similarity": {"type": "number", "description": "text_similarity: cosine of the two posts' embeddings; post_a and post_b are the pair"},
+        "gap_seconds": {"type": "integer", "description": "fast_retweet: seconds from original to the retweet, per account is in the posts map"}
+      }, "additionalProperties": false
+    },
+    "PostRef": {
+      "type": "object", "required": ["id", "author_id", "author_handle", "created_at", "text", "url"],
+      "properties": {
+        "id": {"$ref": "#/$defs/PostId"}, "author_id": {"$ref": "#/$defs/AccountId"}, "author_handle": {"type": "string"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "text": {"type": "string", "maxLength": 1200},
+        "url": {"type": "string"},
+        "like_count": {"type": ["integer", "null"]}, "repost_count": {"type": ["integer", "null"]}, "reply_count": {"type": ["integer", "null"]},
+        "counts_as_of": {"type": ["string", "null"], "description": "collected_at of the snapshot the counts come from"}
+      }, "additionalProperties": false
+    },
+
+    "AccountShard": {
+      "type": "object", "required": ["kind", "stamp", "shard", "accounts"],
+      "properties": {
+        "kind": {"const": "account_shard"}, "stamp": {"$ref": "#/$defs/Stamp"}, "shard": {"type": "integer"},
+        "accounts": {"type": "object", "additionalProperties": {"$ref": "#/$defs/AccountCard"}}
+      }, "additionalProperties": false
+    },
+    "AccountCard": {
+      "description": "Account card for a member of a kept community. No hate, incitement, toxicity, deletion or suspension field exists here by design.",
+      "type": "object", "required": ["id", "handle", "cid", "within_score", "posts_in_window", "profile", "neighbours", "recent_posts"],
+      "properties": {
+        "id": {"$ref": "#/$defs/AccountId"}, "handle": {"type": "string"},
+        "cid": {"type": "integer"}, "lineage": {"type": "string"},
+        "within_score": {"type": "number"}, "centrality": {"type": "number"},
+        "kenya_model": {"type": ["number", "null"]}, "posts_scored": {"type": "integer"},
+        "posts_in_window": {"type": "integer"}, "reposts_in_window": {"type": "integer"},
+        "profile": {"type": "object", "required": ["display_name", "bio", "followers", "following", "statuses", "created_at", "profile_as_of"],
+          "properties": {"display_name": {"type": ["string", "null"]}, "bio": {"type": ["string", "null"]},
+            "followers": {"type": ["integer", "null"]}, "following": {"type": ["integer", "null"]}, "statuses": {"type": ["integer", "null"]},
+            "created_at": {"type": ["string", "null"]}, "profile_as_of": {"type": ["string", "null"], "description": "collected_at of the profile snapshot"}}, "additionalProperties": false},
+        "neighbours": {"type": "array", "description": "strongest linked accounts under the stamp's edge rule (shared>=2 or non-co_retweet), at most 25, with the evidence count so the card links to the evidence", "items": {
+          "type": "object", "required": ["id", "handle", "cid", "mask", "shared", "w"],
+          "properties": {"id": {"$ref": "#/$defs/AccountId"}, "handle": {"type": "string"}, "cid": {"type": "integer"}, "mask": {"$ref": "#/$defs/TraceMask"}, "shared": {"type": "integer"}, "w": {"type": "number"}}, "additionalProperties": false}, "maxItems": 25},
+        "neighbours_total": {"type": "integer", "description": "all fused edges of this account, including single-shared-retweet ones"},
+        "hashtags": {"type": "array", "items": {"$ref": "#/$defs/TagCount"}, "maxItems": 10},
+        "amplifies": {"type": "array", "description": "authors this account reposts most, where the original is in the corpus", "items": {"type": "object", "required": ["id", "handle", "reposts"], "properties": {"id": {"$ref": "#/$defs/AccountId"}, "handle": {"type": "string"}, "reposts": {"type": "integer"}}, "additionalProperties": false}, "maxItems": 10},
+        "daily_posts": {"type": "array", "items": {"type": "object", "required": ["dt", "n"], "properties": {"dt": {"type": "string"}, "n": {"type": "integer"}}, "additionalProperties": false}},
+        "recent_posts": {"type": "array", "description": "latest 10 non-repost posts created in the window", "items": {"$ref": "#/$defs/PostRef"}, "maxItems": 10}
+      }, "additionalProperties": false
+    },
+
+    "SearchAccounts": {
+      "description": "Client-side handle and display-name index for members of kept communities. Parallel arrays sorted by lower-cased handle.",
+      "type": "object", "required": ["kind", "stamp", "id", "handle", "cid"],
+      "properties": {
+        "kind": {"const": "search_accounts"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "id": {"type": "array", "items": {"$ref": "#/$defs/AccountId"}},
+        "handle": {"type": "array", "items": {"type": "string"}},
+        "display_name": {"type": "array", "items": {"type": ["string", "null"]}},
+        "cid": {"type": "array", "items": {"type": "integer"}}
+      }, "additionalProperties": false
+    },
+
+    "HashtagIndex": {
+      "description": "Top 1000 hashtags in the window by distinct posts, plus emerging tags from trend discovery. Counts are rows in the collected corpus, not prevalence.",
+      "type": "object", "required": ["kind", "stamp", "tags", "basis"],
+      "properties": {
+        "kind": {"const": "hashtag_index"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "basis": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "object", "required": ["tag", "posts", "accounts", "shard"],
+          "properties": {"tag": {"type": "string"}, "posts": {"type": "integer"}, "accounts": {"type": "integer"}, "shard": {"type": "integer"}, "first_seen": {"type": "string"}, "emerging": {"type": "boolean"}}, "additionalProperties": false}},
+        "emerging": {"type": "array", "description": "from trend_candidates, latest run: tags whose recent rate exceeds the prior rate in the control arm", "items": {"type": "object", "required": ["tag", "recent_rate", "prior_rate", "emergence", "posts"],
+          "properties": {"tag": {"type": "string"}, "recent_rate": {"type": "number"}, "prior_rate": {"type": "number"}, "emergence": {"type": "number"}, "posts": {"type": "integer"}, "censused": {"type": "boolean"}}, "additionalProperties": false}},
+        "emerging_run": {"type": ["string", "null"]}
+      }, "additionalProperties": false
+    },
+    "HashtagShard": {
+      "type": "object", "required": ["kind", "stamp", "shard", "tags"],
+      "properties": {
+        "kind": {"const": "hashtag_shard"}, "stamp": {"$ref": "#/$defs/Stamp"}, "shard": {"type": "integer"},
+        "tags": {"type": "object", "additionalProperties": {
+          "type": "object", "required": ["tag", "daily", "communities", "examples"],
+          "properties": {
+            "tag": {"type": "string"},
+            "daily": {"type": "array", "items": {"type": "object", "required": ["dt", "posts", "accounts"], "properties": {"dt": {"type": "string"}, "posts": {"type": "integer"}, "accounts": {"type": "integer"}}, "additionalProperties": false}},
+            "communities": {"type": "array", "description": "distribution of the tag's posts by author's community in the corpus window; includes 'none' for authors outside kept communities, so it is a share of tag posts and never a share of a community", "items": {"type": "object", "required": ["cid", "posts"], "properties": {"cid": {"type": ["integer", "null"]}, "posts": {"type": "integer"}}, "additionalProperties": false}},
+            "examples": {"type": "array", "items": {"$ref": "#/$defs/PostRef"}, "maxItems": 5}
+          }, "additionalProperties": false}}
+      }, "additionalProperties": false
+    },
+    "LinkIndex": {
+      "type": "object", "required": ["kind", "stamp", "domains", "urls"],
+      "properties": {
+        "kind": {"const": "link_index"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "domains": {"type": "array", "items": {"$ref": "#/$defs/DomainCount"}, "maxItems": 300},
+        "urls": {"type": "array", "maxItems": 500, "items": {"type": "object", "required": ["url", "posts", "accounts"], "properties": {"url": {"type": "string"}, "posts": {"type": "integer"}, "accounts": {"type": "integer"}, "top_cids": {"type": "array", "items": {"type": "integer"}}}, "additionalProperties": false}}
+      }, "additionalProperties": false
+    },
+
+    "TopicIndex": {
+      "description": "v1.5. Topics come from the topics/ fit (UMAP+HDBSCAN, one-off 2026-09-04) plus nearest-centroid assignment of newer posts. `fit` states when the fit was made and how much is noise.",
+      "type": "object", "required": ["kind", "stamp", "fit", "topics"],
+      "properties": {
+        "kind": {"const": "topic_index"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "fit": {"type": "object", "required": ["fitted_at", "fit_posts", "topics", "noise_share", "params"], "properties": {"fitted_at": {"type": "string"}, "fit_posts": {"type": "integer"}, "topics": {"type": "integer"}, "noise_share": {"type": "number"}, "params": {"type": "string"}, "assignment": {"type": "string", "description": "how posts after fitted_at are placed, with its similarity cut"}}, "additionalProperties": false},
+        "topics": {"type": "array", "items": {"type": "object", "required": ["tid", "terms", "posts_in_window", "daily"],
+          "properties": {"tid": {"type": "integer"}, "terms": {"type": "array", "items": {"type": "string"}}, "posts_in_window": {"type": "integer"}, "accounts_in_window": {"type": "integer"},
+            "daily": {"type": "array", "items": {"type": "integer"}, "description": "posts per day over the window, in window order"}}, "additionalProperties": false}}
+      }, "additionalProperties": false
+    },
+    "TopicDetail": {
+      "type": "object", "required": ["kind", "stamp", "tid", "terms", "examples", "communities"],
+      "properties": {
+        "kind": {"const": "topic_detail"}, "stamp": {"$ref": "#/$defs/Stamp"}, "tid": {"type": "integer"},
+        "terms": {"type": "array", "items": {"type": "string"}},
+        "examples": {"type": "array", "items": {"$ref": "#/$defs/PostRef"}, "maxItems": 10},
+        "communities": {"type": "array", "description": "topic mass by community: posts in this topic by members of each kept community, and that community's total posts for the denominator", "items": {"type": "object", "required": ["cid", "posts", "community_posts"], "properties": {"cid": {"type": "integer"}, "posts": {"type": "integer"}, "community_posts": {"type": "integer"}}, "additionalProperties": false}},
+        "hashtags": {"type": "array", "items": {"$ref": "#/$defs/TagCount"}, "maxItems": 10},
+        "flags": {"type": "object", "description": "AGGREGATE ONLY and only if Tom approves (open question 2): within-topic share of posts the hate classifier flags, with scored-post denominator and the scope it is computed within. Absent otherwise. Never per account, never per community.",
+          "required": ["scope", "scored_posts", "flagged_posts"], "properties": {"scope": {"enum": ["baseline", "control"]}, "scored_posts": {"type": "integer"}, "flagged_posts": {"type": "integer"}, "model": {"type": "string"}, "threshold_note": {"type": "string"}}, "additionalProperties": false}
+      }, "additionalProperties": false
+    },
+
+    "TimeCollection": {
+      "description": "Collection volume by UTC day and scope, plus composition. Extends summary.json cards.collection. Rows are collector rows, not distinct posts.",
+      "type": "object", "required": ["kind", "stamp", "series", "gap_days"],
+      "properties": {
+        "kind": {"const": "time_collection"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "series": {"type": "array", "items": {"type": "object", "required": ["dt", "rows", "by_type"], "properties": {"dt": {"type": "string"}, "rows": {"type": "integer"}, "by_type": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "rows per posts/ type= partition, so composition drift is visible"}}, "additionalProperties": false}},
+        "gap_days": {"type": "array", "items": {"type": "string"}},
+        "control_arm": {"type": ["object", "null"], "properties": {"runs": {"type": "integer"}, "posts": {"type": "integer"}, "truncated_runs": {"type": "integer"}, "first": {"type": "string"}, "last": {"type": "string"}}, "additionalProperties": false}
+      }, "additionalProperties": false
+    },
+    "TimePipeline": {
+      "type": "object", "required": ["kind", "stamp", "runs"],
+      "properties": {
+        "kind": {"const": "time_pipeline"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "runs": {"type": "array", "description": "every persisted daily_runs row, newest first", "items": {"type": "object", "required": ["run_id", "window_id", "computed_at", "window_days", "accounts_in_graph", "edges_in_graph", "communities", "communities_kept", "stage_seconds"],
+          "properties": {"run_id": {"type": "string"}, "window_id": {"type": "string"}, "computed_at": {"type": "string"}, "window_days": {"type": "integer"}, "accounts_in_graph": {"type": "integer"}, "edges_in_graph": {"type": "integer"}, "communities": {"type": "integer"}, "communities_kept": {"type": "integer"},
+            "stage_seconds": {"type": "object", "additionalProperties": {"type": "number"}}, "edges": {"type": "object", "additionalProperties": {"type": "integer"}}, "params": {"$ref": "#/$defs/Params"}}, "additionalProperties": false}}
+      }, "additionalProperties": false
+    },
+    "TimeCoverage": {
+      "description": "Share of the window's distinct posts each enrichment stage has covered. Denominator = distinct posts in the window with text.",
+      "type": "object", "required": ["kind", "stamp", "denominator_posts", "stages"],
+      "properties": {
+        "kind": {"const": "time_coverage"}, "stamp": {"$ref": "#/$defs/Stamp"}, "denominator_posts": {"type": "integer"},
+        "stages": {"type": "array", "items": {"type": "object", "required": ["stage", "covered_posts"], "properties": {"stage": {"enum": ["embeddings", "relevance", "hatespeech", "incitement", "labels"]}, "covered_posts": {"type": "integer"}, "latest_dt": {"type": ["string", "null"]}}, "additionalProperties": false}}
+      }, "additionalProperties": false
+    },
+    "Changes": {
+      "description": "What changed since the previous run, by membership overlap (daily_members). Needs two runs on different days; before that `previous_run` is null and the view says so.",
+      "type": "object", "required": ["kind", "stamp", "previous_run", "matches"],
+      "properties": {
+        "kind": {"const": "changes"}, "stamp": {"$ref": "#/$defs/Stamp"},
+        "previous_run": {"type": ["string", "null"]},
+        "min_jaccard": {"type": "number"},
+        "matches": {"type": "array", "items": {"type": "object", "required": ["status", "lineage"],
+          "properties": {"status": {"enum": ["continuing", "new", "vanished", "split", "merged"]}, "lineage": {"type": "string"}, "cid": {"type": ["integer", "null"]}, "previous_cid": {"type": ["integer", "null"]},
+            "size": {"type": ["integer", "null"]}, "previous_size": {"type": ["integer", "null"]}, "jaccard": {"type": ["number", "null"]}, "joined": {"type": "integer"}, "left": {"type": "integer"}}, "additionalProperties": false}}
+      }, "additionalProperties": false
+    }
+  }
+}
