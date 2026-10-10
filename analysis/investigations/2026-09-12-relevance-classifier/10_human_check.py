@@ -51,9 +51,12 @@ def draw(con, n: int, seed: int, exclude: set[str]) -> pd.DataFrame:
 
 def score(path: Path, key: Path) -> None:
     filled = pd.read_csv(path)
-    if "p_kenya" not in filled:
-        # The sheet is blind on purpose, so the scores come back from the key.
-        filled = filled.merge(pd.read_csv(key)[["post_id", "p_kenya"]], on="post_id")
+    # The downloaded sheet carries post_id and label only - the page is blind and
+    # holds no scores - so the text and the score come back from the key.
+    wanted = [c for c in ("p_kenya", "text") if c not in filled]
+    if wanted:
+        keyed = pd.read_csv(key).astype({"post_id": str})
+        filled = filled.astype({"post_id": str}).merge(keyed[["post_id", *wanted]], on="post_id")
     filled = filled[filled["label"].isin(("kenya", "offdomain"))].reset_index(drop=True)
     filled["bucket"] = filled["text"].map(measure.domain_bucket)
     actual = (filled["label"] == "kenya").to_numpy()
