@@ -611,7 +611,7 @@ def ensure_calibration(
     fit_table: pa.Table,
     device: str,
     block: int,
-    status=print,
+    status=lambda stage, **extra: print(stage, extra, flush=True),
     force: bool = False,
     reference: str | None = None,
     fraction: float = 0.05,

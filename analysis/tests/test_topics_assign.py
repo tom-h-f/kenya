@@ -509,3 +509,17 @@ def test_assign_calibrates_once_when_no_settings(bucket, tmp_path):
     assert cal["reference"] in ("topics", "topics+noise")
     assert ta.parse_params(marker["params"])["fit_run"] == "20260904T084845Z"
     assert "heldout_agreement" in ta.parse_params(marker["params"])
+
+
+def test_cli_calibrate_writes_settings(bucket, tmp_path):
+    root, _ = bucket
+    manifest = {"version": 1, "objects": {}, "puts": {}}
+    for o in DirStore(root).list(""):
+        manifest["objects"][o.key] = {"size": o.size, "url": (root / o.key).as_uri()}
+    mpath = tmp_path / "m.json"
+    mpath.write_text(json.dumps(manifest))
+    cache = tmp_path / "cache"
+    rc = ta.main(["calibrate", "--manifest", str(mpath), "--cache", str(cache), "--device", "cpu"])
+    assert rc == 0
+    cal = json.loads((cache / "calibration-20260904T084845Z.json").read_text())
+    assert cal["chosen"]["k"] >= 1
