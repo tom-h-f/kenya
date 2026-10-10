@@ -48,11 +48,12 @@ incidence a **census for the chosen objects** - the hypergeometric null in
 - **Hashtags**: last-24h count >= `DYNAMIC_HASHTAG_MIN_COUNT` and >=
   `DYNAMIC_HASHTAG_RATIO` x the prior-7d daily average (or brand new). Top K
   promoted as keywords.
-- **Accounts**: members of the latest persisted coordination clusters
-  (`coordination/kind=clusters` on R2) promoted to timeline targets.
+- **Accounts**: the top of the latest v2 scores run (`coord2/kind=scores` on
+  R2), when `V2_PROMOTION_ENABLED` is set, promoted to timeline targets. v1
+  cluster members were promoted until v1 was retired 2026-10-10.
 - Caps: `DYNAMIC_MAX_KEYWORDS` / `DYNAMIC_MAX_ACCOUNTS`. Expiry: entries not
   re-confirmed for `DYNAMIC_EXPIRY_DAYS` are dropped. All promotions logged
-  with their source ("hashtag-burst", "coordination-cluster").
+  with their source ("hashtag-burst", "story-flag", "v2-centrality").
 
 ## 4. Always-on collection (2026-07-08)
 
@@ -80,9 +81,9 @@ update `authors/`.
 
 | Mode | Command | Use when |
 |------|---------|----------|
-| Coordination clusters | `monitor follows` | Default; members of latest persisted clusters |
 | Explicit handles | `monitor follows --handle X` | Analyst-directed |
 | Suspicion rank | `monitor follows --top-suspicious N` | Triage bot-like accounts from Phase 1 heuristic |
+| Hate seeds | `monitor follows --top-hate N` | Hate-network seed accounts |
 
 Caps: `FOLLOW_FETCH_LIMIT` per direction per account, `FOLLOW_MAX_ACCOUNTS` per
 invocation. Enables follower-overlap corroboration in analysis.

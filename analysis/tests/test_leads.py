@@ -1,4 +1,4 @@
-"""The leads diff, queue, alert selection and message format - no R2, no Modal.
+"""The leads diff, queue and verdict rows - no R2, no Modal.
 
 What is tested is what would make the monitor either miss a campaign or ring
 every morning about the same one: matching across runs whose ids mean
@@ -7,12 +7,10 @@ nothing, the budget, idempotency, and the canary contract.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pandas as pd
 import pytest
 
-from kma import leads, leads_notify, leads_run
+from kma import leads, leads_run
 
 
 def listing(groups: dict[int, list[str]], **cols) -> pd.DataFrame:
@@ -226,164 +224,6 @@ def test_off_domain_communities_are_not_queued_when_relevance_is_known():
 def test_worth_a_look(kind, relevant, status, expected):
     v = {"cluster_type": kind, "kenya_relevant": relevant}
     assert leads_run.worth_a_look(v, status) is expected
-
-
-# -- notify -----------------------------------------------------------------
-
-
-NOW = datetime(2026, 9, 22, 12, tzinfo=timezone.utc)
-
-
-def verdict(**kw) -> dict:
-    row = {"run_id": "20260922T063000Z", "candidate_id": "abc", "source": "community",
-           "status": "new", "label": None, "size": 12.0, "previous_size": None,
-           "jaccard": 0.0, "joined": 12.0, "cluster_type": "political_campaign",
-           "kenya_relevant": True, "confidence": "medium", "rationale": "Matching posts.",
-           "what_would_change_this": "Organiser disclosure.", "worth_a_look": True,
-           "canary_id": None, "dossier_key": "leads/platform=x/kind=dossiers/x.parquet",
-           "mode": "production", "adjudicated_at": NOW - timedelta(hours=5)}
-    row.update(kw)
-    return row
-
-
-def frame(*rows) -> pd.DataFrame:
-    return pd.DataFrame(list(rows))
-
-
-def test_only_worth_a_look_production_verdicts_are_sent():
-    v = frame(verdict(candidate_id="yes"),
-              verdict(candidate_id="no", worth_a_look=False),
-              verdict(candidate_id="val", mode="validation"))
-    out = leads_notify.pending(v, pd.DataFrame(), set(), NOW)
-    assert [a["key"] for a in out] == ["20260922T063000Z:yes"]
-
-
-def test_a_sent_verdict_is_never_sent_again():
-    v = frame(verdict())
-    first = leads_notify.pending(v, pd.DataFrame(), set(), NOW)
-    sent = {a["key"] for a in first}
-    assert leads_notify.pending(v, pd.DataFrame(), sent, NOW) == []
-
-
-def test_state_survives_a_round_trip(tmp_path):
-    path = tmp_path / "s.json"
-    assert leads_notify.load_state(path) is None
-    leads_notify.save_state({"a", "b"}, path)
-    assert leads_notify.load_state(path) == {"a", "b"}
-
-
-def test_with_no_state_only_recent_verdicts_are_considered():
-    v = frame(verdict(candidate_id="recent"),
-              verdict(candidate_id="old", adjudicated_at=NOW - timedelta(days=5)))
-    out = leads_notify.pending(v, pd.DataFrame(), None, NOW)
-    assert [a["key"] for a in out] == ["20260922T063000Z:recent"]
-
-
-def test_a_canary_is_sent_whatever_the_reader_said_and_keeps_its_tag():
-    v = frame(verdict(canary_id="2026-09-28", worth_a_look=False, cluster_type="unclear"))
-    [alert] = leads_notify.pending(v, pd.DataFrame(), set(), NOW)
-    assert alert["title"].startswith("[CANARY] 2026-09-28:")
-    assert "reached the reader" in alert["body"]
-
-
-def test_a_canary_past_its_deadline_with_no_verdict_is_an_alert():
-    expected = pd.DataFrame([{"canary_id": "c9", "injected_at": NOW - timedelta(days=2),
-                              "deadline": NOW - timedelta(hours=1)}])
-    [alert] = leads_notify.pending(pd.DataFrame(), expected, set(), NOW)
-    assert alert["key"] == "missing:c9"
-    assert alert["title"] == "[CANARY] MISSING c9"
-    assert alert["priority"] == leads_notify.PRIORITY_HIGH
-    assert leads_notify.pending(pd.DataFrame(), expected, {"missing:c9"}, NOW) == []
-
-
-def test_a_canary_that_arrived_is_not_reported_missing():
-    expected = pd.DataFrame([{"canary_id": "c9", "injected_at": NOW - timedelta(days=2),
-                              "deadline": NOW - timedelta(hours=1)}])
-    v = frame(verdict(canary_id="c9"))
-    keys = [a["key"] for a in leads_notify.pending(v, expected, set(), NOW)]
-    assert keys == ["20260922T063000Z:abc"]
-
-
-def test_a_canary_before_its_deadline_is_not_missing_yet():
-    expected = pd.DataFrame([{"canary_id": "c9", "injected_at": NOW,
-                              "deadline": NOW + timedelta(hours=30)}])
-    assert leads_notify.pending(pd.DataFrame(), expected, set(), NOW) == []
-
-
-def test_an_influence_operation_call_is_high_priority():
-    msg = leads_notify.message(pd.Series(verdict(cluster_type="influence_operation")))
-    assert msg["priority"] == leads_notify.PRIORITY_HIGH
-
-
-def test_the_message_carries_the_evidence_pointer_and_is_plain_ascii_in_the_title():
-    msg = leads_notify.message(pd.Series(verdict(label=None)))
-    assert msg["title"] == "Kenya lead: political_campaign (new community, 12 accounts)"
-    assert "Dossier: r2://" in msg["body"]
-    assert "kma-leads show 20260922T063000Z abc" in msg["body"]
-    assert msg["title"].isascii()
-
-
-def test_a_trend_message_names_the_tag():
-    msg = leads_notify.message(pd.Series(verdict(source="trend", label="governor047",
-                                                 candidate_id="trend:governor047")))
-    assert "#governor047" in msg["title"]
-    assert "trend tag" in msg["body"]
-
-
-def test_a_changed_message_states_the_match():
-    msg = leads_notify.message(pd.Series(verdict(status="changed", jaccard=0.34,
-                                                 previous_size=18.0, joined=9.0)))
-    assert "Jaccard 0.34 against a predecessor of 18, 9 joined" in msg["body"]
-
-
-def test_send_posts_to_the_topic_with_title_priority_and_token(monkeypatch):
-    seen = {}
-
-    class Resp:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    def fake(req, timeout):
-        seen["url"], seen["headers"], seen["body"] = req.full_url, dict(req.header_items()), req.data
-        return Resp()
-
-    monkeypatch.setattr(leads_notify.urllib.request, "urlopen", fake)
-    leads_notify.send({"title": "T", "body": "B", "priority": 4}, "tok", url="http://h:1", topic="k")
-    assert seen["url"] == "http://h:1/k"
-    assert seen["headers"]["Title"] == "T"
-    assert seen["headers"]["Priority"] == "4"
-    assert seen["headers"]["Authorization"] == "Bearer tok"
-    assert seen["body"] == b"B"
-
-
-def test_dry_run_sends_nothing_and_records_nothing(monkeypatch, tmp_path):
-    state = tmp_path / "s.json"
-    monkeypatch.setattr(leads_notify, "_read",
-                        lambda con, kind, days: frame(verdict()) if kind == "verdicts" else pd.DataFrame())
-    monkeypatch.setattr(leads_notify, "send", lambda *a, **k: pytest.fail("sent in dry run"))
-    out = leads_notify.once(None, dry_run=True, state=state)
-    assert len(out) == 1
-    assert not state.exists()
-
-
-def test_a_real_pass_records_each_alert_as_it_goes(monkeypatch, tmp_path):
-    state = tmp_path / "s.json"
-    monkeypatch.setattr(leads_notify, "_read",
-                        lambda con, kind, days: frame(verdict(), verdict(candidate_id="b"))
-                        if kind == "verdicts" else pd.DataFrame())
-    sent = []
-    monkeypatch.setattr(leads_notify, "send", lambda a, token: sent.append(a["key"]))
-    monkeypatch.setenv("NTFY_TOKEN", "t")
-    leads_notify.once(None, dry_run=False, state=state)
-    assert len(sent) == 2
-    assert leads_notify.load_state(state) == set(sent)
-    leads_notify.once(None, dry_run=False, state=state)
-    assert len(sent) == 2
 
 
 # -- verdict rows -----------------------------------------------------------

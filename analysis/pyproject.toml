@@ -40,7 +40,6 @@ kma-enrich = "kma.enrich:main"
 kma-dashboard = "kma.dashboard:main"
 kma-incitement = "kma.incitement:main"
 kma-scorecards = "kma.scorecard_run:main"
-kma-adjudicate = "kma.adjudicate_run:main"
 kma-bench = "kma.bench:main"
 kma-iohunter-gate = "kma.iohunter_gate:main"
 kma-coord2-run = "kma.coord2_run:main"
@@ -50,7 +49,6 @@ kma-ioa-verify = "kma.ioa_verify:main"
 kma-replay = "kma.replay:main"
 kma-deletions = "kma.deletions:main"
 kma-leads = "kma.leads_run:main"
-kma-leads-notify = "kma.leads_notify:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]

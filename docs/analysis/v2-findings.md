@@ -366,7 +366,7 @@ since the last scoring pass, and any corpus with no scores at all). It reaches
 recorded before this date was computed with the keyword gate**, whose measured
 recall is 0.655 against 1.000 for the model, so they understate relevance and
 are not comparable with figures computed after it. The collector's own
-promotion gate (`CLUSTER_MIN_KENYA_SHARE`, SQL in `adaptive.py`) is unchanged:
+promotion gate (`V2_PROMOTION_MIN_KENYA_SHARE`, SQL in `adaptive.py`) is unchanged:
 it runs on pi0 inside a 600 MB budget and joining a 1.28M-row prefix per pass
 has not been measured there.
 

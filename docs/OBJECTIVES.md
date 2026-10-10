@@ -190,8 +190,8 @@ reply pod, and a US follow-train.
   `kenya_share`.
 - **Metric of record:** precision and recall of the gate against a hand-labelled
   sample. **Currently unmeasured.** This is the cheapest high-value gap in the
-  whole pipeline: the gate is load-bearing for cluster promotion
-  (`CLUSTER_MIN_KENYA_SHARE`) and its error rate is unknown.
+  whole pipeline: the gate is load-bearing for account promotion
+  (`V2_PROMOTION_MIN_KENYA_SHARE`) and its error rate is unknown.
 
 ### A2. Account authenticity
 
@@ -263,8 +263,9 @@ reader with dossiers).
 
 - **Metric of record:** agreement between the adjudicator and a human on a held-
   out set of clusters, and the rate at which adjudication changes the ranking.
-- **Status:** built, dormant. `ADJUDICATE_REFRESH_HOURS=0` because there is no
-  `ANTHROPIC_API_KEY` on the host. A human reader with dossiers got 4/6
+- **Status:** built, dormant: there is no `ANTHROPIC_API_KEY`. The tf1 pass was
+  removed with v1 on 2026-10-10; the Modal apps (`modal_adjudicate.py`,
+  `modal_leads.py`) are the only path. A human reader with dossiers got 4/6
   operations and 0/6 false alarms on the IO ground-truth set; the two misses were
   the operation's own pure engagement-bait accounts.
 - **Open question of unit:** the evidence suggests the unit of judgement should

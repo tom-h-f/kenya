@@ -213,13 +213,13 @@ look more coordinated on the next run purely because we watched them harder.
 The degree-corrected null in `kma.coordination` corrects for object popularity,
 not for author over-sampling - it cannot save us from that.
 
-The same reasoning caps cluster promotion. Measured on the live corpus
-(2026-07-28): 906 clusters / 4,732 accounts, of which **894 clusters (4,674
-accounts) rest on a single channel and only 12 clusters (58 accounts) are
-corroborated across `co_retweet` and `co_reply`**. Promoting at
-`n_channels >= 1` would hand nearly the whole active author base to the
-expansion passes, which is not a signal. `CLUSTER_MIN_CHANNELS=2` is the floor;
-`coordination/` still archives everything, and consumption filters.
+The same reasoning capped v1 cluster promotion, which is gone (retired
+2026-10-10). Measured on the live corpus (2026-07-28): 906 clusters / 4,732
+accounts, of which **894 clusters (4,674 accounts) rest on a single channel and
+only 12 clusters (58 accounts) are corroborated across `co_retweet` and
+`co_reply`**. Promoting at `n_channels >= 1` would have handed nearly the whole
+active author base to the expansion passes, which is not a signal. v2
+promotion is bounded by `V2_PROMOTION_MAX_NEW_PER_PASS` instead.
 
 ## Mining the coded register
 

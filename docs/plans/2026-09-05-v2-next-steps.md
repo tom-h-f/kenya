@@ -610,9 +610,9 @@ work that earns its keep only over months now earns it. Item by item:
   close rather than a permanent property of the corpus.
 - **C4 dashboard.** Still waits for v2 to have something to publish; that is now
   a when, not an if.
-- **C5 retire v1.** No longer moot. tf1 computing v1 output indefinitely is a
-  standing cost and the source of the sticky-union confusion, so v1 needs an
-  explicit retirement once v2 runs in production.
+- **C5 retire v1.** Done 2026-10-10: see `2026-10-10-retire-v1.md`. tf1
+  computing v1 output indefinitely was a standing cost and the source of the
+  sticky-union confusion.
 - **Track B option 1** (instrument the collector's own selection) is no longer
   ruled out by collection ending; `census_ttl/` (deployed 2026-09-08) started it.
 - **Risk register** rows *Pool decay* and *Collection gap* assumed the weeks
@@ -672,10 +672,11 @@ The R2 dual-bucket token and the Zero Trust application stay unrequested until
 then. The two broken coordination readers are moot if v1 output is never
 republished.
 
-## C5. Retire v1 - moot
+## C5. Retire v1 - done 2026-10-10
 
-Nothing needs retiring if collection stops. tf1 can keep computing v1 output
-until it is switched off.
+The scheduled v1 passes, v1 cluster promotion and the ntfy poller are removed;
+the engine and the persisted `coordination/` prefix stay for comparison. What
+stopped, what stayed and the deploy order are in `2026-10-10-retire-v1.md`.
 
 # Sequencing
 

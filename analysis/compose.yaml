@@ -28,34 +28,6 @@ services:
       - hf_cache:/app/hf_cache   # transformer weights, downloaded once
     restart: unless-stopped
 
-  # Coordination refresh only - no model passes. `kma.semantic` imports torch
-  # lazily (inside `_model()`), and the default channels (co_retweet, co_reply)
-  # never touch embeddings, so this loads nothing heavier than duckdb + igraph.
-  # That makes it viable on a RAM-tight host where `enrich` is not, which
-  # matters because the collector's `adaptive.cluster_accounts` and
-  # `hate_signal.validated_peers` both read the LATEST persisted run - without
-  # a scheduled refresh, cluster-based targeting freezes at whenever someone
-  # last ran it by hand.
-  #
-  # Opt-in via profile so it does not start on hosts already running `enrich`:
-  #   docker compose --profile coordination up -d coordination
-  coordination:
-    profiles: ["coordination"]
-    build:
-      context: .
-      args:
-        GIT_SHA: ${GIT_SHA:-}
-    env_file: ../.env
-    # Python block-buffers stdout to a pipe, so a freshly started container
-    # shows NO logs until several KB accumulate - indistinguishable from a
-    # stalled one. These are long-lived workers whose logs are the only
-    # live signal; line-buffering costs nothing here.
-    environment:
-      PYTHONUNBUFFERED: "1"
-    command: ["--loop", "--no-embed", "--no-classify", "--no-hate", "--coord-hours", "6"]
-    mem_limit: 2g
-    restart: unless-stopped
-
   # Aggregates R2 into the JSON blobs kenya.tomfr.net serves. Loads no models:
   # it reads the PERSISTED coordination run rather than rebuilding it, so the
   # site and the collector's targeting always describe the same run, and the
@@ -84,34 +56,5 @@ services:
     mem_limit: 2g
     restart: unless-stopped
 
-  # Posts new leads to ntfy. The reader runs on Modal and writes verdicts to
-  # R2; ntfy is on this host's loopback and tailnet-only, so Modal cannot reach
-  # it and this reads the verdicts back instead (`kma.leads_notify`). Needs
-  # NTFY_TOKEN in ../.env; never an Anthropic key.
-  #
-  # Host networking because ntfy listens on 127.0.0.1:8090, which a bridged
-  # container cannot see. The state volume holds which alerts were sent, so a
-  # restart never re-sends; losing it re-sends at most the last 48 hours.
-  #
-  #   docker compose --profile leads up -d --build leads-notify
-  leads-notify:
-    profiles: ["leads"]
-    build:
-      context: .
-      args:
-        GIT_SHA: ${GIT_SHA:-}
-    env_file: ../.env
-    environment:
-      PYTHONUNBUFFERED: "1"
-      LEADS_STATE: /state/leads-notify.json
-    entrypoint: ["uv", "run", "--no-sync", "kma-leads-notify"]
-    command: ["--loop", "--interval", "600"]
-    network_mode: host
-    mem_limit: 512m
-    volumes:
-      - leads_state:/state
-    restart: unless-stopped
-
 volumes:
   hf_cache:
-  leads_state:

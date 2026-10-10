@@ -370,12 +370,6 @@ def test_thin_cohort_suppresses_the_score(con):
 # --- coordination edges are deliberately NOT used for peer counts ------------
 
 
-def test_edge_staleness_probe_tolerates_a_missing_prefix(con):
-    """`edges_are_stale` still guards `adaptive`'s cluster promotion, which is
-    where persisted coordination edges DO belong."""
-    assert hsig.edges_are_stale(con, "_no_such_edges") is True
-
-
 def test_co_amplification_is_scoped_to_toxic_objects(con):
     """Sharing a non-toxic object must not create a peer edge. This is why the
     all-posts coordination edges could not be substituted here."""

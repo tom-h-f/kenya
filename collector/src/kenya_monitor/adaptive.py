@@ -23,10 +23,6 @@ import duckdb
 from kenya_monitor.config import (
     BURST_MIN_POSTS,
     BURST_ZSCORE,
-    CLUSTER_MIN_CHANNELS,
-    CLUSTER_PROMOTION_ENABLED,
-    CLUSTER_MIN_KENYA_SHARE,
-    CLUSTER_RELEVANCE_THRESHOLD,
     KEYWORD_MIN_KENYA_SHARE,
     DYNAMIC_EXPIRY_DAYS,
     DYNAMIC_HASHTAG_MIN_COUNT,
@@ -38,6 +34,7 @@ from kenya_monitor.config import (
     V2_PROMOTION_ENABLED,
     V2_PROMOTION_MAX_AGE_HOURS,
     V2_PROMOTION_MAX_NEW_PER_PASS,
+    V2_PROMOTION_MIN_KENYA_SHARE,
     V2_PROMOTION_STATE_PATH,
     PlatformTargets,
 )
@@ -49,7 +46,7 @@ log = logging.getLogger("kenya_monitor")
 class DynamicEntry:
     value: str
     kind: str  # "keyword" | "account"
-    source: str  # "hashtag-burst" | "coordination-cluster"
+    source: str  # "hashtag-burst" | "story-flag" | "v2-centrality"
     added_at: str  # ISO timestamps (JSON-friendly)
     last_confirmed: str
     # Burst magnitude (24h count) at the last confirmation, for keywords. The
@@ -101,9 +98,8 @@ def bursting_hashtags(
 
     When `hatespeech_view` is given, a tag must also carry a minimum share of
     Kenya-referencing posts, read from the persisted `domain` column. A tag with
-    no scored posts is allowed through and counted, for the same reason as in
-    `cluster_accounts`: failing closed would stop promotion entirely whenever
-    enrichment falls behind.
+    no scored posts is allowed through and counted: failing closed would stop
+    promotion entirely whenever enrichment falls behind.
 
     `n24` travels with the tag because the caller's cap needs it. Sorting the
     cap by `last_confirmed` alone made every tag confirmed this pass tie, so
@@ -173,169 +169,11 @@ def bursting_hashtags(
     return [(f"#{r[0]}", int(r[1])) for r in rows]
 
 
-def cluster_accounts(
-    con: duckdb.DuckDBPyConnection,
-    clusters_view: str,
-    authors_view: str,
-    min_channels: int = CLUSTER_MIN_CHANNELS,
-    posts_view: str | None = None,
-    hatespeech_view: str | None = None,
-    min_kenya_share: float = CLUSTER_MIN_KENYA_SHARE,
-    enabled: bool = CLUSTER_PROMOTION_ENABLED,
-    relevance_view: str | None = None,
-    relevance_threshold: float = CLUSTER_RELEVANCE_THRESHOLD,
-) -> list[str]:
-    """Handles from the most recent persisted coordination run, gated on
-    cross-channel corroboration AND on the cluster being about Kenya.
-
-    Two gates, because either alone is wrong.
-
-    Corroboration is the strongest evidence available short of ground truth,
-    and without it single-channel clusters cover most of the active author base
-    - promoting them all would target nearly everyone.
-
-    But corroboration alone selects the WRONG population. Measured 2026-08-12,
-    corroborated clusters are 8.3% Kenya-referencing against 51.5% for
-    single-channel ones: reciprocal engagement pods are the most abundant
-    coordination on the platform and co_reply detects them best. Raising the
-    channel floor without a relevance gate spends the expansion budget on
-    Ugandan, Nigerian and US follow-trains.
-
-    The Kenya share is read from the `domain` column `kma.measure` persists onto
-    `hatespeech/`, so this costs a join rather than re-deriving the regex. A
-    cluster with no scored posts CANNOT be evaluated and is allowed through
-    rather than rejected: failing closed would silently stop all targeting
-    whenever the enrichment worker falls behind. It is counted separately so
-    that stays visible.
-
-    Ordered strongest first so the caller's cap keeps the best candidates.
-
-    Returns nothing when `enabled` is false, before touching R2: the query is
-    minutes of network scan on pi0, so a disabled path must not pay for it.
-    """
-    if not enabled:
-        log.info("cluster promotion disabled; no accounts promoted")
-        return []
-    gate_available = posts_view is not None and hatespeech_view is not None
-    if gate_available:
-        # The learned gate where a post has been scored, the keyword `domain`
-        # column where it has not. The keyword one is precise (0.971) and leaky
-        # (recall 0.655), and its misses are plain Kenyan politics that avoids
-        # the anchor vocabulary - exactly the clusters worth promoting.
-        relevance_cte = (
-            f""", lr AS (
-                SELECT platform_post_id, p_kenya FROM {relevance_view}
-                QUALIFY row_number() OVER (
-                    PARTITION BY platform_post_id ORDER BY scored_at DESC
-                ) = 1
-            )"""
-            if relevance_view else ""
-        )
-        relevance_join = (
-            "LEFT JOIN lr ON lr.platform_post_id = lp.platform_post_id" if relevance_view else ""
-        )
-        kenya_call = (
-            f"CASE WHEN lr.p_kenya IS NOT NULL THEN lr.p_kenya >= {float(relevance_threshold)}"
-            " ELSE lh.domain = 'kenya' END"
-            if relevance_view else "lh.domain = 'kenya'"
-        )
-        kenya_cte = f"""
-            , lp AS (
-                SELECT author_id, platform_post_id FROM {posts_view}
-                QUALIFY row_number() OVER (
-                    PARTITION BY platform, platform_post_id ORDER BY collected_at DESC
-                ) = 1
-            ), lh AS (
-                SELECT platform_post_id, domain FROM {hatespeech_view}
-                QUALIFY row_number() OVER (
-                    PARTITION BY platform_post_id ORDER BY scored_at DESC
-                ) = 1
-            ){relevance_cte}, cluster_domain AS (
-                SELECT c.cluster_id,
-                       count(*) AS n_scored,
-                       avg(CASE WHEN {kenya_call} THEN 1.0 ELSE 0.0 END)
-                           AS kenya_share
-                FROM latest_run c
-                JOIN lp ON lp.author_id = c.author_id
-                JOIN lh ON lh.platform_post_id = lp.platform_post_id
-                {relevance_join}
-                WHERE lh.domain IS NOT NULL
-                GROUP BY c.cluster_id
-            )"""
-        kenya_join = "LEFT JOIN cluster_domain d ON d.cluster_id = c.cluster_id"
-        kenya_share_expr, n_scored_expr = "d.kenya_share", "d.n_scored"
-    else:
-        log.warning(
-            "cluster targeting: no hatespeech view supplied; Kenya gate disabled"
-        )
-        kenya_cte, kenya_join = "", ""
-        kenya_share_expr = n_scored_expr = "NULL"
-
-    try:
-        rows = con.sql(
-            f"""
-            WITH latest_run AS (
-                SELECT * FROM {clusters_view}
-                QUALIFY dense_rank() OVER (ORDER BY computed_at DESC) = 1
-            ), la AS (
-                SELECT * FROM {authors_view}
-                QUALIFY row_number() OVER (
-                    PARTITION BY platform, platform_user_id ORDER BY collected_at DESC
-                ) = 1
-            ){kenya_cte}
-            SELECT la.handle,
-                   max(COALESCE(c.n_channels, 1)) AS n_channels,
-                   max(c.internal_edge_share) AS density,
-                   max({kenya_share_expr}) AS kenya_share,
-                   max({n_scored_expr}) AS n_scored
-            FROM latest_run c
-            JOIN la ON c.author_id = la.platform_user_id
-            {kenya_join}
-            WHERE la.handle IS NOT NULL
-            GROUP BY la.handle
-            ORDER BY n_channels DESC, kenya_share DESC NULLS LAST,
-                     density DESC NULLS LAST
-            """
-        ).fetchall()
-    except duckdb.Error:
-        log.warning("cluster targeting: clusters unreadable; promoting nobody")
-        return []  # no clusters persisted yet, or an older schema without n_channels
-
-    kept: list[str] = []
-    counts = {"candidates": len(rows), "channels": 0, "kenya": 0, "unmeasured": 0}
-    for handle, n_channels, _density, kenya_share, n_scored in rows:
-        if (n_channels or 1) < int(min_channels):
-            counts["channels"] += 1
-            continue
-        if gate_available and (n_scored is None or not n_scored):
-            counts["unmeasured"] += 1
-        elif gate_available and float(kenya_share) < float(min_kenya_share):
-            counts["kenya"] += 1
-            continue
-        kept.append(handle)
-
-    log.info(
-        "cluster targeting: %d candidates -> %d promoted "
-        "(rejected: %d on channels, %d on Kenya share; %d unmeasured, allowed)",
-        counts["candidates"], len(kept),
-        counts["channels"], counts["kenya"], counts["unmeasured"],
-    )
-    if not kept:
-        # Distinguish "nothing cleared the bar" from the error path above. They
-        # look identical from outside and mean opposite things.
-        log.warning(
-            "cluster targeting: nothing cleared n_channels >= %d and Kenya share "
-            ">= %.2f; promoting nobody",
-            int(min_channels), float(min_kenya_share),
-        )
-    return kept
-
-
 def v2_accounts(
     con: duckdb.DuckDBPyConnection,
     scores_view: str,
     authors_view: str,
-    min_kenya_share: float = CLUSTER_MIN_KENYA_SHARE,
+    min_kenya_share: float = V2_PROMOTION_MIN_KENYA_SHARE,
     max_age_hours: float = V2_PROMOTION_MAX_AGE_HOURS,
     state_path: Path = V2_PROMOTION_STATE_PATH,
     now: datetime | None = None,
@@ -358,9 +196,9 @@ def v2_accounts(
     a new ranking arrives at most daily.
 
     `predicted` is not a gate: it was true for 500 of 500 in every 2026-09-14
-    run. The Kenya share is kept as one, at the cluster path's threshold, and
-    passes 499 of 500 on the latest run - so neither bounds the rate. The cap
-    in `promote` does."""
+    run. The Kenya share is kept as one, at the threshold the cluster path
+    used, and passes 499 of 500 on the latest run - so neither bounds the
+    rate. The cap in `promote` does."""
     now = now or datetime.now(timezone.utc)
     try:
         latest = con.sql(
@@ -527,7 +365,7 @@ def refresh_entries(
                 by_key[key] = DynamicEntry(
                     value=v,
                     kind=kind,
-                    source=sources.get(v, "hashtag-burst" if kind == "keyword" else "coordination-cluster"),
+                    source=sources.get(v, "hashtag-burst" if kind == "keyword" else "v2-centrality"),
                     added_at=now_iso,
                     last_confirmed=now_iso,
                     strength=strength,
@@ -626,13 +464,11 @@ def detect_burst(
 def promote(
     con: duckdb.DuckDBPyConnection,
     posts_view: str,
-    clusters_view: str,
     authors_view: str,
     stories_view: str | None = None,
     hatespeech_view: str | None = None,
     state_path: Path = DYNAMIC_TARGETS_PATH,
     dry_run: bool = False,
-    relevance_view: str | None = None,
     scores_view: str | None = None,
     v2_enabled: bool = V2_PROMOTION_ENABLED,
     v2_max_new: int = V2_PROMOTION_MAX_NEW_PER_PASS,
@@ -641,13 +477,10 @@ def promote(
     the live entries. `dry_run` computes without saving. When `stories_view` is
     given, flagged-story keywords/hashtags join the hashtag bursts as promoted
     keywords, tagged source="story-flag". `hatespeech_view` enables the
-    Kenya-relevance gates on both account and keyword promotion."""
+    Kenya-relevance gate on keyword promotion. Accounts come only from the v2
+    scores run, when `v2_enabled` and `scores_view` is given."""
     keywords = bursting_hashtags(con, posts_view, hatespeech_view=hatespeech_view)
-    accounts = cluster_accounts(
-        con, clusters_view, authors_view,
-        posts_view=posts_view, hatespeech_view=hatespeech_view,
-        relevance_view=relevance_view,
-    )
+    accounts: list[str] = []
     sources: dict[str, str] = {}
     existing = load_state(state_path)
     if v2_enabled and scores_view is not None:

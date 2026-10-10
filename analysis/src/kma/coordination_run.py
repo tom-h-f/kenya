@@ -2,21 +2,21 @@
 
 The pipeline in `kma.coordination` was only ever reachable from a checkbox in
 `notebooks/coordination.py`, so nothing was ever written to the R2
-`coordination/` prefix. That left `adaptive.cluster_accounts` on the collector
-side returning an empty list forever - the analysis -> collection handoff was
-wired up but dead. This module is the missing entrypoint.
+`coordination/` prefix. This module is the headless entrypoint.
 
     python -m kma.coordination_run                      # dry run, prints summary
     python -m kma.coordination_run --persist            # write to R2
 
-Persisted clusters feed the collector's targeting. That is a real feedback
-loop: promoted accounts get collected more, so their post counts and co-action
-degree inflate, and they look more coordinated next run. The degree-corrected
-null corrects for object popularity, not for author over-sampling. The
-collector mitigates this by routing promoted accounts to quarantined
-`type=cib_timeline` / `type=hate_*` partitions that are excluded from every
-rate computation (see `kma.db.TARGETED_TYPES`); do not undo that by adding
-promoted accounts to the baseline target list.
+v1 was retired 2026-10-10 (docs/plans/2026-10-10-retire-v1.md): nothing
+schedules this any more and nothing in the collector reads what it writes. It
+stays as the on-demand way to produce a v1 run for comparison against v2.
+
+Do not feed its clusters back into collection targeting. Promoted accounts get
+collected more, so their post counts and co-action degree inflate, and they
+look more coordinated next run. The degree-corrected null corrects for object
+popularity, not for author over-sampling. Promoted accounts go to the
+quarantined `type=cib_timeline` / `type=hate_*` partitions that are excluded
+from every rate computation (see `kma.db.TARGETED_TYPES`).
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def run(
 
     # Corroboration (a cluster supported by >= 2 channels) is the outcome
     # measure for the census work, and until now it was computed nowhere:
-    # `adaptive.cluster_accounts` and `netviz` only read `n_channels` back out
+    # `netviz` only reads `n_channels` back out
     # of persisted parquet, so the "14 corroborated (60 accounts)" baseline in
     # docs/analysis/census-tuning.md was derived by hand and never reproduced.
     corr_ids: set = set()
@@ -164,10 +164,10 @@ def run(
         )
         log.info("persisted %s", out["metrics_key"])
     except Exception:
-        # `enrich._coordination_pass` reschedules the whole 6-hourly pass on a
-        # non-zero rc. Re-running a full projection because a ~4KB metrics write
-        # hit a transient R2 error is a bad trade on this host; a missing run
-        # row shows up as a gap in the series, which is visible and harmless.
+        # A non-zero rc makes a scheduler rerun the whole pass. Re-running a
+        # full projection because a ~4KB metrics write hit a transient R2 error
+        # is a bad trade; a missing run row shows up as a gap in the series,
+        # which is visible and harmless.
         log.exception("coordination: run metrics write failed (continuing)")
 
     if members.empty:
@@ -188,8 +188,8 @@ def run(
     # written to its own prefix. Cheap - Leiden over edges already in memory, no
     # re-projection - and it is where the recall is: 18.6% -> ~40% against
     # confirmed operations, at zero measured null yield. Kept out of
-    # `kind=clusters` so the published count and the collector's targeting are
-    # untouched, and wrapped so a failure cannot cost the run of record.
+    # `kind=clusters` so the published count is untouched, and wrapped so a
+    # failure cannot cost the run of record.
     if triage_resolution and triage_resolution != resolution:
         try:
             t_members, t_summary = co.clusters(
@@ -213,13 +213,12 @@ def run(
 
     # Off by default, and that is a measurement not a preference: scoring the
     # 2026-08-14 run took 2,276s on an idle laptop, against a 6h timer on a
-    # contended 2-core host. `kma.scorecard_run` is the production path - it
-    # reads the run back out of R2 instead of recomputing the projection, so it
-    # can sit on its own slower timer. This stays for ad-hoc single-command use.
+    # contended 2-core host. `kma.scorecard_run` reads the run back out of R2
+    # instead of recomputing the projection; this stays for single-command use.
     #
     # Written LAST and never allowed to take the run with it. Edges and clusters
-    # are the artifacts of record - the collector's targeting reads them -
-    # whereas a missing scorecard run is a gap in a series nothing blocks on.
+    # are the artifacts of record, whereas a missing scorecard run is a gap in a
+    # series nothing blocks on.
     if scorecards:
         try:
             t0 = time.monotonic()
@@ -262,12 +261,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument(
         "--triage-resolution", type=float, default=co.TRIAGE_RESOLUTION,
         help="second, looser clustering for adjudication only (0 disables); "
-             "never feeds the published count or collector targeting",
+             "never feeds the published count",
     )
     p.add_argument(
         "--scorecards",
         action="store_true",
-        help="also score the clusters (~40min; normally left to kma.scorecard_run)",
+        help="also score the clusters (~40min; kma.scorecard_run scores a persisted run instead)",
     )
     args = p.parse_args(argv)
 
