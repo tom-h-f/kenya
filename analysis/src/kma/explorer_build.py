@@ -451,6 +451,23 @@ def _ids(series: pd.Series) -> list[str]:
     return [str(v) for v in series]
 
 
+def template_of(rec: dict) -> dict | None:
+    """The `TemplateText` object of a kept community row, or None when the run
+    did not compute it (a daily written before the stage existed, or a
+    community none of whose members had a post to read)."""
+    eligible = rec.get("template_eligible")
+    if eligible is None or pd.isna(eligible):
+        return None
+    label = rec.get("template_label")
+    return {
+        "label": None if label is None or pd.isna(label) else str(label),
+        "rate": num(rec.get("template_rate")),
+        "promo_rate": num(rec.get("template_promo_rate")),
+        "eligible_posts": int(eligible),
+        "authors": int(rec.get("template_authors") or 0),
+    }
+
+
 def build_rows(daily: Daily, members: pd.DataFrame, corpus: Corpus, lineages: dict[int, str]) -> dict[int, dict]:
     """The CommunityRow of every community, kept or dropped."""
     tags = corpus.member_tags()
@@ -495,6 +512,7 @@ def build_rows(daily: Daily, members: pd.DataFrame, corpus: Corpus, lineages: di
             "listed": int(rec.get("listed", 0) or 0),
         }
         if kept:
+            row["template"] = template_of(rec)
             row["top_hashtags"] = top_tags.get(cid, [])
             row["top_domains"] = top_domains.get(cid, [])
         rows[cid] = row
@@ -895,11 +913,14 @@ def build_hashtags(stamp: dict, corpus: Corpus, trend: pd.DataFrame | None
     if trend is not None and not trend.empty:
         emerging_run = str(trend["run_id"].iloc[0])
         for r in trend.sort_values("emergence", ascending=False).itertuples():
-            if not all(math.isfinite(float(v)) for v in (r.recent_rate, r.prior_rate, r.emergence)):
+            if (not all(math.isfinite(float(v)) for v in (r.recent_rate, r.prior_rate))
+                    or math.isnan(float(r.emergence))):
                 skipped += 1
                 continue
+            emergence = float(r.emergence)
             emerging.append({"tag": str(r.tag).lower(), "recent_rate": float(r.recent_rate),
-                             "prior_rate": float(r.prior_rate), "emergence": float(r.emergence),
+                             "prior_rate": float(r.prior_rate),
+                             "emergence": emergence if math.isfinite(emergence) else None,
                              "posts": int(r.posts), "censused": bool(r.censused)})
         emerging_tags = {e["tag"] for e in emerging}
     index = {
@@ -915,7 +936,7 @@ def build_hashtags(stamp: dict, corpus: Corpus, trend: pd.DataFrame | None
         "emerging_run": emerging_run,
     }
     if skipped:
-        log.warning("%d emerging tag(s) left out: no prior rate, so no finite emergence", skipped)
+        log.warning("%d emerging tag(s) left out: a rate is not finite or the ratio is undefined", skipped)
     files = {"hashtags/index.json": index}
     if not tags:
         return files, set()

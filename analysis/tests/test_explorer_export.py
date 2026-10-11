@@ -539,13 +539,56 @@ def test_size_report_counts_gzip_below_raw(tmp_path):
     assert "graph" in report["groups"] and "accounts" in report["groups"]
 
 
-def test_an_emerging_tag_with_no_prior_rate_is_left_out_not_written_as_infinity(tmp_path):
-    trend = pd.DataFrame({"run_id": ["r1", "r1"], "tag": ["Water", "Fresh"],
-                          "recent_rate": [0.2, 0.3], "prior_rate": [0.1, 0.0],
-                          "emergence": [2.0, float("inf")], "posts": [30, 5],
-                          "censused": [True, False]})
+def test_an_emerging_tag_with_no_prior_rate_is_exported_with_null_emergence(tmp_path):
+    trend = pd.DataFrame({"run_id": ["r1", "r1", "r1"], "tag": ["Water", "Fresh", "Dead"],
+                          "recent_rate": [0.2, 0.3, 0.0], "prior_rate": [0.1, 0.0, 0.0],
+                          "emergence": [2.0, float("inf"), float("nan")], "posts": [30, 5, 0],
+                          "censused": [True, False, False]})
     bundle, _ = staged(tmp_path, make_inputs(trend=trend))
-    assert [e["tag"] for e in bundle.files["hashtags/index.json"]["emerging"]] == ["water"]
+    ex.assert_explorer_safe(tmp_path, bundle, set())
+    emerging = {e["tag"]: e for e in bundle.files["hashtags/index.json"]["emerging"]}
+    assert set(emerging) == {"water", "fresh"}
+    assert emerging["fresh"]["emergence"] is None
+    assert emerging["water"]["emergence"] == 2.0
+
+
+def test_a_tag_key_is_exempt_but_a_flag_field_inside_a_tag_entry_is_not(tmp_path):
+    inp = make_inputs()
+    inp.corpus.con.execute(
+        "UPDATE _win SET hashtags = ['hatespeech', 'Water'] WHERE post_id = '7100'")
+    bundle, _ = staged(tmp_path, inp)
+    shard_rel = next(rel for rel, doc in bundle.files.items()
+                     if rel.startswith("hashtags/s") and "hatespeech" in doc["tags"])
+    path = tmp_path / "explorer/v1/runs" / RUN_ID / shard_rel
+    doc = json.loads(path.read_text())
+    doc["tags"]["hatespeech"]["hate_share"] = 0.2
+    path.write_text(json.dumps(doc))
+    with pytest.raises(ex.ExplorerUnsafe, match="hate_share"):
+        ex.assert_explorer_safe(tmp_path, bundle, set())
+
+
+def test_a_kept_community_row_carries_the_template_flag_and_a_dropped_one_does_not(tmp_path):
+    inp = make_inputs()
+    comms = inp.daily.communities
+    for col, vals in {"template_label": ["template_promo", None, None],
+                      "template_rate": [0.8, 0.0, 0.5], "template_promo_rate": [0.9, 0.0, 0.0],
+                      "template_link_rate": [1.0, 0.0, 0.0], "template_eligible": [40, 30, 9],
+                      "template_authors": [6, 5, 4]}.items():
+        comms[col] = vals
+    bundle, _ = staged(tmp_path, inp)
+    ex.assert_explorer_safe(tmp_path, bundle, set())
+    rows = {c["cid"]: c for c in bundle.files["communities.json"]["communities"]}
+    assert rows[0]["template"] == {"label": "template_promo", "rate": 0.8, "promo_rate": 0.9,
+                                   "eligible_posts": 40, "authors": 6}
+    assert rows[1]["template"]["label"] is None
+    assert "template" not in rows[2]
+
+
+def test_a_run_without_the_template_columns_exports_null(tmp_path):
+    bundle, _ = staged(tmp_path, make_inputs())
+    ex.assert_explorer_safe(tmp_path, bundle, set())
+    rows = {c["cid"]: c for c in bundle.files["communities.json"]["communities"]}
+    assert rows[0]["template"] is None
 
 
 def test_an_edge_with_many_traces_still_lists_at_most_five_items_across_them(tmp_path):
@@ -562,3 +605,51 @@ def test_an_edge_with_many_traces_still_lists_at_most_five_items_across_them(tmp
     assert big["total"] == 11 and len(big["items"]) == 5
     assert {i["trace"] for i in big["items"]} == {"co_retweet", "co_url"}
     ex.assert_explorer_safe(tmp_path, bundle, set())
+
+
+def _profile_objects(tmp_path, spec: dict[str, list[str]]) -> list[tuple[str, str]]:
+    listing = []
+    for dt, ids in spec.items():
+        path = tmp_path / f"dt={dt}" / "run=1.parquet"
+        path.parent.mkdir(parents=True)
+        pd.DataFrame({
+            "platform_user_id": ids, "handle": [f"h{i}_{dt}" for i in ids], "display_name": "n",
+            "bio": "b", "followers_count": 1, "following_count": 1, "tweet_count": 1,
+            "created_at": pd.Timestamp("2020-01-01", tz="UTC"),
+            "collected_at": pd.Timestamp(f"{dt}T01:00:00Z"),
+        }).to_parquet(path)
+        listing.append((dt, str(path)))
+    return sorted(listing, reverse=True)
+
+
+def _members_table(ids: list[str]) -> duckdb.DuckDBPyConnection:
+    con = duckdb.connect()
+    con.register("_m", pd.DataFrame({"id": ids, "cid": 0}))
+    con.execute("CREATE TEMP TABLE _mem AS SELECT * FROM _m")
+    return con
+
+
+def test_profiles_older_than_the_window_are_found_newest_first(tmp_path):
+    listing = _profile_objects(tmp_path, {
+        "2026-10-05": ["1", "2"], "2026-09-20": ["2", "3"], "2026-09-01": ["3", "4"]})
+    con = _members_table(["1", "2", "3", "4", "5"])
+    got = ex.read_profiles(con, date(2026, 10, 1), listing=listing, older_batch=1)
+    by = got.set_index("id")["handle"].to_dict()
+    assert by == {"1": "h1_2026-10-05", "2": "h2_2026-10-05", "3": "h3_2026-09-20",
+                  "4": "h4_2026-09-01"}
+    stats = got.attrs["profile_read"]
+    assert (stats["found_in_window"], stats["found_in_older"], stats["without_profile"]) == (2, 2, 1)
+    assert stats["older_objects_read"] == 2
+
+
+def test_the_older_scan_stops_when_everyone_is_found_or_the_budget_is_spent(tmp_path):
+    listing = _profile_objects(tmp_path, {"2026-10-05": ["1"], "2026-09-20": ["2"], "2026-09-01": ["3"]})
+    con = _members_table(["1", "2"])
+    got = ex.read_profiles(con, date(2026, 10, 1), listing=listing, older_batch=1)
+    assert got.attrs["profile_read"]["older_objects_read"] == 1
+    con = _members_table(["1", "2", "3"])
+    ticks = iter([0.0, 0.0, 100.0, 200.0, 300.0])
+    got = ex.read_profiles(con, date(2026, 10, 1), listing=listing, older_batch=1,
+                           older_seconds=50, clock=lambda: next(ticks))
+    assert got.attrs["profile_read"]["older_objects_read"] == 1
+    assert got.attrs["profile_read"]["without_profile"] == 1
