@@ -5,7 +5,8 @@ text trace, rank, `coord2/kind=daily_*`, `coord2/kind=scores`, then the
 freshness gauge. No Modal. The design and the decisions behind it are in
 `docs/plans/2026-10-10-cloud-v2-daily.md`.
 
-Not deployed. Nothing here has been run on `cloud`.
+Live on `cloud` since 2026-10-11 with `--text-trace modal`: the Modal app
+`kma-text-trace` (cron 02:30 UTC) builds the trace, this unit ranks.
 
 ## Host facts (read-only, 2026-10-10)
 
@@ -108,11 +109,13 @@ window ending 2026-10-09. The `cloud` row below is the 4 vCPU x86 box itself.
 | 7 d | 455,792 | 283 s | 6.6 GB | 14,396 (12%) | 506 |
 | 30 d | 2,469,983 | 802 s | 6.3 GB | 139,995 (24%) | 10,451 |
 | 90 d | 5,295,770 | 2,166 s | 13.8 GB | 678,506 (60%) | 137,656 |
-| 30 d, on `cloud` | n/a | 1,576 s (textsim 587, rank 710) | 11.85 GiB | n/a | 10,451 |
+| 30 d, on `cloud`, local trace (old default) | n/a | 1,576 s (textsim 587, rank 710) | 11.85 GiB | n/a | 10,451 |
+| 21 d, on `cloud`, Modal trace, 2026-10-11 | 1,527,481 | 548 s (networks 445, relevance 45) | 1.98 GB (cgroup peak 2.04 GB) | 380,783 (100%) | 67,837 |
 
 - `MemoryMax=12G` caps the job below the iot stack's needs. On `cloud` the
   30 d window peaked at 11.85 GiB, 0.15 GiB under the cap, at 24% embedding
-  coverage, so the default is 21 d. Its peak on `cloud` is not yet measured.
+  coverage, so the default is 21 d. With the trace built on Modal the 21 d run peaked at
+  1.98 GB on `cloud` (measured 2026-10-11), well under the cap.
 - Memory grows with embedded vectors (about 13 KB each between the 30 d and
   90 d runs) and the pair search is quadratic in them. Embedding coverage was
   12 to 60% when measured; when the enrich backlog clears, a 30 d window holds
@@ -155,6 +158,19 @@ BEFORE this change reaches `cloud`, otherwise every run until then is a
 `missing` run. `--text-trace local` in `ExecStart` keeps today's behaviour in
 the meantime.
 
+Modal run, 2026-10-11 (A10G, window `daily-2026-10-10-21d`, 100% coverage, 2,402
+posts embedded): 380,783 eligible posts, 67,837 day edges, 16,488 users; wall
+257 s (embed 116, textsim 109), peak RSS 21.1 GB, GPU peak 6.3 GiB. Spend is
+read from `uv run --with modal python -m kma.modal_spend`: kma-text-trace
+projected $1.00 a month on the 10-10 bill (scratch runs only); a daily run of
+about 260 s on an A10G is the figure to re-read after a week of cron.
+The explorer export after the daily peaked at 4,185 MB RSS and the cgroup
+reported 4,295,540,736 B against `MemoryMax=4G` (4,294,967,296 B): it passed
+with no margin, so raise `MemoryMax` if it is ever OOM-killed.
+
+`verify.sh` runs its stages through `systemd-run --pipe`, which does not exit
+when started over a non-interactive ssh; run it with `timeout` or from a tty.
+
 ## The gauge
 
 After the whole run succeeds the job writes, atomically (temp file in the same
@@ -192,7 +208,7 @@ blob, `public/summary.json`, to the separate bucket `kenya-monitor-dashboard`.
 The kenya.tomfr.net Worker binds that bucket only. The design is in
 `docs/plans/2026-10-10-dashboard-v2.md`.
 
-Not deployed. Units: `kma-dashboard.service`, `kma-dashboard.timer`,
+Units on `cloud`: `kma-dashboard.service`, `kma-dashboard.timer`,
 `kma-v2-daily.service.d/dashboard.conf`.
 
 | name | file | meaning |
@@ -226,7 +242,7 @@ Runs after every successful daily (`OnSuccess=`) and once at 12:00 UTC. Measured
 `docs/plans/explorer-contract/schema.json`. Design:
 `docs/plans/2026-10-10-explorer.md`.
 
-Not deployed. Units: `kma-explorer-export.service`,
+Installed on `cloud` 2026-10-11 (the Worker and site are not deployed). Units: `kma-explorer-export.service`,
 `kma-v2-daily.service.d/explorer-export.conf` (adds to the dashboard drop-in; `OnSuccess=` is a list).
 The unit is `After=kma-dashboard.service`, `Nice=15`, `IOSchedulingClass=idle`,
 `MemoryMax=4G`, `TimeoutStartSec=45min`, retried at most 3 times in an hour. There is no timer: if the daily
