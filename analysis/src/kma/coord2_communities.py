@@ -48,12 +48,13 @@ from kma.db import relevance_source
 
 log = logging.getLogger(__name__)
 
-# The promoted model, not the one the listing was measured with: the 0.5 floor
-# was set on `kenya-relevance-afroxlmr-2026-09-12`, and `relevance.MODEL` has
-# since moved to -09-13, which is the only one still being scored.
+# The promoted model, not the one the listing was first measured with (a 0.5
+# floor on `kenya-relevance-afroxlmr-2026-09-12`): `relevance.MODEL` has since
+# moved to -09-13, which is the only one still being scored, and the floor was
+# raised to 0.6 on 2026-10-11.
 RELEVANCE_MODEL = relevance.MODEL
 RELEVANCE_THRESHOLD = relevance.THRESHOLD
-MIN_KENYA = 0.5
+MIN_KENYA = 0.6
 BUDGET = 500
 PER_GROUP = 25
 MIN_SIZE = 4

@@ -476,11 +476,3 @@ class TestLanguageLint:
         f.write_text("fine\n")
         r = subprocess.run([sys.executable, str(CONTRACT / "lint_language.py"), str(f)], capture_output=True)
         assert r.returncode == 0
-
-
-class TestCorrectionsConfig:
-    def test_placeholder_is_marked_and_commitment_is_72h(self):
-        c = read(CONTRACT / "copy" / "site-copy.json")["corrections"]
-        assert c["removal_hours"] == 72
-        assert c["contact_is_placeholder"] is True
-        assert "CONFIGURE" in c["contact"] and "@" not in c["contact"]

@@ -51,17 +51,19 @@ and synthetic handles. Never from live data. Both repos validate against `schema
   including parquet columns). The producer's `assert_explorer_safe` should call it.
 - `lint_language.py PATH... [--allowlist lint-allowlist.json] [--include-user-content]` : fails
   on verdict wording. Allowlist entries are exact phrases per file glob, each with a reason.
-- `copy/site-copy.json` : caveat, edge phrases, methodology language rule, corrections config.
-  `corrections.contact` is a marked placeholder; the site must refuse to deploy while
-  `contact_is_placeholder` is true.
+- `copy/site-copy.json` : caveat, edge phrases, methodology language rule.
 - Tests: `cd analysis && uv run pytest tests/explorer` and `cd docs/plans/explorer-contract && bun test`
   (independent ajv validation of every fixture).
 - Hosting: DuckDB-WASM and its parquet extension are served from the bucket at `explorer/v1/vendor/{file}` (`$defs.Files.vendor`), under versioned names, uploaded by `kma.explorer_vendor`.
 
 ## Changes inside schema_version 1
 
-All additive or loosening, so `schema_version` stays 1 and older fixtures and runs still validate.
+All additive or loosening, so `schema_version` stays 1 and older fixtures and runs still validate, with one removal noted below.
 
+- 2026-10-11: `Manifest.corrections_url` removed (and the `corrections` block of `copy/site-copy.json`). No
+  bump: the manifest is rewritten every run and consumers read named fields only (the site ignores unknown
+  manifest keys), so an old manifest that still carries it is harmless. Validation against this schema is for
+  fresh bundles only.
 - 2026-10-11: `CommunityRow.template` (`TemplateText`, nullable): advisory repeated-template-text flag per
   kept community, from `kma.template_spam` over the members' own posts. Null when the run did not compute it.
   Dropped communities carry none.

@@ -90,14 +90,13 @@
 
     "Manifest": {
       "type": "object",
-      "required": ["kind", "schema_version", "latest_run", "generated_at", "runs", "files", "method_url", "corrections_url"],
+      "required": ["kind", "schema_version", "latest_run", "generated_at", "runs", "files", "method_url"],
       "properties": {
         "kind": {"const": "manifest"},
         "schema_version": {"const": 1},
         "latest_run": {"type": "string"},
         "generated_at": {"type": "string", "format": "date-time"},
         "method_url": {"type": "string"},
-        "corrections_url": {"type": "string"},
         "runs": {"type": "array", "description": "newest first, at most 30", "items": {
           "type": "object", "required": ["run_id", "window_id", "window_end", "computed_at"],
           "properties": {"run_id": {"type": "string"}, "window_id": {"type": "string"}, "window_end": {"type": "string"}, "computed_at": {"type": "string"}},

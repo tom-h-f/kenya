@@ -65,7 +65,6 @@ export interface Manifest {
   latest_run: string;
   generated_at: string;
   method_url: string;
-  corrections_url: string;
   /**
    * newest first, at most 30
    */

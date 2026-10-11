@@ -36,7 +36,7 @@ def _run_row() -> dict:
         "window_days": DAYS, "computed_at": pd.Timestamp("2026-10-10T03:41:07Z"),
         "accounts_in_graph": 20, "edges_in_graph": 20, "communities": 3, "communities_kept": 2,
         "communities_unscored": 0, "listed_accounts": 8, "listed_communities": 2,
-        "text_threshold": 0.85, "text_overlap": 0.10, "min_entities": 2, "min_kenya": 0.5,
+        "text_threshold": 0.85, "text_overlap": 0.10, "min_entities": 2, "min_kenya": 0.6,
         "edges_co_retweet": 15, "edges_co_url": 1, "edges_hashtag_sequence": 1,
         "edges_fast_retweet": 1, "edges_text_similarity": 1,
         "networks_s": 12.3, "fuse_centrality_s": 1.0, "relevance_s": 2.0, "communities_s": 0.5,
