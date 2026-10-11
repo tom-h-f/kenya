@@ -462,6 +462,29 @@ def test_the_overlap_floor_drops_close_vectors_that_share_no_words():
         rows, vectors, threshold=0.9, min_overlap=coord2.TEXT_MIN_OVERLAP)) == {("u1", "u2")}
 
 
+def test_the_default_floor_keeps_copies_and_drops_rewordings():
+    """Measured on the daily window of 2026-10-10: at 0.45 the organic same-topic
+    text-only communities are gone and the copy and template ones stay whole."""
+    rows = pd.DataFrame({
+        "post_id": ["p1", "p2", "p3", "p4"],
+        "user_id": ["u1", "u2", "u3", "u4"],
+        "created_at": [BASE + timedelta(hours=h) for h in range(4)],
+        "clean": ["shame john mutunga ndindi nyoro kibuuline glispa bomas convention wallabies",
+                  "shame john mutunga ndindi nyoro kibuuline glispa bomas convention wallabies linturi",
+                  "ndindi nyoro asema serikali haina nia ya kuleta mabadiliko nchini",
+                  "serikali inajaribu kuleta mabadiliko lakini ndindi nyoro anapinga yote"],
+    })
+    vectors = np.array([[1.0, 0.0], [0.99, 0.141], [0.98, 0.199], [0.97, 0.243]])
+    pairs = lambda edges: set(zip(edges["source"], edges["target"], strict=True))
+
+    loose = coord2.text_similarity_network(rows, vectors, threshold=0.9, min_overlap=0.10)
+    default = coord2.text_similarity_network(
+        rows, vectors, threshold=0.9, min_overlap=coord2.TEXT_MIN_OVERLAP)
+
+    assert ("u3", "u4") in pairs(loose)
+    assert pairs(default) == {("u1", "u2")}
+
+
 def test_the_overlap_floor_needs_the_cleaned_text():
     rows, vectors = _floor_fixture()
     with pytest.raises(ValueError, match="clean"):

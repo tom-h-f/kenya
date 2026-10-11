@@ -49,14 +49,14 @@ def rank(
     days: int = 0,
     top: int = 500,
     text_threshold: float = 0.85,
-    text_overlap: float = 0.10,
+    text_overlap: float = -1.0,
     persist: bool = True,
 ) -> dict:
     import logging
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    from kma import coord2_run
+    from kma import coord2, coord2_run
     from kma.db import connect
 
     result = coord2_run.run(
@@ -64,7 +64,7 @@ def rank(
         days=days or None,
         top=top,
         text_threshold=text_threshold,
-        text_overlap=text_overlap or None,
+        text_overlap=(coord2.TEXT_MIN_OVERLAP if text_overlap < 0 else text_overlap) or None,
     )
     share = result.scores["kenya_share"]
     out = {
@@ -81,7 +81,7 @@ def rank(
             snapshot=snapshot,
             trace_sizes=result.trace_sizes,
             text_threshold=text_threshold,
-            text_overlap=text_overlap or None,
+            text_overlap=(coord2.TEXT_MIN_OVERLAP if text_overlap < 0 else text_overlap) or None,
         )
     return out
 

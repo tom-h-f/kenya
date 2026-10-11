@@ -518,13 +518,19 @@ _EMOJI = re.compile(
 _PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
 
 # The second test on a text pair: char n-gram Jaccard of the cleaned texts.
-# OURS, not the paper's. Measured 2026-09-11 (textsim investigation, 06-09):
-# at cosine 0.85 in this project's encoder most admitted post pairs share no
-# words - short Sheng replies cluster - and on 300 reader-labelled pairs a
-# char-4gram floor of 0.10 kept 92% of same-message pairs and none of the
-# unrelated ones, where no encoder's cosine came close (best AUC 0.913 against
-# 0.975 for this). Cleaned text, so handles, URLs and stopwords do not count.
-TEXT_MIN_OVERLAP = 0.10
+# OURS, not the paper's. At cosine 0.85 in this project's encoder most admitted
+# pairs share no words - short Sheng replies cluster - and a floor is what
+# separates copied text from same-topic text where no encoder's cosine does
+# (textsim investigation 2026-09-11: AUC 0.975 against 0.754 for the cosine).
+# The floor is 0.45, chosen on the live 21d window by
+# `investigations/2026-10-11-text-edge-floor`: it is the smallest floor on the
+# 0.10/0.20/0.30/0.35/0.40/0.45/0.50/0.60 grid at which none of the four
+# organic same-topic text-only communities survives while the coupon-spam
+# template and the copy-paste burst stay whole. At 0.10 only 2 of 6 text-only
+# communities were template, copy or spam; at 0.45, 9 of 10 (blind reader). The
+# cost is paraphrase: 0.45 keeps 6 of 65 reader-labelled same-message pairs
+# (0.10 kept 60), because the trace now links copies, not rewordings.
+TEXT_MIN_OVERLAP = 0.45
 TEXT_OVERLAP_GRAM = 4
 
 
