@@ -1,0 +1,632 @@
+{
+ "old": {
+  "human88": {
+   "n": 88,
+   "tp": 45,
+   "fp": 3,
+   "fn": 5,
+   "tn": 35,
+   "unweighted": {
+    "precision": 0.938,
+    "recall": 0.9,
+    "f1": 0.918
+   },
+   "weighted": {
+    "precision": 0.889,
+    "recall": 0.827,
+    "f1": 0.857
+   }
+  },
+  "b2human": {
+   "n": 91,
+   "tp": 36,
+   "fp": 1,
+   "fn": 1,
+   "tn": 53,
+   "unweighted": {
+    "precision": 0.973,
+    "recall": 0.973,
+    "f1": 0.973
+   },
+   "weighted": {
+    "precision": 0.997,
+    "recall": 0.98,
+    "f1": 0.989
+   }
+  },
+  "b2model": {
+   "n": 269,
+   "tp": 110,
+   "fp": 1,
+   "fn": 9,
+   "tn": 149,
+   "unweighted": {
+    "precision": 0.991,
+    "recall": 0.924,
+    "f1": 0.957
+   },
+   "weighted": {
+    "precision": 0.973,
+    "recall": 0.88,
+    "f1": 0.924
+   }
+  },
+  "tz200": {
+   "tanzania_only_n": 133,
+   "tanzania_only_called_kenya": 114,
+   "tanzania_only_fp_rate": 0.857,
+   "kenya_n": 26,
+   "kenya_called_kenya": 24,
+   "kenya_recall": 0.923
+  },
+  "regional": {
+   "n": 534,
+   "tp": 177,
+   "fp": 154,
+   "fn": 21,
+   "tn": 182,
+   "unweighted": {
+    "precision": 0.535,
+    "recall": 0.894,
+    "f1": 0.669
+   },
+   "weighted": {
+    "precision": 0.963,
+    "recall": 0.765,
+    "f1": 0.852
+   },
+   "fp_rate_weighted": {
+    "n_offdomain": 274,
+    "called_kenya": 147,
+    "rate": 0.322
+   },
+   "fp_rate_unweighted": {
+    "n_offdomain": 274,
+    "called_kenya": 147,
+    "rate": 0.536
+   },
+   "fp_by_group": {
+    "great_lakes": {
+     "n_offdomain": 28,
+     "called_kenya": 10,
+     "rate": 0.247,
+     "unweighted": 0.357
+    },
+    "horn": {
+     "n_offdomain": 35,
+     "called_kenya": 7,
+     "rate": 0.055,
+     "unweighted": 0.2
+    },
+    "other_africa": {
+     "n_offdomain": 27,
+     "called_kenya": 10,
+     "rate": 0.22,
+     "unweighted": 0.37
+    },
+    "south_africa": {
+     "n_offdomain": 34,
+     "called_kenya": 15,
+     "rate": 0.212,
+     "unweighted": 0.441
+    },
+    "tanzania": {
+     "n_offdomain": 54,
+     "called_kenya": 42,
+     "rate": 0.942,
+     "unweighted": 0.778
+    },
+    "uganda": {
+     "n_offdomain": 39,
+     "called_kenya": 26,
+     "rate": 0.779,
+     "unweighted": 0.667
+    },
+    "west_africa": {
+     "n_offdomain": 57,
+     "called_kenya": 37,
+     "rate": 0.185,
+     "unweighted": 0.649
+    }
+   },
+   "tanzania_offdomain": {
+    "n": 50,
+    "called_kenya": 46
+   },
+   "hard_positive_recall": {
+    "n": 81,
+    "recall": 0.914
+   },
+   "confusion_3way": {
+    "called_kenya": {
+     "kenya": 177,
+     "offdomain": 154,
+     "unclear": 32
+    },
+    "called_other": {
+     "kenya": 21,
+     "offdomain": 182,
+     "unclear": 57
+    }
+   },
+   "by_stratum": {
+    "anchor_region": {
+     "n": 25,
+     "kenya": 23,
+     "offdomain": 1,
+     "unclear": 1,
+     "called_kenya": 25
+    },
+    "c8": {
+     "n": 3,
+     "kenya": 1,
+     "offdomain": 2,
+     "unclear": 0,
+     "called_kenya": 3
+    },
+    "diaspora": {
+     "n": 15,
+     "kenya": 14,
+     "offdomain": 1,
+     "unclear": 0,
+     "called_kenya": 13
+    },
+    "handle_short": {
+     "n": 30,
+     "kenya": 15,
+     "offdomain": 0,
+     "unclear": 15,
+     "called_kenya": 12
+    },
+    "handle_short_other": {
+     "n": 20,
+     "kenya": 3,
+     "offdomain": 3,
+     "unclear": 14,
+     "called_kenya": 20
+    },
+    "mined_fp": {
+     "n": 25,
+     "kenya": 21,
+     "offdomain": 0,
+     "unclear": 4,
+     "called_kenya": 25
+    },
+    "region_great_lakes_hi": {
+     "n": 30,
+     "kenya": 17,
+     "offdomain": 10,
+     "unclear": 3,
+     "called_kenya": 30
+    },
+    "region_great_lakes_lo": {
+     "n": 20,
+     "kenya": 1,
+     "offdomain": 18,
+     "unclear": 1,
+     "called_kenya": 1
+    },
+    "region_horn_hi": {
+     "n": 20,
+     "kenya": 12,
+     "offdomain": 7,
+     "unclear": 1,
+     "called_kenya": 19
+    },
+    "region_horn_lo": {
+     "n": 30,
+     "kenya": 2,
+     "offdomain": 28,
+     "unclear": 0,
+     "called_kenya": 0
+    },
+    "region_other_africa_hi": {
+     "n": 20,
+     "kenya": 9,
+     "offdomain": 10,
+     "unclear": 1,
+     "called_kenya": 20
+    },
+    "region_other_africa_lo": {
+     "n": 20,
+     "kenya": 2,
+     "offdomain": 17,
+     "unclear": 1,
+     "called_kenya": 0
+    },
+    "region_south_africa_hi": {
+     "n": 20,
+     "kenya": 5,
+     "offdomain": 15,
+     "unclear": 0,
+     "called_kenya": 20
+    },
+    "region_south_africa_lo": {
+     "n": 20,
+     "kenya": 0,
+     "offdomain": 19,
+     "unclear": 1,
+     "called_kenya": 0
+    },
+    "region_tanzania_hi": {
+     "n": 50,
+     "kenya": 7,
+     "offdomain": 41,
+     "unclear": 2,
+     "called_kenya": 50
+    },
+    "region_tanzania_lo": {
+     "n": 15,
+     "kenya": 1,
+     "offdomain": 13,
+     "unclear": 1,
+     "called_kenya": 1
+    },
+    "region_uganda_hi": {
+     "n": 40,
+     "kenya": 15,
+     "offdomain": 25,
+     "unclear": 0,
+     "called_kenya": 40
+    },
+    "region_uganda_lo": {
+     "n": 15,
+     "kenya": 1,
+     "offdomain": 14,
+     "unclear": 0,
+     "called_kenya": 2
+    },
+    "region_west_africa_hi": {
+     "n": 40,
+     "kenya": 3,
+     "offdomain": 37,
+     "unclear": 0,
+     "called_kenya": 40
+    },
+    "region_west_africa_lo": {
+     "n": 20,
+     "kenya": 0,
+     "offdomain": 20,
+     "unclear": 0,
+     "called_kenya": 0
+    },
+    "rest": {
+     "n": 100,
+     "kenya": 18,
+     "offdomain": 47,
+     "unclear": 35,
+     "called_kenya": 12
+    },
+    "swahili_kenyan": {
+     "n": 30,
+     "kenya": 28,
+     "offdomain": 1,
+     "unclear": 1,
+     "called_kenya": 30
+    },
+    "swahili_other": {
+     "n": 15,
+     "kenya": 0,
+     "offdomain": 7,
+     "unclear": 8,
+     "called_kenya": 0
+    }
+   }
+  }
+ },
+ "kl_lr3_s1": {
+  "human88": {
+   "n": 88,
+   "tp": 48,
+   "fp": 3,
+   "fn": 2,
+   "tn": 35,
+   "unweighted": {
+    "precision": 0.941,
+    "recall": 0.96,
+    "f1": 0.95
+   },
+   "weighted": {
+    "precision": 0.9,
+    "recall": 0.931,
+    "f1": 0.915
+   }
+  },
+  "b2human": {
+   "n": 91,
+   "tp": 37,
+   "fp": 2,
+   "fn": 0,
+   "tn": 52,
+   "unweighted": {
+    "precision": 0.949,
+    "recall": 1.0,
+    "f1": 0.974
+   },
+   "weighted": {
+    "precision": 0.918,
+    "recall": 1.0,
+    "f1": 0.957
+   }
+  },
+  "b2model": {
+   "n": 269,
+   "tp": 117,
+   "fp": 1,
+   "fn": 2,
+   "tn": 149,
+   "unweighted": {
+    "precision": 0.992,
+    "recall": 0.983,
+    "f1": 0.987
+   },
+   "weighted": {
+    "precision": 0.976,
+    "recall": 0.99,
+    "f1": 0.983
+   }
+  },
+  "tz200": {
+   "tanzania_only_n": 133,
+   "tanzania_only_called_kenya": 18,
+   "tanzania_only_fp_rate": 0.135,
+   "kenya_n": 26,
+   "kenya_called_kenya": 20,
+   "kenya_recall": 0.769
+  },
+  "regional": {
+   "n": 534,
+   "tp": 181,
+   "fp": 30,
+   "fn": 17,
+   "tn": 306,
+   "unweighted": {
+    "precision": 0.858,
+    "recall": 0.914,
+    "f1": 0.885
+   },
+   "weighted": {
+    "precision": 0.993,
+    "recall": 0.953,
+    "f1": 0.972
+   },
+   "fp_rate_weighted": {
+    "n_offdomain": 274,
+    "called_kenya": 27,
+    "rate": 0.076
+   },
+   "fp_rate_unweighted": {
+    "n_offdomain": 274,
+    "called_kenya": 27,
+    "rate": 0.099
+   },
+   "fp_by_group": {
+    "great_lakes": {
+     "n_offdomain": 28,
+     "called_kenya": 2,
+     "rate": 0.049,
+     "unweighted": 0.071
+    },
+    "horn": {
+     "n_offdomain": 35,
+     "called_kenya": 1,
+     "rate": 0.034,
+     "unweighted": 0.029
+    },
+    "other_africa": {
+     "n_offdomain": 27,
+     "called_kenya": 3,
+     "rate": 0.066,
+     "unweighted": 0.111
+    },
+    "south_africa": {
+     "n_offdomain": 34,
+     "called_kenya": 2,
+     "rate": 0.056,
+     "unweighted": 0.059
+    },
+    "tanzania": {
+     "n_offdomain": 54,
+     "called_kenya": 4,
+     "rate": 0.055,
+     "unweighted": 0.074
+    },
+    "uganda": {
+     "n_offdomain": 39,
+     "called_kenya": 8,
+     "rate": 0.23,
+     "unweighted": 0.205
+    },
+    "west_africa": {
+     "n_offdomain": 57,
+     "called_kenya": 7,
+     "rate": 0.071,
+     "unweighted": 0.123
+    }
+   },
+   "tanzania_offdomain": {
+    "n": 50,
+    "called_kenya": 5
+   },
+   "hard_positive_recall": {
+    "n": 81,
+    "recall": 0.975
+   },
+   "confusion_3way": {
+    "called_kenya": {
+     "kenya": 181,
+     "offdomain": 30,
+     "unclear": 45
+    },
+    "called_other": {
+     "kenya": 17,
+     "offdomain": 306,
+     "unclear": 44
+    }
+   },
+   "by_stratum": {
+    "anchor_region": {
+     "n": 25,
+     "kenya": 23,
+     "offdomain": 1,
+     "unclear": 1,
+     "called_kenya": 24
+    },
+    "c8": {
+     "n": 3,
+     "kenya": 1,
+     "offdomain": 2,
+     "unclear": 0,
+     "called_kenya": 2
+    },
+    "diaspora": {
+     "n": 15,
+     "kenya": 14,
+     "offdomain": 1,
+     "unclear": 0,
+     "called_kenya": 14
+    },
+    "handle_short": {
+     "n": 30,
+     "kenya": 15,
+     "offdomain": 0,
+     "unclear": 15,
+     "called_kenya": 30
+    },
+    "handle_short_other": {
+     "n": 20,
+     "kenya": 3,
+     "offdomain": 3,
+     "unclear": 14,
+     "called_kenya": 16
+    },
+    "mined_fp": {
+     "n": 25,
+     "kenya": 21,
+     "offdomain": 0,
+     "unclear": 4,
+     "called_kenya": 25
+    },
+    "region_great_lakes_hi": {
+     "n": 30,
+     "kenya": 17,
+     "offdomain": 10,
+     "unclear": 3,
+     "called_kenya": 20
+    },
+    "region_great_lakes_lo": {
+     "n": 20,
+     "kenya": 1,
+     "offdomain": 18,
+     "unclear": 1,
+     "called_kenya": 2
+    },
+    "region_horn_hi": {
+     "n": 20,
+     "kenya": 12,
+     "offdomain": 7,
+     "unclear": 1,
+     "called_kenya": 10
+    },
+    "region_horn_lo": {
+     "n": 30,
+     "kenya": 2,
+     "offdomain": 28,
+     "unclear": 0,
+     "called_kenya": 2
+    },
+    "region_other_africa_hi": {
+     "n": 20,
+     "kenya": 9,
+     "offdomain": 10,
+     "unclear": 1,
+     "called_kenya": 11
+    },
+    "region_other_africa_lo": {
+     "n": 20,
+     "kenya": 2,
+     "offdomain": 17,
+     "unclear": 1,
+     "called_kenya": 2
+    },
+    "region_south_africa_hi": {
+     "n": 20,
+     "kenya": 5,
+     "offdomain": 15,
+     "unclear": 0,
+     "called_kenya": 5
+    },
+    "region_south_africa_lo": {
+     "n": 20,
+     "kenya": 0,
+     "offdomain": 19,
+     "unclear": 1,
+     "called_kenya": 1
+    },
+    "region_tanzania_hi": {
+     "n": 50,
+     "kenya": 7,
+     "offdomain": 41,
+     "unclear": 2,
+     "called_kenya": 11
+    },
+    "region_tanzania_lo": {
+     "n": 15,
+     "kenya": 1,
+     "offdomain": 13,
+     "unclear": 1,
+     "called_kenya": 4
+    },
+    "region_uganda_hi": {
+     "n": 40,
+     "kenya": 15,
+     "offdomain": 25,
+     "unclear": 0,
+     "called_kenya": 17
+    },
+    "region_uganda_lo": {
+     "n": 15,
+     "kenya": 1,
+     "offdomain": 14,
+     "unclear": 0,
+     "called_kenya": 2
+    },
+    "region_west_africa_hi": {
+     "n": 40,
+     "kenya": 3,
+     "offdomain": 37,
+     "unclear": 0,
+     "called_kenya": 8
+    },
+    "region_west_africa_lo": {
+     "n": 20,
+     "kenya": 0,
+     "offdomain": 20,
+     "unclear": 0,
+     "called_kenya": 1
+    },
+    "rest": {
+     "n": 100,
+     "kenya": 18,
+     "offdomain": 47,
+     "unclear": 35,
+     "called_kenya": 17
+    },
+    "swahili_kenyan": {
+     "n": 30,
+     "kenya": 28,
+     "offdomain": 1,
+     "unclear": 1,
+     "called_kenya": 27
+    },
+    "swahili_other": {
+     "n": 15,
+     "kenya": 0,
+     "offdomain": 7,
+     "unclear": 8,
+     "called_kenya": 5
+    }
+   }
+  }
+ }
+}

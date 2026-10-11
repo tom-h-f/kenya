@@ -3,8 +3,8 @@
 `kma.measure.domain_bucket` is two regexes. Measured against Tom's blind labels
 it is precise and leaky - precision 0.971, recall 0.655 corpus-weighted - and
 its misses are plain Kenyan politics that happens to avoid the anchor
-vocabulary. The classifier trained on 2026-09-12 scores 0.918 / 1.000 on the
-same labels, so this module is what readers should ask.
+vocabulary. The classifier scores far better on the same labels, so this module is
+what readers should ask.
 
     from kma import relevance
     relevance.buckets(con, posts)        # kenya / offdomain / ambiguous per row
@@ -30,16 +30,26 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
+from kma import relevance_prep
 from kma.bench import _r2_client
 from kma.db import BUCKET, relevance_source
 
 log = logging.getLogger("kma")
 
-# 2026-09-13 retrains 09-12 on mention-stripped text, which is what `score_texts`
-# serves: trained with mentions and served without them, the 09-12 model scored
-# precision 0.918 / recall 1.000 against Tom's labels, and this one 0.997 /
-# 0.980. Scores carry their model, so the two never mix.
-MODEL = os.getenv("KMA_RELEVANCE_MODEL", "kenya-relevance-afroxlmr-2026-09-13")
+# One place names the model every reader scores and reads with. Scores carry
+# their slug, so two models never mix, and a superseded slug stays in R2 for
+# comparison (nothing here deletes one). Switching is a change to ACTIVE_MODEL
+# and a rescore of the corpus under the new slug; `KMA_RELEVANCE_MODEL` overrides
+# it for a single process, which is how a comparison run reads the old scores.
+#
+#   -09-12  trained on raw text, served stripped: precision 0.918 / recall 1.000 on B2
+#   -09-13  trained on mention-stripped text: human check 0.889 / 0.827, but 85.7% of
+#           133 Tanzania-only posts called Kenyan
+#   -10-11  regional hard negatives and Kenyan-handle input: see
+#           analysis/investigations/2026-10-11-relevance-regional/findings.md
+ACTIVE_MODEL = "kenya-relevance-afroxlmr-2026-10-11"
+PREVIOUS_MODEL = "kenya-relevance-afroxlmr-2026-09-13"
+MODEL = os.getenv("KMA_RELEVANCE_MODEL", ACTIVE_MODEL)
 THRESHOLD = float(os.getenv("KMA_RELEVANCE_THRESHOLD", "0.5"))
 
 # The weights live in R2 beside the data, not on the HF Hub: there is no HF
@@ -126,7 +136,8 @@ def score_texts(model_dir: Path, texts: list[str], batch: int = 256, max_len: in
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
     model = AutoModelForSequenceClassification.from_pretrained(str(model_dir)).to(device).eval()
 
-    cleaned = [MENTION.sub(" ", t or "") for t in texts]
+    variant, handles = relevance_prep.load_for_model(model_dir)
+    cleaned = [relevance_prep.prepare(t, variant, handles) for t in texts]
     order = np.argsort([len(t) for t in cleaned])[::-1]
     out = np.empty(len(cleaned), dtype=np.float32)
     for start in range(0, len(order), batch):

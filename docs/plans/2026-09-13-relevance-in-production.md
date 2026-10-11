@@ -1,5 +1,10 @@
 # Putting the relevance classifier into production
 
+*Update 2026-10-11: the active model is `kenya-relevance-afroxlmr-2026-10-11`
+(`relevance.ACTIVE_MODEL`); the figures below describe the 2026-09-13 model that
+shipped first. See `analysis/investigations/2026-09-12-relevance-classifier/findings.md`,
+section "2026-10-11".*
+
 Written 2026-09-13. The classifier is trained, measured (precision 0.918 /
 recall 1.000 against Tom's labels, where the keyword gate is 0.971 / 0.655),
 scored over the corpus once, and adopted by the analysis layer. Three things
@@ -117,6 +122,12 @@ bucket it was 0.55 in early July, when that bucket was mostly Kenyan content,
 and 0.13 by September, when it is mostly not. That is the composition drift in
 OBJECTIVES C1, not the model moving. From 2026-08-03, when the mix settled, the
 weekly rate sits at 0.114-0.158, and that is the baseline to compare against.
+
+*Re-baselined 2026-10-11 for `kenya-relevance-afroxlmr-2026-10-11`:* the same weeks
+read 0.148-0.225 inside the `ambiguous` bucket (last 4 weeks 0.205 against 0.191 for
+the 4 before: stable). The new model calls more of that bucket Kenyan - it keeps
+Kenyan handles as input - so the whole series sits higher; compare the new model
+against its own history only.
 
 ## 6. Restate the figures
 

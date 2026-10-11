@@ -40,10 +40,17 @@ claim about the copy, with the Iran caveat attached, never as a Kenya result.
 
 **The relevance gate's error rate, human-measured.** On 88 hand-labelled posts
 drawn fresh and judged blind: keyword gate precision 0.973 / recall 0.516
-corpus-weighted, learned classifier 0.889 / 0.827. Publishable because the
-labels are human, the sample is stratified and the weighting is stated. The
-honest framing is "our Kenya filter finds about 83% of Kenyan posts at about
-89% precision", not "X% of the corpus is Kenyan".
+corpus-weighted, learned classifier 0.900 / 0.931 (the 2026-10-11 retrain; the
+2026-09-13 model it replaced scored 0.889 / 0.827 on the same posts). Publishable
+because the labels are human, the sample is stratified and the weighting is stated,
+with one caveat to carry: those 88 posts were drawn by the earlier model's calls and
+were one of the sets the retrain was chosen on, so a second fresh human pass is
+still owed. The honest framing is "our Kenya filter finds about 93% of Kenyan posts
+at about 90% precision", not "X% of the corpus is Kenyan". Regional false positives
+fell from 32% (corpus-weighted; 54% unweighted) to 8% (10%) on a held-out regional
+set labelled by a model reader, and Tanzania-only posts called Kenyan from 86% to
+14%: `analysis/investigations/2026-09-12-relevance-classifier/findings.md`, section
+"2026-10-11".
 
 **What the detector surfaces, as a description of its own output.** The
 community report lists 17 communities and 328 accounts at a 0.5 relevance

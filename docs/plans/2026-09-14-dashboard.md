@@ -18,7 +18,8 @@ fifth:
    IO datasets, 6/6 within two published SD, with Iran judged against the
    reference code's 71.31. This is the only claim on the page that rests on
    someone else's ground truth, so it goes first.
-2. **The relevance classifier's measured error.** Human-validated 0.889/0.827
+2. **The relevance classifier's measured error.** Human-validated 0.900/0.931
+   (0.889/0.827 for the 2026-09-13 model, before the 2026-10-11 retrain)
    weighted against the keyword gate's 0.973/0.516, with the validation sample
    size beside it.
 3. **What the detector surfaces, as its own output.** The community listing at

@@ -45,6 +45,11 @@ DEFAULT_CHUNK_ROWS = 10_000
 DEFAULT_BATCH = 32
 VRAM_CEILING_GIB = 7.0
 KENYA_THRESHOLD = 0.5
+# Pinned to the PREVIOUS relevance model on purpose, and a literal rather than an
+# import so this module keeps running on mike-wsl without boto3. The pi0 cron
+# (`deploy/pi0/kenya-incitement-cron.sh`) signs URLs for exactly this slug, so the
+# two must change together; until pi0 is switched, a post the old model has not
+# scored falls back to the keyword gate, which only affects scoring ORDER.
 RELEVANCE_MODEL = "kenya-relevance-afroxlmr-2026-09-13"
 MAX_LENGTH = 256
 

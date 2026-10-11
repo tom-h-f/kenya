@@ -126,3 +126,35 @@ def test_the_serving_regex_matches_the_trace_one():
     assert relevance.MENTION.pattern == coord2._MENTION.pattern
     for text in ("@x_weeep Good morning sir", "no mentions here", "@a @b c"):
         assert relevance.MENTION.sub(" ", text) == coord2._MENTION.sub(" ", text)
+
+
+def test_the_active_model_is_one_named_constant_and_the_previous_one_is_kept():
+    assert relevance.ACTIVE_MODEL != relevance.PREVIOUS_MODEL
+    assert relevance.PREVIOUS_MODEL == "kenya-relevance-afroxlmr-2026-09-13"
+    assert relevance.model_key(relevance.PREVIOUS_MODEL).endswith(relevance.PREVIOUS_MODEL)
+
+
+def test_the_environment_can_point_one_process_at_another_slug(monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("KMA_RELEVANCE_MODEL", relevance.PREVIOUS_MODEL)
+    try:
+        assert importlib.reload(relevance).MODEL == relevance.PREVIOUS_MODEL
+    finally:
+        monkeypatch.delenv("KMA_RELEVANCE_MODEL")
+        assert importlib.reload(relevance).MODEL == relevance.ACTIVE_MODEL
+
+
+def test_every_reader_follows_the_active_slug():
+    from kma import coord2_communities, dashboard
+
+    assert coord2_communities.RELEVANCE_MODEL == relevance.ACTIVE_MODEL
+    assert coord2_communities.RELEVANCE_THRESHOLD == relevance.THRESHOLD
+    assert dashboard.relevance.MODEL == relevance.ACTIVE_MODEL
+
+
+def test_the_scorer_app_reads_the_active_slug_from_the_same_constant():
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "modal_relevance.py").read_text()
+    assert "relevance.MODEL" in source and "kenya-relevance-afroxlmr" not in source
