@@ -53,7 +53,11 @@ oom_kills() {
 }
 
 pass_running() {
-  docker top "$CONTAINER" -o args 2>/dev/null | grep -q 'kma.enrich --once'
+  local state procs
+  state="$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo missing)"
+  [ "$state" = "running" ] || return 1
+  procs="$(docker top "$CONTAINER" -o args)" || return 0
+  grep -q 'kma.enrich --once' <<<"$procs"
 }
 
 wait_between_passes() {
