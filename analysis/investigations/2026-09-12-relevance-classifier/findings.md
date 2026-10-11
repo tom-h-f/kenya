@@ -239,3 +239,80 @@ Caveats:
   and region words only, no labels).
 - tz200's 114 of 133 differs from the recorded 115 by one post: bf16 batch effects in a
   fresh scoring against the persisted scores.
+
+### Deployed and rescored
+
+Weights: `models/relevance/kenya-relevance-afroxlmr-2026-10-11/` (config, tokenizer,
+safetensors, `prep.json`, `kenyan_handles.txt`). `08_publish_model.py --verify` fetched
+them back into an empty cache and re-scored the B2 sets on a CPU: 0.918 / 1.000 and
+0.976 / 0.990, identical to the GPU run. The 09-13 weights and scores are untouched.
+Labelled sets and the handle list: `training/relevance/2026-10-11/` in R2.
+
+Active slug: `relevance.ACTIVE_MODEL`, with `PREVIOUS_MODEL` beside it
+and `KMA_RELEVANCE_MODEL` to point one process at another slug. Every reader
+(`dashboard`, `coord2_communities`, `dossier`, `explorer_build`, `modal_relevance`)
+takes `relevance.MODEL`; `test_relevance.py` pins that. The incitement backlog is the
+one deliberate exception, see below. `relevance.score_texts` reads the preparation
+(`prep.json`, handle list) from the model directory.
+
+Rescore: all 2,516,710 posts with text, on mike-pc ($0 Modal), 11 resumable parts at
+about 620 posts/s, 3.60 GiB peak; no corpus post missing, ids unique. Written to
+`relevance/platform=x/model=kenya-relevance-afroxlmr-2026-10-11/` in the usual layout.
+`pending_posts` under the new slug then showed 857 (collected since the export). The
+Modal app `kma-relevance` was redeployed with its daily schedule and a manual run
+loaded the new weights from R2 and scored those 857; `kma.modal_spend` projection is
+$5.81 for the month before and after (budget $30).
+
+### What the corpus does (`12_compare_corpus.py`, `corpus_comparison.txt`)
+
+Share called Kenyan (p >= 0.5): old 32.7%, new 36.3%. Of 2,480,344 posts both
+scored: 765,230 Kenyan under both, 136,156 newly Kenyan, 45,587 no longer Kenyan.
+It rises overall because the handle input recovers Kenyan replies and Swahili
+chatter the stripped model missed; among posts with a Kenyan anchor word the share is
+93.1% to 95.8%, without one 15.6% to 19.6%. Region-keyword posts with no Kenyan anchor
+word, share called Kenyan old / new: Tanzania 0.957 / 0.184, Uganda 0.895 / 0.447,
+Rwanda 0.503 / 0.245, DRC 0.356 / 0.141, Nigeria 0.181 / 0.043, Ghana 0.376 / 0.102,
+South Africa 0.288 / 0.104. Burundi stays at 0.95 on purpose: those posts are Kenyans
+arguing about Burundians in Kenya. Ethiopia and Somalia move by a few points up.
+
+### Drift baseline (`11_drift.py`)
+
+Disagreement with the keyword gate inside the `ambiguous` bucket, from the week of
+2026-08-03: old model 0.125 to 0.175, new model 0.148 to 0.225; last 4 weeks 0.205
+against the 4 before 0.191 (stable). The new series sits higher because the model
+calls more of that bucket Kenyan. Compare the new model against its own history only.
+
+### Communities (cloud, `kma-v2-daily`, 2026-10-11)
+
+Same code, same window (`daily-2026-10-10-21d`), same graph (12,129 accounts, 75
+communities, identical membership: only the slug moved). Run 20261011T113946Z (old
+model) against 20261011T133655Z (new). `verify.sh postrun`: 8 of 8 passed; peak RSS
+2.1 GB. Detail in `community_effect.txt`.
+
+- The Tanzanian community (cid 9, 137 accounts, `tanzaniamassacre`, `mo29`,
+  `samiamuuaji`): kenya_model 0.966 to 0.561. Still over the 0.5 floor and still
+  listed. Its accounts retweet a lot of Kenyan content (Sifuna, Ruto, KTN); 91 of 132
+  scored accounts are still at or over 0.5. The Swahili `MAANDAMANO` posts sit at
+  0.5 to 0.8. The model has cut the Tanzanian share, not removed the community.
+- cid 29 (9 accounts) 0.951 to 0.199 and cid 40 (6 accounts) 0.689 to 0.311 leave the
+  kept set: pro-government Tanzanian accounts replying to @ntvkenya. cid 44 (6
+  accounts) 0.194 to 0.903 enters: replies to @WilliamsRuto and @NationAfrica about a
+  Nairobi event.
+- Kept communities 23 to 22; listed accounts 326 to 317 (17 dropped, 8 added: 9 from
+  cid 29, 6 from cid 40, 2 from cid 6 out; 6 from cid 44 and 2 others in). Mean
+  kenya_model of listed accounts 0.918 to 0.922. Big Kenyan communities rise 0.03 to
+  0.07 (cid 0 0.894 to 0.963) as relevance coverage reaches 1.0.
+
+### Still open
+
+- A second fresh human pass over a new sample: the figures above rest on Tom's 88 posts
+  (chosen on) and on one model reader's labels.
+- Uganda is the weakest region (0.23 false-positive rate on the holdout); the Tanzanian
+  community is still over the floor. More labelled Tanzanian and Ugandan negatives, or a
+  floor above 0.5 for communities, would be the next lever. Neither was done.
+- The handle list is a fixed snapshot of 2026-10-11. A refresh changes what the model
+  sees for a mention, so it needs a rescore, not just a file swap.
+- The incitement cron on pi0 signs the old slug (see the pi0 change in the 2026-10-11
+  hand-off). Until it is switched, `incitement_backlog.RELEVANCE_MODEL` stays on
+  `-2026-09-13`, whose scores stop growing, so newer posts fall back to the keyword gate
+  for scoring ORDER only.
