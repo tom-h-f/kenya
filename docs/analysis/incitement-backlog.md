@@ -55,6 +55,20 @@ rows than fp32 is, so the residual is not a half-precision effect. `max(menace)`
 max of dehumanisation, violence_call and othering, the quantity `measure.coded_suspect`
 thresholds. Bench script: `analysis/investigations/2026-10-10-incitement-gpu/bench.py`.
 
+## Backlog run (2026-10-10 23:22 to 01:22 London)
+
+One wrapper attempt on pi0, run `20261010T222220Z`: 1,476,747 pending (473,400 Kenya-relevant
+first), 148 chunks, 7,138 s wall (1 h 59 m, 207 posts/s including the plan), peak 1.94 GiB
+VRAM, no retries. A 2,000-post trial run at the start went through the same path. Checked
+afterwards against a fresh mirror of R2:
+
+- 2,496,153 distinct posts with text, 2,490,938 distinct scored, 5,215 unscored.
+  All 5,215 were collected after the plan was taken (236 on 10-10, 4,979 on 10-11); none
+  from 09-28 to 10-09 remain. The first scheduled run takes them.
+- 2,491,938 `incitement/` rows. 1,000 ids have two rows: 500 are a GPU chunk plus a tf1 row
+  (tf1 scored them while the backlog ran), 500 are two tf1 rows. No id has three, and no
+  chunk key was written twice. No scored id is missing from `posts/`.
+
 ## Crash safety
 
 - Chunk: written to `cNNNN.parquet.tmp`, renamed, then one PUT (R2 applies a PUT whole).
