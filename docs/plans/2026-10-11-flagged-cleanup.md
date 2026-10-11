@@ -54,8 +54,8 @@ Not executed on tf1.
 - 6a `verify.sh`: no hang reproduced; the slow step was `preflight`'s `r2 read` (3 min 38 s), now 1.7 s.
 - 6b pi0 wrappers: gauge keeps the last non-idle value and gains `last_run_assigned_posts`; both wrappers log the
   resolved git sha. Install procedure for Tom in `deploy/pi0/README.md`. Nothing written to pi0.
-- 6c `middleware.ts` became `proxy.ts`. It needed `@opennextjs/cloudflare` 1.20.10; 1.19 and 1.20.2 refuse a
-  Node-runtime proxy.
+- 6c `middleware.ts` became `proxy.ts`. It needed `@opennextjs/cloudflare` 1.20.10; 1.19 refused a
+  Node-runtime proxy (measured).
 - 6d vendored files carry the version in the name and are served `immutable`.
 - 6e CSP on pages: a nonce is not possible (static pages), so a static policy with `'unsafe-inline'` for scripts and
   styles, no remote origin, and `wasm-unsafe-eval` plus `worker-src blob:` on `/query` only.
