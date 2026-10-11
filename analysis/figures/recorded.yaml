@@ -26,16 +26,19 @@ benchmark_reproduction:
 
 relevance_error:
   title: What the Kenya filter gets right and wrong
-  measured: 2026-09-13
+  measured: 2026-10-11
   source: analysis/investigations/2026-09-12-relevance-classifier/findings.md
   labels: 88
   note: >
-    Human labels, drawn fresh, judged blind, corpus-weighted. The honest framing
-    is "the filter finds about 83% of Kenyan posts at about 89% precision", not
-    "X% of the corpus is Kenyan".
+    Human labels, drawn fresh, judged blind, corpus-weighted. The classifier row is
+    the 2026-10-11 retrain scored on the same 88 posts (the 2026-09-13 model scored
+    0.889 / 0.827). Those posts were drawn by the earlier model's calls and were one of
+    the sets the retrain was chosen on, so treat the row as optimistic until a second
+    fresh human pass. The honest framing is "the filter finds about 93% of Kenyan
+    posts at about 90% precision", not "X% of the corpus is Kenyan".
   rows:
     - {method: keyword gate, precision: 0.973, recall: 0.516}
-    - {method: learned classifier, precision: 0.889, recall: 0.827}
+    - {method: learned classifier, precision: 0.900, recall: 0.931}
 
 adjudication:
   title: What a blind reader made of what the detector surfaced

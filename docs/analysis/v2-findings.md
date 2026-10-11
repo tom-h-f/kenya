@@ -357,6 +357,17 @@ community listing holds the same 17 communities with listed Kenya share mean
 0.909 / median 1.000, against 0.738 / 0.886 under the gate. Plan and the drift
 caveats: `docs/plans/2026-09-13-relevance-in-production.md`.
 
+*Retrained 2026-10-11.* That model called 85.7% of 133 Tanzania-only posts Kenyan, and
+a Tanzanian community scored 0.966 Kenyan. The serving model is now
+`kenya-relevance-afroxlmr-2026-10-11`: regional hard negatives, a list of Kenyan
+handles kept as input, 4 epochs at 3e-5. On a held-out regional set the
+corpus-weighted false-positive rate fell 0.322 to 0.076 and Tanzania-only posts called
+Kenyan 85.7% to 13.5%; on Tom's 88 posts F1 rose 0.857 to 0.915 (0.900 / 0.931). The
+whole corpus was rescored under the new slug; the old slug and its scores stay in R2
+for comparison. Selection of the active slug is `relevance.ACTIVE_MODEL`. Detail:
+`analysis/investigations/2026-09-12-relevance-classifier/findings.md`, section
+"2026-10-11".
+
 *The learned gate is adopted, 2026-09-13.* `kma.relevance` now decides
 `kenya_share` in the analysis layer - the classifier's call where a post has a
 persisted score, `measure.domain_bucket` where it does not (posts collected

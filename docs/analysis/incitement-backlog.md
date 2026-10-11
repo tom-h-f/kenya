@@ -11,7 +11,8 @@ Pending: the latest row per post with non-empty text and no row under
 `incitement/platform=x/` (the same rule as `db.pending_posts`). Order:
 
 1. Kenya-relevant first: relevance classifier `p_kenya >= 0.5` (model
-   `kenya-relevance-afroxlmr-2026-09-13`), or the `measure.domain_bucket` keyword gate
+   `kenya-relevance-afroxlmr-2026-09-13`, pinned: the pi0 cron signs that slug, and
+   the active model moved to `-2026-10-11` on 2026-10-11), or the `measure.domain_bucket` keyword gate
    for a post with no relevance score.
 2. Newest `collected_at` first inside each group.
 
