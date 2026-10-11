@@ -32,3 +32,40 @@ Alert: `KenyaTopicsStale` in the iot repo, 5.5 days without a success.
 
 Test hooks (env): `KMA_TOPICS_FAIL_FIRST`, `KMA_TOPICS_DEADLINE_S`,
 `KMA_TOPICS_BACKOFF_BASE_S`, `KMA_TOPICS_TEXTFILE_DIR`, `KMA_TOPICS_LIMIT`.
+
+# Incitement job: pi0 cron to mike-pc
+
+Twice a week, Wednesday and Saturday 02:10 (pi0 timezone Europe/London), score unscored posts
+with the incitement NLI pass on mike-pc. Method and measurements:
+`docs/analysis/incitement-backlog.md`. Same shape as the topics job above.
+
+File on pi0 (`/home/tom/`): `kenya-incitement-cron.sh` only. It reuses the signing functions of
+`kenya_topics_r2.py` (already there), so that file must stay. The manifest and verify code is
+embedded in the wrapper. Crontab (one line, added after backing up the crontab to
+`/home/tom/backups/crontab-20261010-pre-incitement.txt`):
+
+    10 2 * * 3,6 KMA_INCITEMENT_REF=feat/incitement-backfill /usr/bin/flock -n /tmp/kenya-incitement.lock /home/tom/kenya-incitement-cron.sh
+
+Change `KMA_INCITEMENT_REF` to `master` once the branch is merged. Log:
+`/home/tom/cron-logs/kenya-incitement-YYYYMMDD.log`. Gauges:
+`/var/lib/node_exporter/textfile/kma_incitement.prom`.
+
+On mike-wsl (`~/projects/kenya-incitement/`): `repo/` (its own clone, so it never races the topics
+job's checkout), `pyproject.toml` + `.venv` (from `deploy/mike/incitement/pyproject.toml`: torch
+cu130, transformers 5), `cache/` (about 1 GB mirror of posts, incitement and relevance, plus
+`runs/<run_id>/` with the plan and chunk files), `logs/`, `job.lock`.
+
+Exclusion from the topics job: an attempt does not start while a `kt-*` tmux session exists or
+the GPU holds more than 2000 MiB. The topics job has the same GPU check against this one.
+
+Retries: as the topics job (60 s doubling to 60 min, 20 h from the scheduled start; a run still
+going at 110 min is adopted by the next attempt). Exit 4 (GPU out of memory at the smallest batch)
+retries once with batch 16. Success needs the marker (`status=complete`, read-back rows equal
+distinct equal scored) and pi0's R2 listing to agree on every chunk size. `awake on` is taken
+only when no hold exists, and `awake off` only when the flag is the one this job wrote.
+
+Alert: `KenyaIncitementStale` in the iot repo, 5.5 days without a success.
+
+Test hooks (env): `KMA_INCITEMENT_FAIL_FIRST`, `KMA_INCITEMENT_DEADLINE_S`,
+`KMA_INCITEMENT_BACKOFF_BASE_S`, `KMA_INCITEMENT_TEXTFILE_DIR`, `KMA_INCITEMENT_LIMIT`,
+`KMA_INCITEMENT_ATTEMPT_TIMEOUT_S`, `KMA_INCITEMENT_AWAKE_FOR`.

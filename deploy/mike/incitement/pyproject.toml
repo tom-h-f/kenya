@@ -1,0 +1,17 @@
+[project]
+name = "kenya-incitement"
+version = "0.1.0"
+description = "Runtime for kma.incitement_backlog on mike-wsl: torch CUDA, no kma install."
+requires-python = ">=3.12,<3.14"
+dependencies = ["torch", "numpy", "pyarrow", "pandas", "duckdb", "python-dotenv", "transformers>=5", "sentencepiece", "protobuf"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

@@ -195,6 +195,46 @@ def _pending(
     return df
 
 
+def nli_scores(pipe, texts: list[str], batch_size: int) -> list[dict[str, float]]:
+    """One {hypothesis name: score} dict per text, from a zero-shot pipeline."""
+    res = _run(
+        pipe,
+        texts,
+        batch_size=batch_size,
+        candidate_labels=list(HYPOTHESES.values()),
+        multi_label=True,
+    )
+    if isinstance(res, dict):
+        res = [res]
+    by_label = []
+    for r in res:
+        scores = dict(zip(r["labels"], r["scores"]))
+        by_label.append({name: float(scores[h]) for name, h in HYPOTHESES.items()})
+    return by_label
+
+
+def score_table(
+    df: pd.DataFrame, by_label: list[dict[str, float]], scored_at: datetime
+) -> pa.Table:
+    """The persisted `incitement/` schema. `df` carries platform_post_id,
+    lexicon_hits and lexicon_categories, row-aligned with `by_label`."""
+    return pa.table(
+        {
+            "platform_post_id": df["platform_post_id"].tolist(),
+            "lexicon_hits": df["lexicon_hits"].tolist(),
+            "lexicon_categories": df["lexicon_categories"].tolist(),
+            "dehumanisation_score": [b["dehumanisation"] for b in by_label],
+            "violence_call_score": [b["violence_call"] for b in by_label],
+            "othering_score": [b["othering"] for b in by_label],
+            "political_criticism_score": [
+                b["political_criticism"] for b in by_label
+            ],
+            "model": [MODEL] * len(df),
+            "scored_at": [scored_at] * len(df),
+        }
+    )
+
+
 def score_new(
     con: duckdb.DuckDBPyConnection,
     platform: str = "x",
@@ -210,37 +250,13 @@ def score_new(
     df = _pending(con, platform, limit, prioritise=prioritise)
     if df.empty:
         return 0
-    res = _run(
+    by_label = nli_scores(
         _pipe("zero-shot-classification", MODEL),
         df["text"].tolist(),
-        batch_size=nli_batch_size(batch_size),
-        candidate_labels=list(HYPOTHESES.values()),
-        multi_label=True,
+        nli_batch_size(batch_size),
     )
-    if isinstance(res, dict):
-        res = [res]
-    by_label = []
-    for r in res:
-        scores = dict(zip(r["labels"], r["scores"]))
-        by_label.append(
-            {name: float(scores[h]) for name, h in HYPOTHESES.items()}
-        )
     now = datetime.now(timezone.utc)
-    table = pa.table(
-        {
-            "platform_post_id": df["platform_post_id"].tolist(),
-            "lexicon_hits": df["lexicon_hits"].tolist(),
-            "lexicon_categories": df["lexicon_categories"].tolist(),
-            "dehumanisation_score": [b["dehumanisation"] for b in by_label],
-            "violence_call_score": [b["violence_call"] for b in by_label],
-            "othering_score": [b["othering"] for b in by_label],
-            "political_criticism_score": [
-                b["political_criticism"] for b in by_label
-            ],
-            "model": [MODEL] * len(df),
-            "scored_at": [now] * len(df),
-        }
-    )
+    table = score_table(df, by_label, now)
     key = (
         f"incitement/platform={platform}"
         f"/dt={now:%Y-%m-%d}/run={now:%Y%m%dT%H%M%SZ}.parquet"

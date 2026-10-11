@@ -136,6 +136,9 @@ flowchart TD
   lexicon hits. Used with a **joint rule** (lexicon hit AND high NLI): NLI
   alone over-triggers on ethnic-bloc horse-race commentary. Design notes and
   the validation set are in the investigation folder below.
+- **`incitement_backlog.py`** - the GPU drain and the twice-weekly keep-up job
+  for the same NLI pass: ordered (Kenya-relevant first), chunked, resumable, same
+  `incitement/` layout and schema. Reference: [incitement-backlog.md](incitement-backlog.md).
 
 ## Notebooks (`analysis/notebooks/`)
 
