@@ -1,0 +1,4 @@
+services:
+  enrich:
+    command: ["--loop", "--no-incitement"]
+    mem_limit: 2g
