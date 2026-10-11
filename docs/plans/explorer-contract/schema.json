@@ -163,14 +163,14 @@
         "relevance_scored": {"type": "boolean"},
         "kept": {"type": "boolean", "description": "false = below the relevance floor. Dropped communities are listed with counts only; no members, graph or accounts are exported for them."},
         "listed": {"type": "integer"},
-        "template": {"$ref": "#/$defs/TemplateText"},
+        "template": {"oneOf": [{"$ref": "#/$defs/TemplateText"}, {"type": "null"}], "description": "null when the run did not compute it"},
         "top_hashtags": {"type": "array", "items": {"$ref": "#/$defs/TagCount"}, "maxItems": 10},
         "top_domains": {"type": "array", "items": {"$ref": "#/$defs/DomainCount"}, "maxItems": 5}
       }, "additionalProperties": false
     },
     "TemplateText": {
-      "description": "Advisory, per community and only for kept ones: how much of the members' own wording is a frame several different accounts also wrote (kma.template_spam). `label` is null when no frame dominates, `template` when most posts share one, `template_promo` when the shared frame is promotional vocabulary. Null when the run did not compute it. Not a statement about any account.",
-      "type": ["object", "null"], "required": ["label", "rate", "promo_rate", "eligible_posts", "authors"],
+      "description": "Advisory, per community and only for kept ones: how much of the members' own wording is a frame several different accounts also wrote (kma.template_spam). `label` is null when no frame dominates, `template` when most posts share one, `template_promo` when the shared frame is promotional vocabulary. Not a statement about any account.",
+      "type": "object", "required": ["label", "rate", "promo_rate", "eligible_posts", "authors"],
       "properties": {
         "label": {"enum": [null, "template", "template_promo"]},
         "rate": {"type": "number", "description": "share of eligible posts whose word shingles are mostly shared with at least 3 different accounts"},
@@ -406,10 +406,11 @@
       }, "additionalProperties": false
     },
     "TimeCoverage": {
-      "description": "Share of the window's distinct posts each enrichment stage has covered. Denominator = distinct posts in the window with text.",
+      "description": "Share of the window's distinct posts each enrichment stage has covered. Denominator = distinct non-repost posts in the window with text.",
       "type": "object", "required": ["kind", "stamp", "denominator_posts", "stages"],
       "properties": {
         "kind": {"const": "time_coverage"}, "stamp": {"$ref": "#/$defs/Stamp"}, "denominator_posts": {"type": "integer"},
+        "basis": {"type": "string", "description": "what the denominator counts and what covered means; shown beside the numbers"},
         "stages": {"type": "array", "items": {"type": "object", "required": ["stage", "covered_posts"], "properties": {"stage": {"enum": ["embeddings", "relevance", "hatespeech", "incitement", "topics", "labels"]}, "covered_posts": {"type": "integer"}, "latest_dt": {"type": ["string", "null"]}}, "additionalProperties": false}}
       }, "additionalProperties": false
     },

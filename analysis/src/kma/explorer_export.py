@@ -54,7 +54,10 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from kma import bench, canary, coord2, coord2_communities, dashboard, db, explorer_build as eb, v2_daily
+from kma import (
+    bench, canary, coord2, coord2_communities, dashboard, db, explorer_build as eb,
+    explorer_slices, explorer_topics, v2_daily,
+)
 
 log = logging.getLogger("kma.explorer")
 
@@ -69,10 +72,8 @@ UPLOAD_THREADS = 8
 TEXT_POSTS_PER_USER = 100
 TEXT_MIN_WORDS = coord2.MIN_TEXT_WORDS
 
-UNAVAILABLE = (
-    {"view": "topic_index", "reason": "Topics are not part of this release."},
-    {"view": "time_coverage", "reason": "Coverage by stage is not part of this release."},
-)
+REASON_TOPICS = "The topic assignments could not be read for this run."
+REASON_COVERAGE = "No enrichment stage could be read for this run."
 
 _RUN_ID = re.compile(r"^\d{8}T\d{6}Z$")
 
@@ -458,6 +459,9 @@ class Inputs:
     text_evidence: eb.TextEvidence | None
     denylist: set[str]
     now: datetime
+    topic_fit: dict | None = None
+    topic_reason: str | None = None
+    coverage_sources: dict[str, str] | None = None
 
 
 def apply_denylist(daily: eb.Daily, corpus: eb.Corpus, deny: set[str]) -> set[str]:
@@ -535,6 +539,16 @@ def assemble(inp: Inputs) -> eb.Bundle:
     bundle.extra_authors |= amplified
 
     files.update(eb.build_community_details(stamp, members, rows, handles, kenya, corpus, index))
+    topics_ok = False
+    if inp.topic_fit is not None:
+        try:
+            files.update(explorer_topics.build_topics(stamp, corpus, inp.topic_fit))
+            topics_ok = True
+        except explorer_topics.TopicsUnavailable as exc:
+            log.warning("topics: %s", exc)
+            bundle.unavailable.append({"view": "topic_index", "reason": REASON_TOPICS})
+    else:
+        bundle.unavailable.append({"view": "topic_index", "reason": inp.topic_reason or REASON_TOPICS})
     files["communities.json"] = {
         "kind": "community_index", "stamp": stamp,
         "communities": [rows[c] for c in sorted(rows)]}
@@ -545,8 +559,22 @@ def assemble(inp: Inputs) -> eb.Bundle:
     bundle.extra_authors |= tag_authors
     files["links/index.json"] = eb.build_links(stamp, corpus)
 
+    coverage = None
+    if inp.coverage_sources is not None:
+        coverage, failed = explorer_topics.build_coverage(stamp, corpus, sources=inp.coverage_sources)
+        if failed:
+            bundle.stats["coverage_stages_unreadable"] = failed
+        if coverage["stages"]:
+            files["time/coverage.json"] = coverage
+        else:
+            bundle.unavailable.append({"view": "time_coverage", "reason": REASON_COVERAGE})
+            coverage = None
+    else:
+        bundle.unavailable.append({"view": "time_coverage", "reason": REASON_COVERAGE})
+
     totals = corpus.totals()
-    files["overview.json"] = eb.build_overview(stamp, daily, rows, members, kept_edges, totals, inp.post_rows)
+    files["overview.json"] = eb.build_overview(
+        stamp, daily, rows, members, kept_edges, totals, inp.post_rows, coverage)
     files["time/pipeline.json"] = eb.build_pipeline(stamp, daily.runs)
 
     if inp.collection is not None:
@@ -560,8 +588,13 @@ def assemble(inp: Inputs) -> eb.Bundle:
     cur = eb.communities_of(daily.members, daily.communities, deny)
     files["time/changes.json"] = eb.build_changes(stamp, cur, inp.previous, deny, lineages)
 
+    for rel, piece in explorer_slices.build_slices(
+            corpus, members, kept_edges, handles, profiles, rows, corpus.per_author()).items():
+        bundle.blobs[rel] = (piece.data, piece.rows)
+    bundle.stats["slices_bytes"] = sum(len(d) for d, _ in bundle.blobs.values())
+
     bundle.files = files
-    bundle.unavailable = [dict(u) for u in UNAVAILABLE] + bundle.unavailable
+    bundle.stats["topics"] = topics_ok
     bundle.members = set(members["user_id"])
     bundle.stats.update({
         "accounts": len(members), "communities_kept": len(kept_cids),
@@ -590,6 +623,11 @@ def stage(bundle: eb.Bundle, run: dict, root: Path, previous_runs: list[dict],
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         meta[rel] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    for rel, (data, rows) in sorted(bundle.blobs.items()):
+        path = base / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        meta[rel] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "rows": rows}
     end = str(run["window_end"])[:10]
     this = {"run_id": run_id, "window_id": str(run["window_id"]), "window_end": end,
             "computed_at": eb.iso(run["computed_at"])}
@@ -666,7 +704,7 @@ def _id_problems(rel: str, doc: Any, members: set[str], allowed: set[str]) -> li
 def size_report(root: Path) -> dict:
     """Raw and gzip bytes per top-level group and in total."""
     groups: dict[str, dict] = defaultdict(lambda: {"files": 0, "raw": 0, "gzip": 0})
-    for path in sorted((root / PREFIX).rglob("*.json")):
+    for path in sorted(p for p in (root / PREFIX).rglob("*") if p.suffix in (".json", ".parquet")):
         rel = path.relative_to(root / PREFIX)
         if rel.parts[0] != "runs":
             continue
@@ -729,7 +767,9 @@ def publish(root: Path, manifest: dict, *, bucket: str, client, run_id: str) -> 
     def put(path: Path) -> None:
         key = f"{PREFIX}/runs/{run_id}/{path.relative_to(base).as_posix()}"
         client.put_object(Bucket=bucket, Key=key, Body=path.read_bytes(),
-                          ContentType="application/json", CacheControl=RUN_FILE_CACHE)
+                          ContentType=("application/vnd.apache.parquet" if path.suffix == ".parquet"
+                                       else "application/json"),
+                          CacheControl=RUN_FILE_CACHE)
 
     with ThreadPoolExecutor(UPLOAD_THREADS) as pool:
         list(pool.map(put, files))
@@ -835,12 +875,20 @@ def run(
             con, manifest_df, start, float(run_row["text_threshold"]),
             float(run_row["text_overlap"]))
 
+    topic_fit, topic_reason = None, None
+    try:
+        topic_fit = timed("topics_s", lambda: explorer_topics.load_topic_rows(corpus))
+    except explorer_topics.TopicsUnavailable as exc:
+        topic_reason = REASON_TOPICS
+        log.warning("topics unavailable: %s", exc)
+
     inp = Inputs(
         daily=daily, profiles_for=lambda: timed("profiles_s", lambda: read_profiles(con, start)),
         kenya_for=lambda ids: timed("kenya_s", lambda: read_kenya(con, ids)),
         corpus=corpus, post_rows=post_rows, trend=trend, collection=collection,
         control_arm=control_arm, previous=previous, text_evidence=text_reader,
-        denylist=denylist, now=now,
+        denylist=denylist, now=now, topic_fit=topic_fit, topic_reason=topic_reason,
+        coverage_sources=explorer_topics.stage_sources(),
     )
     bundle = timed("assemble_s", lambda: assemble(inp))
 

@@ -124,6 +124,7 @@ class Daily:
 @dataclass
 class Bundle:
     files: dict[str, Any] = field(default_factory=dict)
+    blobs: dict[str, tuple[bytes, int]] = field(default_factory=dict)
     unavailable: list[dict] = field(default_factory=list)
     members: set[str] = field(default_factory=set)
     extra_authors: set[str] = field(default_factory=set)
@@ -989,8 +990,13 @@ def build_links(stamp: dict, corpus: Corpus) -> dict:
 
 
 def build_overview(stamp: dict, daily: Daily, rows: dict[int, dict], members: pd.DataFrame,
-                   kept_edges: pd.DataFrame, corpus_totals: dict, post_rows: int | None) -> dict:
+                   kept_edges: pd.DataFrame, corpus_totals: dict, post_rows: int | None,
+                   coverage: dict | None = None) -> dict:
     run = daily.run
+    covered = {}
+    if coverage and coverage["denominator_posts"]:
+        covered = {s["stage"]: round(s["covered_posts"] / coverage["denominator_posts"], 4)
+                   for s in coverage["stages"]}
     kept_rows = [r for r in rows.values() if r["kept"]]
     retweet_intra = kept_edges[kept_edges["intra"] & ((kept_edges["mask"] & BIT_RETWEET) != 0)]
     trace_edges = {t: int(run[f"edges_{t}"]) for t in coord2.TRACES
@@ -1015,8 +1021,8 @@ def build_overview(stamp: dict, daily: Daily, rows: dict[int, dict], members: pd
             "post_rows": int(post_rows or 0),
             "distinct_posts": corpus_totals["distinct_posts"],
             "distinct_authors": corpus_totals["distinct_authors"],
-            "embedding_coverage": None,
-            "relevance_coverage": None,
+            "embedding_coverage": covered.get("embeddings"),
+            "relevance_coverage": covered.get("relevance"),
         },
     }
 

@@ -352,6 +352,7 @@ def build_run(w: World, root: Path, run: dict, is_latest: bool, prev_run_id) -> 
                 "trace_share": {"co_retweet": 0.6, "co_url": 0.1, "hashtag_sequence": 0.1, "fast_retweet": 0.1, "text_similarity": 0.1},
                 "kenya_model": round(sum(v for v in (w.kenya[a] for a in ids) if v is not None) / max(1, sum(1 for a in ids if w.kenya[a] is not None)), 3),
                 "relevance_coverage": round(0.82 - 0.05 * cid, 3), "relevance_scored": True, "kept": True, "listed": min(len(ids), 20),
+                "template": TEMPLATES[cid % len(TEMPLATES)],
                 "top_hashtags": [{"tag": t, "posts": n, "accounts": len(cid_tag_acc[cid][t])} for t, n in tags],
                 "top_domains": [{"domain": d, "posts": 40 - 7 * i - 3 * cid, "accounts": 12 - 2 * i} for i, d in enumerate(DOMAINS[:5])],
             }
@@ -467,7 +468,7 @@ def build_run(w: World, root: Path, run: dict, is_latest: bool, prev_run_id) -> 
 
     index_tags = sorted(tag_posts, key=lambda t: (-len(tag_posts[t]), t))
     emerging = [{"tag": t, "recent_rate": round(0.004 + 0.001 * i, 4), "prior_rate": round(0.001 + 0.0002 * i, 4),
-                 "emergence": round(3.0 + 0.5 * i, 2), "posts": len(tag_posts[t]), "censused": bool(i % 2)} for i, t in enumerate(index_tags[-3:])]
+                 "emergence": None if i == 0 else round(3.0 + 0.5 * i, 2), "posts": len(tag_posts[t]), "censused": bool(i % 2)} for i, t in enumerate(index_tags[-3:])]
     put("hashtags/index.json", {
         "kind": "hashtag_index", "stamp": stamp,
         "basis": "Rows in the collected corpus for members of kept communities in the window. Counts, not prevalence.",
@@ -504,17 +505,23 @@ def build_run(w: World, root: Path, run: dict, is_latest: bool, prev_run_id) -> 
     topics = []
     for tid, terms in enumerate(TOPIC_TERMS):
         daily = [r.randrange(20, 80) for _ in days]
-        topics.append({"tid": tid, "terms": terms, "posts_in_window": sum(daily), "accounts_in_window": 20 + 7 * tid, "daily": daily})
+        knn = sum(daily) // 3
+        topics.append({"tid": tid, "name": " ".join(terms[:3]), "terms": terms, "posts_in_window": sum(daily),
+                       "fit_posts_in_window": sum(daily) - knn, "knn_posts_in_window": knn,
+                       "accounts_in_window": 20 + 7 * tid, "daily": daily})
     put("topics/index.json", {
         "kind": "topic_index", "stamp": stamp,
         "fit": {"fitted_at": "2026-09-04T00:00:00Z", "fit_posts": 15000, "topics": len(topics), "noise_share": 0.31,
-                "params": "synthetic fixture parameters", "assignment": "nearest centroid, similarity cut 0.5"},
+                "params": "synthetic fixture parameters", "assignment": "nearest fitted posts (kNN), k=10, share cut 0.40",
+                "knn_posts": 41000, "window_posts": 60000, "window_noise_posts": 17000, "listed_topics": len(topics)},
         "topics": topics,
     })
     sample_posts = [p for p in w.posts if p["kind"] != "repost"][:10]
     for t in topics:
         detail = {
-            "kind": "topic_detail", "stamp": stamp, "tid": t["tid"], "terms": t["terms"],
+            "kind": "topic_detail", "stamp": stamp, "tid": t["tid"], "name": t["name"], "terms": t["terms"],
+            "posts_in_window": t["posts_in_window"], "fit_posts_in_window": t["fit_posts_in_window"],
+            "knn_posts_in_window": t["knn_posts_in_window"], "daily": t["daily"],
             "examples": [{
                 "id": p["id"], "author_id": p["author_id"], "author_handle": w.handle[p["author_id"]], "created_at": iso(p["created_at"]),
                 "text": p["text"], "url": f"https://x.example/{w.handle[p['author_id']]}/status/{p['id']}",
@@ -567,6 +574,7 @@ def build_run(w: World, root: Path, run: dict, is_latest: bool, prev_run_id) -> 
     else:
         put("time/coverage.json", {
             "kind": "time_coverage", "stamp": stamp, "denominator_posts": 90000,
+            "basis": "Distinct non-repost posts with text in the window. Counts of rows, not a rate.",
             "stages": [{"stage": "embeddings", "covered_posts": 88000, "latest_dt": run["window_end"]},
                        {"stage": "relevance", "covered_posts": 71000, "latest_dt": run["window_end"]},
                        {"stage": "labels", "covered_posts": 12000, "latest_dt": None}],
@@ -584,6 +592,13 @@ def build_run(w: World, root: Path, run: dict, is_latest: bool, prev_run_id) -> 
     }
     put("overview.json", overview)
     return files
+
+
+TEMPLATES = (
+    {"label": "template_promo", "rate": 0.81, "promo_rate": 0.93, "eligible_posts": 412, "authors": 18},
+    {"label": None, "rate": 0.04, "promo_rate": 0.0, "eligible_posts": 260, "authors": 22},
+    None,
+)
 
 
 def write_slices(w: World, run_dir: Path) -> dict[str, bytes]:

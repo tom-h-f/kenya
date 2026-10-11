@@ -426,7 +426,7 @@ def test_the_manifest_lists_every_file_with_its_hash_and_keeps_30_runs(tmp_path)
     bundle, manifest = staged(tmp_path, make_inputs(), previous_runs=older)
     assert manifest["latest_run"] == RUN_ID and manifest["runs"][0]["run_id"] == RUN_ID
     assert len(manifest["runs"]) == 30
-    assert set(manifest["files"]) == set(bundle.files)
+    assert set(manifest["files"]) == set(bundle.files) | set(bundle.blobs)
 
 
 class FakeS3:
@@ -476,7 +476,7 @@ def test_publish_writes_the_manifest_last_and_prunes_only_old_runs(tmp_path):
     keys = [k for k, _ in client.puts]
     assert keys[-1] == "explorer/v1/manifest.json"
     assert all(k.startswith(f"explorer/v1/runs/{RUN_ID}/") for k in keys[:-1])
-    assert len(keys) == len(bundle.files) + 1
+    assert len(keys) == len(bundle.files) + len(bundle.blobs) + 1
     assert f"explorer/v1/runs/{old}/overview.json" not in client.objects
     assert "explorer/v1/vendor/duckdb.wasm" in client.objects and "public/summary.json" in client.objects
     cache = dict(client.puts)
