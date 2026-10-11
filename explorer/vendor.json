@@ -1,0 +1,21 @@
+{
+  "package": "@duckdb/duckdb-wasm",
+  "version": "1.29.0",
+  "url": "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@{version}/dist/{file}",
+  "files": {
+    "duckdb-eh.wasm": {"sha256": "00d45e5e074b7f7e17e45daabacb0fb67248eac8bd638a72cd1b42dad23788e4"},
+    "duckdb-browser-eh.worker.js": {"sha256": "260b4773d2d78e5ab1106bc163ffd5b0b6eaeddedacf23190e9cafc9cc010d3d"},
+    "duckdb-mvp.wasm": {"sha256": "79c530032e746177e0406f3f1c4fa9f69fd7437e17a18587b1f8ab38dc5132ea"},
+    "duckdb-browser-mvp.worker.js": {"sha256": "f798d151c3db03d3f277f884acb882c7a324d5249ef540bdebb82d3cdafbbc37"},
+    "parquet.duckdb_extension.eh.wasm": {
+      "name": "parquet.eh-1.1.1.wasm",
+      "url": "https://extensions.duckdb.org/v1.1.1/wasm_eh/parquet.duckdb_extension.wasm",
+      "sha256": "e24fb2953c6a80e32d17fa3921f90f1f05ccbfa40f382e77702c1e6af9b79479"
+    },
+    "parquet.duckdb_extension.mvp.wasm": {
+      "name": "parquet.mvp-1.1.1.wasm",
+      "url": "https://extensions.duckdb.org/v1.1.1/wasm_mvp/parquet.duckdb_extension.wasm",
+      "sha256": "e73e280539207f51ca56f3d302ca6051182ef6213999fae9f809bfe2113b9311"
+    }
+  }
+}

@@ -194,6 +194,19 @@ class TestMutations:
         refresh_manifest(bundle)
         assert has(problems(bundle), f"forbidden field name {name!r}")
 
+    def test_a_tag_named_like_a_flag_is_data_but_a_flag_field_inside_it_is_not(self, bundle):
+        shard = next(p for p in (base(bundle) / "hashtags").glob("s*.json") if read(p)["tags"])
+        doc = read(shard)
+        tag = next(iter(doc["tags"]))
+        doc["tags"]["hatespeech"] = doc["tags"].pop(tag) | {"tag": "hatespeech"}
+        write(shard, doc)
+        probs = problems(bundle)
+        assert not has(probs, "forbidden field name 'hatespeech'")
+        doc["tags"]["hatespeech"]["hate_share"] = 0.2
+        write(shard, doc)
+        probs = problems(bundle)
+        assert has(probs, "forbidden field name 'hate_share'")
+
     def test_parquet_flag_column(self, bundle):
         p = base(bundle) / "slices" / "accounts.parquet"
         t = pq.read_table(p).append_column("hate_score", pa.array([0.1] * pq.ParquetFile(p).metadata.num_rows))
@@ -395,7 +408,8 @@ class TestLanguageLint:
 
     def test_user_content_skipped_unless_asked(self, tmp_path):
         f = tmp_path / "x.json"
-        write(f, {"text": "my bot is broken", "bio": "troll", "handle": "bot_fan", "label": "Community 01"})
+        write(f, {"text": "my bot is broken", "bio": "troll", "handle": "bot_fan", "label": "Community 01",
+                  "name": "facts fake true"})
         assert lint.lint_paths([f]) == []
         assert lint.lint_paths([f], include_user_content=True) != []
 

@@ -59,7 +59,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from kma import canary, coord2, coord2_communities, coord2_run, window
+from kma import canary, coord2, coord2_communities, coord2_run, template_spam, window
 from kma.db import BUCKET
 
 log = logging.getLogger(__name__)
@@ -224,6 +224,25 @@ def _write(
     return key
 
 
+def with_template_flags(
+    con: duckdb.DuckDBPyConnection, view: str, members: pd.DataFrame, communities: pd.DataFrame,
+) -> pd.DataFrame:
+    """`communities` with the `template_spam` columns, filled for kept
+    communities and null for dropped ones (their text is never read: a dropped
+    community is a count and nothing more). Canary accounts are not real and
+    are left out of the statistics."""
+    kept = set(communities.loc[communities["kept"], "community"])
+    kept_members = members[members["community"].isin(kept)]
+    kept_members = kept_members[~kept_members["user_id"].astype(str).map(canary.is_canary)]
+    flags = template_spam.community_flags(
+        kept_members,
+        template_spam.member_posts(con, view, kept_members["user_id"].astype(str).tolist()),
+    )
+    out = communities.merge(flags, on="community", how="left")
+    out["template_label"] = out["template_label"].astype("object")
+    return out
+
+
 def rank(
     con: duckdb.DuckDBPyConnection,
     w: window.Window,
@@ -246,6 +265,7 @@ def rank(
     text_edges: pd.DataFrame | None = None,
     traces: dict[str, pd.DataFrame] | None = None,
     summary_extra: dict | None = None,
+    templates: bool = True,
 ) -> RankResult:
     """Rank one window and persist every table. `networks` injects prebuilt
     `(networks, sizes, view)` in place of `coord2_run.snapshot_networks`, which
@@ -254,7 +274,9 @@ def rank(
     holds them in memory, and `traces` the per-trace (user_id, entity) rows that
     `networks` was built from; without them `daily_edges.shared_retweets` is
     null for co_retweet pairs and `daily_traces` is empty. `summary_extra` adds
-    fields to the `daily_runs` row."""
+    fields to the `daily_runs` row. `templates=False` leaves the template-text
+    columns off `daily_communities`, for a caller whose `view` is not a posts
+    relation."""
     uri = uri or (lambda key: f"r2://{BUCKET}/{key}")
     stamp = run_stamp(now)
     run_id = f"{stamp:%Y%m%dT%H%M%SZ}"
@@ -327,11 +349,17 @@ def rank(
         trace_rows.clear()
     timings["edges_s"] = time.monotonic() - t
 
+    t = time.monotonic()
+    communities_out = rep.communities
+    if templates and len(communities_out):
+        communities_out = with_template_flags(con, view, rep.members, communities_out)
+    timings["templates_s"] = time.monotonic() - t
+
     tag = {"run_id": run_id, "window_id": w.id, "window_end": w.end.isoformat(),
            "window_days": w.days}
     tables = {
         "accounts": listed.assign(**tag),
-        "communities": rep.communities.assign(**tag),
+        "communities": communities_out.assign(**tag),
         "members": rep.members[["user_id", "community", "within_score", "centrality"]].assign(**tag),
         "edges": edges.assign(**tag),
     }

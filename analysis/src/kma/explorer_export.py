@@ -54,7 +54,10 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from kma import bench, canary, coord2, coord2_communities, dashboard, db, explorer_build as eb, v2_daily
+from kma import (
+    bench, canary, coord2, coord2_communities, dashboard, db, explorer_build as eb,
+    explorer_slices, explorer_topics, v2_daily,
+)
 
 log = logging.getLogger("kma.explorer")
 
@@ -69,13 +72,10 @@ UPLOAD_THREADS = 8
 TEXT_POSTS_PER_USER = 100
 TEXT_MIN_WORDS = coord2.MIN_TEXT_WORDS
 
-UNAVAILABLE = (
-    {"view": "topic_index", "reason": "Topics are not part of this release."},
-    {"view": "time_coverage", "reason": "Coverage by stage is not part of this release."},
-)
+REASON_TOPICS = "The topic assignments could not be read for this run."
+REASON_COVERAGE = "No enrichment stage could be read for this run."
 
 _RUN_ID = re.compile(r"^\d{8}T\d{6}Z$")
-DATA_KEYED_PARENTS = frozenset({"tags"})
 
 
 class ExplorerUnsafe(ValueError):
@@ -213,32 +213,86 @@ def load_window(con: duckdb.DuckDBPyConnection, window_id: str) -> tuple[eb.Corp
     return manifest, post_rows
 
 
-def read_profiles(con: duckdb.DuckDBPyConnection, since: date) -> pd.DataFrame:
-    """Latest profile snapshot of every member collected on or after `since`.
-    Display name and bio, never location.
+PROFILE_COLUMNS = ["id", "handle", "display_name", "bio", "followers", "following", "statuses",
+                   "created_at", "profile_as_of"]
+PROFILE_OLDER_BATCH = 100
+PROFILE_OLDER_SECONDS = 120.0
 
-    Scanning every `authors/` object is not feasible (9,000 small objects, over half an
-    hour measured, and the signed requests expire mid-scan), and a member whose posts were
-    collected in the window almost always has a snapshot dated inside it. Members with
-    none come back absent and their profile fields are null."""
+
+def list_profile_objects(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str]]:
+    """Every `authors/` object as (dt, uri), newest day first."""
     glob = f"r2://{db.BUCKET}/authors/platform={PLATFORM}/dt=*/run=*.parquet"
     listed = [r[0] for r in con.execute("SELECT file FROM glob(?)", [glob]).fetchall()]
-    keep = sorted(f for f in listed
-                  if (m := re.search(r"/dt=(\d{4}-\d{2}-\d{2})/", f)) and m.group(1) >= since.isoformat())
-    if not keep:
-        return pd.DataFrame(columns=["id", "handle", "display_name", "bio", "followers", "following",
-                                     "statuses", "created_at", "profile_as_of"])
-    log.info("profiles: %d author objects since %s", len(keep), since)
-    names = ", ".join(f"'{f}'" for f in keep)
+    dated = [(m.group(1), f) for f in listed if (m := re.search(r"/dt=(\d{4}-\d{2}-\d{2})/", f))]
+    return sorted(dated, reverse=True)
+
+
+def _read_profile_objects(con: duckdb.DuckDBPyConnection, files: list[str], wanted: str) -> pd.DataFrame:
+    """Latest profile per account in `files`, for the ids in the table `wanted`."""
+    names = ", ".join(f"'{f}'" for f in files)
     return con.execute(
         f"""SELECT platform_user_id AS id, handle, display_name, bio,
                    followers_count AS followers, following_count AS following,
                    tweet_count AS statuses, created_at, collected_at AS profile_as_of
             FROM read_parquet([{names}], union_by_name=true)
-            WHERE platform_user_id IN (SELECT id FROM _mem)
+            WHERE platform_user_id IN (SELECT id FROM {wanted})
             QUALIFY row_number() OVER (PARTITION BY platform_user_id
                                        ORDER BY collected_at DESC) = 1"""
     ).df()
+
+
+def read_profiles(
+    con: duckdb.DuckDBPyConnection, since: date, *,
+    listing: list[tuple[str, str]] | None = None,
+    older_batch: int = PROFILE_OLDER_BATCH, older_seconds: float = PROFILE_OLDER_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> pd.DataFrame:
+    """Latest profile snapshot of every member. Display name and bio, never location.
+
+    Scanning every `authors/` object is not feasible in one query (9,000 small
+    objects, over half an hour measured, and the signed requests expire mid-scan),
+    and a member whose posts were collected in the window almost always has a
+    snapshot dated inside it. So the objects dated on or after `since` are read
+    first, in one query. A member still without a profile is then looked for in
+    the older objects, newest day first, `older_batch` objects per query, until
+    every member is found or `older_seconds` is spent; each batch is a fresh query
+    so no signed request lives long. A member still absent after that comes back
+    absent and its profile fields are null. What happened is in
+    `frame.attrs["profile_read"]`."""
+    listed = list_profile_objects(con) if listing is None else listing
+    recent = [f for dt, f in listed if dt >= since.isoformat()]
+    older = [f for dt, f in listed if dt < since.isoformat()]
+    members = int(con.execute("SELECT count(DISTINCT id) FROM _mem").fetchone()[0])
+    stats = {"members": members, "objects_in_window": len(recent), "older_objects": len(older),
+             "older_objects_read": 0, "found_in_window": 0, "found_in_older": 0}
+    frame = pd.DataFrame(columns=PROFILE_COLUMNS)
+    if recent:
+        log.info("profiles: %d author objects since %s", len(recent), since)
+        frame = _read_profile_objects(con, recent, "_mem")
+    stats["found_in_window"] = len(frame)
+
+    started = clock()
+    parts = [frame]
+    have = set(frame["id"])
+    for at in range(0, len(older), older_batch):
+        if len(have) >= members or clock() - started > older_seconds:
+            break
+        con.register("_prof_missing_df", pd.DataFrame({"id": [
+            r[0] for r in con.execute("SELECT DISTINCT id FROM _mem").fetchall() if r[0] not in have]}))
+        con.execute("CREATE OR REPLACE TEMP TABLE _prof_missing AS SELECT * FROM _prof_missing_df")
+        con.unregister("_prof_missing_df")
+        batch = older[at:at + older_batch]
+        found = _read_profile_objects(con, batch, "_prof_missing")
+        stats["older_objects_read"] += len(batch)
+        stats["found_in_older"] += len(found)
+        parts.append(found)
+        have |= set(found["id"])
+    out = pd.concat([p for p in parts if not p.empty], ignore_index=True) if any(
+        not p.empty for p in parts) else frame
+    stats["without_profile"] = max(members - len(have), 0)
+    out.attrs["profile_read"] = stats
+    log.info("profiles: %s", stats)
+    return out
 
 
 def read_kenya(con: duckdb.DuckDBPyConnection, ids: list[str]) -> pd.DataFrame:
@@ -405,6 +459,9 @@ class Inputs:
     text_evidence: eb.TextEvidence | None
     denylist: set[str]
     now: datetime
+    topic_fit: dict | None = None
+    topic_reason: str | None = None
+    coverage_sources: dict[str, str] | None = None
 
 
 def apply_denylist(daily: eb.Daily, corpus: eb.Corpus, deny: set[str]) -> set[str]:
@@ -457,6 +514,7 @@ def assemble(inp: Inputs) -> eb.Bundle:
             handles[uid] = h if isinstance(h, str) and h else uid
             missing += 1
     bundle.stats["members_without_profile_handle"] = missing
+    bundle.stats["profile_read"] = dict(profiles.attrs.get("profile_read", {}))
 
     cid_of = dict(zip(members["user_id"], members["community"].astype(int)))
     kept_edges = eb.edge_tables(daily.edges, cid_of)
@@ -481,6 +539,16 @@ def assemble(inp: Inputs) -> eb.Bundle:
     bundle.extra_authors |= amplified
 
     files.update(eb.build_community_details(stamp, members, rows, handles, kenya, corpus, index))
+    topics_ok = False
+    if inp.topic_fit is not None:
+        try:
+            files.update(explorer_topics.build_topics(stamp, corpus, inp.topic_fit))
+            topics_ok = True
+        except explorer_topics.TopicsUnavailable as exc:
+            log.warning("topics: %s", exc)
+            bundle.unavailable.append({"view": "topic_index", "reason": REASON_TOPICS})
+    else:
+        bundle.unavailable.append({"view": "topic_index", "reason": inp.topic_reason or REASON_TOPICS})
     files["communities.json"] = {
         "kind": "community_index", "stamp": stamp,
         "communities": [rows[c] for c in sorted(rows)]}
@@ -491,8 +559,22 @@ def assemble(inp: Inputs) -> eb.Bundle:
     bundle.extra_authors |= tag_authors
     files["links/index.json"] = eb.build_links(stamp, corpus)
 
+    coverage = None
+    if inp.coverage_sources is not None:
+        coverage, failed = explorer_topics.build_coverage(stamp, corpus, sources=inp.coverage_sources)
+        if failed:
+            bundle.stats["coverage_stages_unreadable"] = failed
+        if coverage["stages"]:
+            files["time/coverage.json"] = coverage
+        else:
+            bundle.unavailable.append({"view": "time_coverage", "reason": REASON_COVERAGE})
+            coverage = None
+    else:
+        bundle.unavailable.append({"view": "time_coverage", "reason": REASON_COVERAGE})
+
     totals = corpus.totals()
-    files["overview.json"] = eb.build_overview(stamp, daily, rows, members, kept_edges, totals, inp.post_rows)
+    files["overview.json"] = eb.build_overview(
+        stamp, daily, rows, members, kept_edges, totals, inp.post_rows, coverage)
     files["time/pipeline.json"] = eb.build_pipeline(stamp, daily.runs)
 
     if inp.collection is not None:
@@ -506,8 +588,13 @@ def assemble(inp: Inputs) -> eb.Bundle:
     cur = eb.communities_of(daily.members, daily.communities, deny)
     files["time/changes.json"] = eb.build_changes(stamp, cur, inp.previous, deny, lineages)
 
+    for rel, piece in explorer_slices.build_slices(
+            corpus, members, kept_edges, handles, profiles, rows, corpus.per_author()).items():
+        bundle.blobs[rel] = (piece.data, piece.rows)
+    bundle.stats["slices_bytes"] = sum(len(d) for d, _ in bundle.blobs.values())
+
     bundle.files = files
-    bundle.unavailable = [dict(u) for u in UNAVAILABLE] + bundle.unavailable
+    bundle.stats["topics"] = topics_ok
     bundle.members = set(members["user_id"])
     bundle.stats.update({
         "accounts": len(members), "communities_kept": len(kept_cids),
@@ -536,6 +623,11 @@ def stage(bundle: eb.Bundle, run: dict, root: Path, previous_runs: list[dict],
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         meta[rel] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    for rel, (data, rows) in sorted(bundle.blobs.items()):
+        path = base / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        meta[rel] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "rows": rows}
     end = str(run["window_end"])[:10]
     this = {"run_id": run_id, "window_id": str(run["window_id"]), "window_end": end,
             "computed_at": eb.iso(run["computed_at"])}
@@ -561,10 +653,7 @@ def assert_explorer_safe(root: Path, bundle: eb.Bundle, denylist: set[str]) -> N
     community or an author deliberately quoted as evidence."""
     problems: list[str] = []
     validator = load_contract_module("validate_bundle")
-    for line in validator.validate_bundle(root, denylist):
-        if re.search(r"/tags/[^/]+$", line) and "forbidden field name" in line:
-            continue
-        problems.append(line)
+    problems += validator.validate_bundle(root, denylist)
 
     linter = load_contract_module("lint_language")
     allow = linter.load_allowlist(CONTRACT_DIR / "lint-allowlist.json")
@@ -615,7 +704,7 @@ def _id_problems(rel: str, doc: Any, members: set[str], allowed: set[str]) -> li
 def size_report(root: Path) -> dict:
     """Raw and gzip bytes per top-level group and in total."""
     groups: dict[str, dict] = defaultdict(lambda: {"files": 0, "raw": 0, "gzip": 0})
-    for path in sorted((root / PREFIX).rglob("*.json")):
+    for path in sorted(p for p in (root / PREFIX).rglob("*") if p.suffix in (".json", ".parquet")):
         rel = path.relative_to(root / PREFIX)
         if rel.parts[0] != "runs":
             continue
@@ -678,7 +767,9 @@ def publish(root: Path, manifest: dict, *, bucket: str, client, run_id: str) -> 
     def put(path: Path) -> None:
         key = f"{PREFIX}/runs/{run_id}/{path.relative_to(base).as_posix()}"
         client.put_object(Bucket=bucket, Key=key, Body=path.read_bytes(),
-                          ContentType="application/json", CacheControl=RUN_FILE_CACHE)
+                          ContentType=("application/vnd.apache.parquet" if path.suffix == ".parquet"
+                                       else "application/json"),
+                          CacheControl=RUN_FILE_CACHE)
 
     with ThreadPoolExecutor(UPLOAD_THREADS) as pool:
         list(pool.map(put, files))
@@ -784,12 +875,20 @@ def run(
             con, manifest_df, start, float(run_row["text_threshold"]),
             float(run_row["text_overlap"]))
 
+    topic_fit, topic_reason = None, None
+    try:
+        topic_fit = timed("topics_s", lambda: explorer_topics.load_topic_rows(corpus))
+    except explorer_topics.TopicsUnavailable as exc:
+        topic_reason = REASON_TOPICS
+        log.warning("topics unavailable: %s", exc)
+
     inp = Inputs(
         daily=daily, profiles_for=lambda: timed("profiles_s", lambda: read_profiles(con, start)),
         kenya_for=lambda ids: timed("kenya_s", lambda: read_kenya(con, ids)),
         corpus=corpus, post_rows=post_rows, trend=trend, collection=collection,
         control_arm=control_arm, previous=previous, text_evidence=text_reader,
-        denylist=denylist, now=now,
+        denylist=denylist, now=now, topic_fit=topic_fit, topic_reason=topic_reason,
+        coverage_sources=explorer_topics.stage_sources(),
     )
     bundle = timed("assemble_s", lambda: assemble(inp))
 

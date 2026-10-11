@@ -32,9 +32,9 @@ import logging
 import duckdb
 import numpy as np
 import pandas as pd
-from scipy import sparse
 
 from kma import coord2
+from kma.families import hub_families
 from kma.coordination import _latest_posts_cte
 from kma.db import embeddings_source, engagements_source, hatespeech_source
 
@@ -170,26 +170,6 @@ def shared_objects(
     ).df()
 
 
-def _hub_families(rows: np.ndarray, cols: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
-    """Family label per post and a mask of posts that sit in a pair. Each post
-    belongs to at most one family: the one its highest-degree partner claimed."""
-    graph = sparse.coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(n, n)).tocsr()
-    graph = ((graph + graph.T) > 0).tocsr()
-    degree = np.asarray(graph.sum(axis=1)).ravel()
-    labels = np.full(n, -1)
-    for hub in np.lexsort((np.arange(n), -degree)):
-        if degree[hub] == 0:
-            break
-        if labels[hub] >= 0:
-            continue
-        partners = graph.indices[graph.indptr[hub] : graph.indptr[hub + 1]]
-        labels[hub] = hub
-        labels[partners[labels[partners] < 0]] = hub
-    linked = degree > 0
-    labels[~linked] = np.arange(n)[~linked]
-    return labels, linked
-
-
 def near_duplicate_families(
     posts: pd.DataFrame,
     vectors: np.ndarray,
@@ -234,7 +214,7 @@ def near_duplicate_families(
     if len(rows) == 0:
         return pd.DataFrame(columns=FAMILY_COLUMNS)
 
-    labels, linked = _hub_families(rows, cols, len(posts))
+    labels, linked = hub_families(rows, cols, len(posts))
 
     families = (
         posts.assign(family=labels)[linked]

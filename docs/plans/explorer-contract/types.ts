@@ -179,6 +179,10 @@ export interface CommunityRow {
   kept: boolean;
   listed?: number;
   /**
+   * null when the run did not compute it
+   */
+  template?: TemplateText | null;
+  /**
    * @maxItems 10
    */
   top_hashtags?:
@@ -203,6 +207,25 @@ export interface CommunityRow {
     | [DomainCount, DomainCount, DomainCount]
     | [DomainCount, DomainCount, DomainCount, DomainCount]
     | [DomainCount, DomainCount, DomainCount, DomainCount, DomainCount];
+}
+/**
+ * Advisory, per community and only for kept ones: how much of the members' own wording is a frame several different accounts also wrote (kma.template_spam). `label` is null when no frame dominates, `template` when most posts share one, `template_promo` when the shared frame is promotional vocabulary. Not a statement about any account.
+ */
+export interface TemplateText {
+  label: null | "template" | "template_promo";
+  /**
+   * share of eligible posts whose word shingles are mostly shared with at least 3 different accounts
+   */
+  rate: number;
+  /**
+   * share of those template posts using promotional vocabulary
+   */
+  promo_rate: number;
+  /**
+   * the community's own posts with at least 4 words: the denominator of rate
+   */
+  eligible_posts: number;
+  authors: number;
 }
 export interface TagCount {
   tag: string;
@@ -2099,7 +2122,10 @@ export interface HashtagIndex {
     tag: string;
     recent_rate: number;
     prior_rate: number;
-    emergence: number;
+    /**
+     * recent rate over prior rate; null when the prior rate is zero (the tag was not seen before: new)
+     */
+    emergence: number | null;
     posts: number;
     censused?: boolean;
   }[];
@@ -2173,14 +2199,39 @@ export interface TopicIndex {
     noise_share: number;
     params: string;
     /**
-     * how posts after fitted_at are placed, with its similarity cut
+     * how posts after fitted_at are placed (nearest fitted posts, kNN), with its parameters
      */
     assignment?: string;
+    /**
+     * posts in the whole topics/ table placed by kNN rather than by the fit
+     */
+    knn_posts?: number;
+    /**
+     * distinct window posts carrying any topic row, noise included: the denominator of every topic share in this run
+     */
+    window_posts?: number;
+    window_noise_posts?: number;
+    /**
+     * topics in this index; the rest, ranked by window posts, are left out
+     */
+    listed_topics?: number;
   };
   topics: {
     tid: number;
+    /**
+     * first three c-TF-IDF terms
+     */
+    name?: string;
+    /**
+     * top c-TF-IDF terms of the topic's window posts
+     */
     terms: string[];
     posts_in_window: number;
+    fit_posts_in_window?: number;
+    /**
+     * of posts_in_window, placed by nearest fitted posts (assignment_method knn); the rest were placed by the fit
+     */
+    knn_posts_in_window?: number;
     accounts_in_window?: number;
     /**
      * posts per day over the window, in window order
@@ -2195,7 +2246,15 @@ export interface TopicDetail {
   kind: "topic_detail";
   stamp: Stamp;
   tid: number;
+  name?: string;
   terms: string[];
+  posts_in_window?: number;
+  fit_posts_in_window?: number;
+  knn_posts_in_window?: number;
+  /**
+   * posts per day over the window, in window order
+   */
+  daily?: number[];
   /**
    * @maxItems 10
    */
@@ -2212,7 +2271,7 @@ export interface TopicDetail {
     | [PostRef, PostRef, PostRef, PostRef, PostRef, PostRef, PostRef, PostRef, PostRef]
     | [PostRef, PostRef, PostRef, PostRef, PostRef, PostRef, PostRef, PostRef, PostRef, PostRef];
   /**
-   * topic mass by community: posts in this topic by members of each kept community, and that community's total posts for the denominator
+   * topic mass by community: posts in this topic by members of each kept community, and the posts by that community's members in the window that carry any topic row (noise included) as the denominator. A share of the topic-assigned subset, not of the community's posts
    */
   communities: {
     cid: number;
@@ -2304,8 +2363,12 @@ export interface TimeCoverage {
   kind: "time_coverage";
   stamp: Stamp;
   denominator_posts: number;
+  /**
+   * what the denominator counts and what covered means; shown beside the numbers
+   */
+  basis?: string;
   stages: {
-    stage: "embeddings" | "relevance" | "hatespeech" | "incitement" | "labels";
+    stage: "embeddings" | "relevance" | "hatespeech" | "incitement" | "topics" | "labels";
     covered_posts: number;
     latest_dt?: string | null;
   }[];

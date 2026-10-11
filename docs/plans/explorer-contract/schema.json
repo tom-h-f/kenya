@@ -163,8 +163,20 @@
         "relevance_scored": {"type": "boolean"},
         "kept": {"type": "boolean", "description": "false = below the relevance floor. Dropped communities are listed with counts only; no members, graph or accounts are exported for them."},
         "listed": {"type": "integer"},
+        "template": {"oneOf": [{"$ref": "#/$defs/TemplateText"}, {"type": "null"}], "description": "null when the run did not compute it"},
         "top_hashtags": {"type": "array", "items": {"$ref": "#/$defs/TagCount"}, "maxItems": 10},
         "top_domains": {"type": "array", "items": {"$ref": "#/$defs/DomainCount"}, "maxItems": 5}
+      }, "additionalProperties": false
+    },
+    "TemplateText": {
+      "description": "Advisory, per community and only for kept ones: how much of the members' own wording is a frame several different accounts also wrote (kma.template_spam). `label` is null when no frame dominates, `template` when most posts share one, `template_promo` when the shared frame is promotional vocabulary. Not a statement about any account.",
+      "type": "object", "required": ["label", "rate", "promo_rate", "eligible_posts", "authors"],
+      "properties": {
+        "label": {"enum": [null, "template", "template_promo"]},
+        "rate": {"type": "number", "description": "share of eligible posts whose word shingles are mostly shared with at least 3 different accounts"},
+        "promo_rate": {"type": "number", "description": "share of those template posts using promotional vocabulary"},
+        "eligible_posts": {"type": "integer", "description": "the community's own posts with at least 4 words: the denominator of rate"},
+        "authors": {"type": "integer"}
       }, "additionalProperties": false
     },
     "TagCount": {"type": "object", "required": ["tag", "posts", "accounts"], "properties": {"tag": {"type": "string"}, "posts": {"type": "integer"}, "accounts": {"type": "integer"}}, "additionalProperties": false},
@@ -320,7 +332,7 @@
         "tags": {"type": "array", "items": {"type": "object", "required": ["tag", "posts", "accounts", "shard"],
           "properties": {"tag": {"type": "string"}, "posts": {"type": "integer"}, "accounts": {"type": "integer"}, "shard": {"type": "integer"}, "first_seen": {"type": "string"}, "emerging": {"type": "boolean"}}, "additionalProperties": false}},
         "emerging": {"type": "array", "description": "from trend_candidates, latest run: tags whose recent rate exceeds the prior rate in the control arm", "items": {"type": "object", "required": ["tag", "recent_rate", "prior_rate", "emergence", "posts"],
-          "properties": {"tag": {"type": "string"}, "recent_rate": {"type": "number"}, "prior_rate": {"type": "number"}, "emergence": {"type": "number"}, "posts": {"type": "integer"}, "censused": {"type": "boolean"}}, "additionalProperties": false}},
+          "properties": {"tag": {"type": "string"}, "recent_rate": {"type": "number"}, "prior_rate": {"type": "number"}, "emergence": {"type": ["number", "null"], "description": "recent rate over prior rate; null when the prior rate is zero (the tag was not seen before: new)"}, "posts": {"type": "integer"}, "censused": {"type": "boolean"}}, "additionalProperties": false}},
         "emerging_run": {"type": ["string", "null"]}
       }, "additionalProperties": false
     },
@@ -352,9 +364,9 @@
       "type": "object", "required": ["kind", "stamp", "fit", "topics"],
       "properties": {
         "kind": {"const": "topic_index"}, "stamp": {"$ref": "#/$defs/Stamp"},
-        "fit": {"type": "object", "required": ["fitted_at", "fit_posts", "topics", "noise_share", "params"], "properties": {"fitted_at": {"type": "string"}, "fit_posts": {"type": "integer"}, "topics": {"type": "integer"}, "noise_share": {"type": "number"}, "params": {"type": "string"}, "assignment": {"type": "string", "description": "how posts after fitted_at are placed, with its similarity cut"}}, "additionalProperties": false},
+        "fit": {"type": "object", "required": ["fitted_at", "fit_posts", "topics", "noise_share", "params"], "properties": {"fitted_at": {"type": "string"}, "fit_posts": {"type": "integer"}, "topics": {"type": "integer"}, "noise_share": {"type": "number"}, "params": {"type": "string"}, "assignment": {"type": "string", "description": "how posts after fitted_at are placed (nearest fitted posts, kNN), with its parameters"}, "knn_posts": {"type": "integer", "description": "posts in the whole topics/ table placed by kNN rather than by the fit"}, "window_posts": {"type": "integer", "description": "distinct window posts carrying any topic row, noise included: the denominator of every topic share in this run"}, "window_noise_posts": {"type": "integer"}, "listed_topics": {"type": "integer", "description": "topics in this index; the rest, ranked by window posts, are left out"}}, "additionalProperties": false},
         "topics": {"type": "array", "items": {"type": "object", "required": ["tid", "terms", "posts_in_window", "daily"],
-          "properties": {"tid": {"type": "integer"}, "terms": {"type": "array", "items": {"type": "string"}}, "posts_in_window": {"type": "integer"}, "accounts_in_window": {"type": "integer"},
+          "properties": {"tid": {"type": "integer"}, "name": {"type": "string", "description": "first three c-TF-IDF terms"}, "terms": {"type": "array", "items": {"type": "string"}, "description": "top c-TF-IDF terms of the topic's window posts"}, "posts_in_window": {"type": "integer"}, "fit_posts_in_window": {"type": "integer"}, "knn_posts_in_window": {"type": "integer", "description": "of posts_in_window, placed by nearest fitted posts (assignment_method knn); the rest were placed by the fit"}, "accounts_in_window": {"type": "integer"},
             "daily": {"type": "array", "items": {"type": "integer"}, "description": "posts per day over the window, in window order"}}, "additionalProperties": false}}
       }, "additionalProperties": false
     },
@@ -362,9 +374,12 @@
       "type": "object", "required": ["kind", "stamp", "tid", "terms", "examples", "communities"],
       "properties": {
         "kind": {"const": "topic_detail"}, "stamp": {"$ref": "#/$defs/Stamp"}, "tid": {"type": "integer"},
+        "name": {"type": "string"},
         "terms": {"type": "array", "items": {"type": "string"}},
+        "posts_in_window": {"type": "integer"}, "fit_posts_in_window": {"type": "integer"}, "knn_posts_in_window": {"type": "integer"},
+        "daily": {"type": "array", "items": {"type": "integer"}, "description": "posts per day over the window, in window order"},
         "examples": {"type": "array", "items": {"$ref": "#/$defs/PostRef"}, "maxItems": 10},
-        "communities": {"type": "array", "description": "topic mass by community: posts in this topic by members of each kept community, and that community's total posts for the denominator", "items": {"type": "object", "required": ["cid", "posts", "community_posts"], "properties": {"cid": {"type": "integer"}, "posts": {"type": "integer"}, "community_posts": {"type": "integer"}}, "additionalProperties": false}},
+        "communities": {"type": "array", "description": "topic mass by community: posts in this topic by members of each kept community, and the posts by that community's members in the window that carry any topic row (noise included) as the denominator. A share of the topic-assigned subset, not of the community's posts", "items": {"type": "object", "required": ["cid", "posts", "community_posts"], "properties": {"cid": {"type": "integer"}, "posts": {"type": "integer"}, "community_posts": {"type": "integer"}}, "additionalProperties": false}},
         "hashtags": {"type": "array", "items": {"$ref": "#/$defs/TagCount"}, "maxItems": 10},
         "flags": {"type": "object", "description": "AGGREGATE ONLY and only if Tom approves (open question 2): within-topic share of posts the hate classifier flags, with scored-post denominator and the scope it is computed within. Absent otherwise. Never per account, never per community.",
           "required": ["scope", "scored_posts", "flagged_posts"], "properties": {"scope": {"enum": ["baseline", "control"]}, "scored_posts": {"type": "integer"}, "flagged_posts": {"type": "integer"}, "model": {"type": "string"}, "threshold_note": {"type": "string"}}, "additionalProperties": false}
@@ -391,11 +406,12 @@
       }, "additionalProperties": false
     },
     "TimeCoverage": {
-      "description": "Share of the window's distinct posts each enrichment stage has covered. Denominator = distinct posts in the window with text.",
+      "description": "Share of the window's distinct posts each enrichment stage has covered. Denominator = distinct non-repost posts in the window with text.",
       "type": "object", "required": ["kind", "stamp", "denominator_posts", "stages"],
       "properties": {
         "kind": {"const": "time_coverage"}, "stamp": {"$ref": "#/$defs/Stamp"}, "denominator_posts": {"type": "integer"},
-        "stages": {"type": "array", "items": {"type": "object", "required": ["stage", "covered_posts"], "properties": {"stage": {"enum": ["embeddings", "relevance", "hatespeech", "incitement", "labels"]}, "covered_posts": {"type": "integer"}, "latest_dt": {"type": ["string", "null"]}}, "additionalProperties": false}}
+        "basis": {"type": "string", "description": "what the denominator counts and what covered means; shown beside the numbers"},
+        "stages": {"type": "array", "items": {"type": "object", "required": ["stage", "covered_posts"], "properties": {"stage": {"enum": ["embeddings", "relevance", "hatespeech", "incitement", "topics", "labels"]}, "covered_posts": {"type": "integer"}, "latest_dt": {"type": ["string", "null"]}}, "additionalProperties": false}}
       }, "additionalProperties": false
     },
     "Changes": {

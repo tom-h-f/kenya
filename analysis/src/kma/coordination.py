@@ -397,11 +397,12 @@ def content_clusters(
     model: str = MODEL,
     tau: float = 0.9,
 ) -> pd.DataFrame:
-    """Near-duplicate content clusters: connected components of the cosine >= tau
-    graph over post embeddings. Returns (platform_post_id, cluster_id) for posts
-    in components of size >= 2; these are the text_sim action objects."""
-    from scipy.sparse.csgraph import connected_components
-    from sklearn.neighbors import radius_neighbors_graph
+    """Near-duplicate content clusters: hub-star families of the cosine >= tau
+    graph over post embeddings (`kma.families`; a connected component chains
+    topic-similar posts into one cluster). Returns (platform_post_id,
+    cluster_id) for posts in families of size >= 2; these are the text_sim
+    action objects."""
+    from kma.families import cosine_hub_families
 
     df = con.sql(
         f"""
@@ -420,10 +421,7 @@ def content_clusters(
     if df.empty:
         return pd.DataFrame(columns=["platform_post_id", "cluster_id"])
     x = np.asarray(df["embedding"].tolist(), dtype="float32")
-    # embeddings are L2-normalised: cosine >= tau <=> euclidean <= sqrt(2 - 2 tau)
-    g = radius_neighbors_graph(x, radius=float(np.sqrt(2 - 2 * tau)), mode="connectivity")
-    _, labels = connected_components(g, directed=False)
-    df["cluster_id"] = labels
+    df["cluster_id"] = cosine_hub_families(x, tau)
     sizes = df["cluster_id"].value_counts()
     df = df[df["cluster_id"].isin(sizes[sizes >= 2].index)]
     return df[["platform_post_id", "cluster_id"]].reset_index(drop=True)

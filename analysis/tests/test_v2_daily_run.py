@@ -20,6 +20,8 @@ from kma import canary, coord2, coord2_communities, coord2_run, embed_window, te
 from kma import v2_daily_run
 from kma import window, windowed
 
+NO_POSTS = ("SELECT CAST(NULL AS VARCHAR) AS user_id, CAST(NULL AS BOOLEAN) AS is_retweet, "
+            "CAST(NULL AS VARCHAR) AS text WHERE false")
 GAUGE = "kma_v2_daily_last_success_timestamp_seconds"
 
 
@@ -57,7 +59,7 @@ def stages(monkeypatch):
         calls["snapshot"].append(kw)
         nets = _networks()
         sizes = pd.DataFrame([{"trace": t, "edges": len(e)} for t, e in nets.items()])
-        return nets, sizes, "SELECT 1"
+        return nets, sizes, NO_POSTS
 
     def kenya(con, view, ids, **kw):
         return pd.DataFrame({"user_id": ids, "posts": 10, "scored": 10, "kenya_model": 1.0}

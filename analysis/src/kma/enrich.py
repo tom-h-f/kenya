@@ -57,6 +57,17 @@ BUSY_COOLDOWN_S = int(os.getenv("ENRICH_BUSY_COOLDOWN_S", "45"))
 IDLE_MIN_S = int(os.getenv("ENRICH_IDLE_MIN_S", "600"))
 IDLE_MAX_S = int(os.getenv("ENRICH_IDLE_MAX_S", "1200"))
 
+_OFF = {"0", "false", "no", "off"}
+
+
+def incitement_enabled() -> bool:
+    """`ENRICH_INCITEMENT=0` turns the incitement pass off for this worker.
+
+    Where a GPU job scores incitement (mike-pc via the pi0 cron), the CPU
+    worker's pass only races it: two writers scored the same 1,000 posts on
+    2026-10-10. Anything but an explicit off value leaves the pass on."""
+    return os.getenv("ENRICH_INCITEMENT", "1").strip().lower() not in _OFF
+
 
 def run_once(
     limit: int | None = BATCH_LIMIT,
@@ -200,7 +211,9 @@ def main() -> None:
     )
     args = ap.parse_args()
     embed, classify, hate = not args.no_embed, not args.no_classify, not args.no_hate
-    incitement = not args.no_incitement
+    incitement = not args.no_incitement and incitement_enabled()
+    if not incitement and not args.once:
+        log.warning("incitement pass disabled (--no-incitement or ENRICH_INCITEMENT=0)")
     if args.once:
         counts = run_once(args.limit, args.batch_size, embed, classify, hate, incitement)
         print(f"enriched: {counts}")
