@@ -14,6 +14,10 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+
+from kma.families import hub_families
+
 HERE = Path(__file__).parent
 BUNDLE = HERE / "out" / "bundle"
 PACKETS = HERE / "out" / "packets"
@@ -23,21 +27,6 @@ FAMILY_TOP = 20
 SEED = 0
 COPY_JACCARD = 0.6
 NOISE = re.compile(r"https?://\S+|@\w+")
-
-
-class UnionFind:
-    def __init__(self) -> None:
-        self.parent: dict[str, str] = {}
-
-    def find(self, x: str) -> str:
-        self.parent.setdefault(x, x)
-        while self.parent[x] != x:
-            self.parent[x] = self.parent[self.parent[x]]
-            x = self.parent[x]
-        return x
-
-    def union(self, a: str, b: str) -> None:
-        self.parent[self.find(a)] = self.find(b)
 
 
 def load(kind: str, cid: int) -> dict:
@@ -69,17 +58,26 @@ def text_pairs(evidence: dict) -> list[tuple[str, str, float, str]]:
 
 
 def families(evidence: dict, pairs: list) -> dict[str, dict]:
-    """Components of the pairs whose word sets overlap at least COPY_JACCARD: literal near-copies only."""
+    """Hub-star families of the pairs whose word sets overlap at least COPY_JACCARD: literal near-copies only.
+
+    Not connected components: a chain of near-copies would merge into one family. Every member is a
+    direct near-copy of the family's hub (kma.families)."""
     pairs = [p for p in pairs if jaccard(evidence["posts"][p[0]]["text"], evidence["posts"][p[1]]["text"]) >= COPY_JACCARD]
-    uf = UnionFind()
-    for a, b, _, _ in pairs:
-        uf.union(a, b)
+    ids = sorted({p for a, b, _, _ in pairs for p in (a, b)})
+    index = {p: i for i, p in enumerate(ids)}
+    labels, _ = hub_families(
+        np.array([index[a] for a, _, _, _ in pairs], dtype=int),
+        np.array([index[b] for _, b, _, _ in pairs], dtype=int),
+        len(ids),
+    )
+    root_of = {p: ids[labels[index[p]]] for p in ids}
     members: dict[str, set[str]] = defaultdict(set)
-    for a, b, _, _ in pairs:
-        members[uf.find(a)].update((a, b))
+    for p in ids:
+        members[root_of[p]].add(p)
+    members = {root: posts for root, posts in members.items() if len(posts) > 1}
+    pairs = [p for p in pairs if root_of[p[0]] == root_of[p[1]]]
     out = {}
-    degree = Counter(p for a, b, _, _ in pairs for p in (a, b))
-    pair_count = Counter(uf.find(a) for a, _, _, _ in pairs)
+    pair_count = Counter(root_of[a] for a, _, _, _ in pairs)
     for root, posts in members.items():
         records = [evidence["posts"][p] for p in posts]
         times = sorted(parse(r["created_at"]) for r in records)
@@ -91,7 +89,7 @@ def families(evidence: dict, pairs: list) -> dict[str, dict]:
             "last": times[-1].isoformat(),
             "span_hours": round((times[-1] - times[0]).total_seconds() / 3600, 1),
             "pairs": pair_count[root],
-            "hub": max(posts, key=lambda p: degree[p]),
+            "hub": root,
         }
     return out
 
