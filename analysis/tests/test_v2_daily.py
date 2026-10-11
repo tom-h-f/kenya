@@ -105,6 +105,7 @@ def _uri(root):
 
 
 def _rank(tmp_path, **kw):
+    kw.setdefault("templates", False)
     sizes = pd.DataFrame([{"trace": t, "edges": len(e)} for t, e in _networks().items()])
     return v2_daily.rank(
         duckdb.connect(), window.Window(date(2026, 9, 21), 90), relevance=False,
@@ -244,7 +245,59 @@ def test_rank_hands_the_trace_sink_to_snapshot_networks(tmp_path, monkeypatch):
 
     monkeypatch.setattr(v2_daily.coord2_run, "snapshot_networks", fake)
     result = v2_daily.rank(duckdb.connect(), window.Window(date(2026, 9, 21), 90), relevance=False,
-                           uri=_uri(tmp_path), now=datetime(2026, 9, 22, 3, 30, tzinfo=timezone.utc))
+                           templates=False, uri=_uri(tmp_path), now=datetime(2026, 9, 22, 3, 30, tzinfo=timezone.utc))
     traces = pd.read_parquet(tmp_path / result.keys["traces"])
     assert sorted(traces["user_id"]) == ["k0", "k1"]
     assert seen["sink"] == {}
+
+
+def _template_posts() -> pd.DataFrame:
+    frame = "use my code for a big discount on your first order at the shop today only"
+    rows = [{"user_id": f"k{i}", "post_id": f"t{i}", "is_retweet": False,
+             "text": f"{['wow', 'yes', 'look', 'hey', 'now', 'see', 'go', 'ok'][i]} {frame}"}
+            for i in range(8)]
+    rows += [{"user_id": f"o{i}", "post_id": f"p{i}", "is_retweet": False,
+              "text": t} for i, t in enumerate([
+        "the county budget debate went on past midnight again",
+        "fuel prices are the only thing anyone talks about at the matatu stage",
+        "who is funding the new bypass and why was there no tender",
+        "teachers strike enters its third week with no deal in sight",
+        "my brother says the harvest was poor in the highlands this year",
+        "the senate committee will hear from the auditor general on monday",
+        "nobody asked residents whether they wanted the market moved",
+        "the river is flooding again and the bridge is still not fixed"])]
+    rows.append({"user_id": "k0", "post_id": "rt", "is_retweet": True, "text": frame})
+    return pd.DataFrame(rows)
+
+
+def test_rank_flags_a_template_community_and_only_kept_ones(tmp_path):
+    con = duckdb.connect()
+    con.register("_posts", _template_posts())
+    sizes = pd.DataFrame([{"trace": t, "edges": len(e)} for t, e in _networks().items()])
+    result = v2_daily.rank(
+        con, window.Window(date(2026, 9, 21), 90), relevance=False,
+        networks=(_networks(), sizes, "SELECT * FROM _posts"), uri=_uri(tmp_path),
+        now=datetime(2026, 9, 22, 3, 30, tzinfo=timezone.utc),
+    )
+    table = pd.read_parquet(tmp_path / result.keys["communities"])
+    members = pd.read_parquet(tmp_path / result.keys["members"])
+    k_cid = int(members.loc[members["user_id"] == "k0", "community"].iloc[0])
+    o_cid = int(members.loc[members["user_id"] == "o0", "community"].iloc[0])
+    by = table.set_index("community")
+    assert by.loc[k_cid, "template_label"] == "template_promo"
+    assert by.loc[k_cid, "template_rate"] == 1.0
+    assert by.loc[k_cid, "template_authors"] == 8
+    assert pd.isna(by.loc[o_cid, "template_label"])
+    assert by.loc[o_cid, "template_rate"] == 0.0
+
+
+def test_a_dropped_community_has_no_template_columns_filled(tmp_path):
+    con = duckdb.connect()
+    con.register("_posts", _template_posts())
+    communities = pd.DataFrame({"community": [1, 2], "kept": [True, False]})
+    members = pd.DataFrame({"user_id": [f"k{i}" for i in range(8)] + ["o0"],
+                            "community": [1] * 8 + [2]})
+    out = v2_daily.with_template_flags(con, "SELECT * FROM _posts", members, communities)
+    dropped = out[out["community"] == 2].iloc[0]
+    assert pd.isna(dropped["template_label"]) and pd.isna(dropped["template_eligible"])
+    assert out[out["community"] == 1].iloc[0]["template_label"] == "template_promo"
