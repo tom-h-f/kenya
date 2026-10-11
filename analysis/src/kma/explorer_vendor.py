@@ -5,7 +5,9 @@
 
 The wasm is 35.7 MB, over the 25 MiB a Workers asset may be, so the site serves it
 from `explorer/v1/vendor/` through its data route. Each file is stored under a name
-that carries the package version (`duckdb-eh-1.29.0.wasm`) with
+that carries the package version (`duckdb-eh-1.29.0.wasm`; the parquet extension, which
+DuckDB-WASM 1.29.0 (core 1.1.1) otherwise fetches from extensions.duckdb.org and the site's
+CSP does not allow, as `parquet.eh-1.1.1.wasm`) with
 `cache-control: public, max-age=31536000, immutable`, because a name that carries a
 version never changes in place. The pinned sha256 of every file is in
 `explorer/vendor.json`; a download that differs is refused, so an upgrade is a
@@ -38,7 +40,12 @@ def load_pin(path: Path = PIN_PATH) -> dict:
     return pin
 
 
-def target_name(source_name: str, version: str) -> str:
+def target_name(source_name: str, version: str, entry: dict | None = None) -> str:
+    """The versioned name a file is stored under. A pin entry may carry its own
+    `name` (the parquet extension must start with `parquet.` because DuckDB derives
+    its init symbol from the text before the first dot) and its own `version`."""
+    if entry and entry.get("name"):
+        return entry["name"]
     stem, dot, ext = source_name.rpartition(".")
     if source_name.endswith(".worker.js"):
         return f"{source_name[:-len('.js')]}-{version}.js"
@@ -55,7 +62,7 @@ def sync(client, bucket: str, pin: dict, *, download=fetch, check_only: bool = F
         raise ValueError(f"{bucket!r} is the raw data bucket; vendor files go to the dashboard bucket")
     out = []
     for source_name, expected in sorted(pin["files"].items()):
-        name = target_name(source_name, pin["version"])
+        name = target_name(source_name, pin["version"], expected)
         key = VENDOR_PREFIX + name
         try:
             head = client.head_object(Bucket=bucket, Key=key)
@@ -65,7 +72,8 @@ def sync(client, bucket: str, pin: dict, *, download=fetch, check_only: bool = F
             present, size = False, None
         entry = {"file": name, "key": key, "present": present, "bytes": size, "uploaded": False}
         if not present and not check_only:
-            data = download(pin["url"].format(version=pin["version"], file=source_name))
+            data = download(expected.get("url") or pin["url"].format(
+                version=pin["version"], file=source_name))
             digest = hashlib.sha256(data).hexdigest()
             if digest != expected["sha256"]:
                 raise ValueError(f"{source_name}: sha256 {digest} is not the pinned {expected['sha256']}")

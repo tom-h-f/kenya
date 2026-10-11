@@ -235,6 +235,8 @@ def test_the_pinned_files_are_the_ones_the_site_route_accepts():
     import re
     site_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.(?:wasm|js|mjs)$")
     pin = explorer_vendor.load_pin()
-    names = [explorer_vendor.target_name(n, pin["version"]) for n in pin["files"]]
+    names = [explorer_vendor.target_name(n, pin["version"], e) for n, e in pin["files"].items()]
     assert all(site_re.match(n) for n in names)
     assert "duckdb-eh-1.29.0.wasm" in names
+    assert "parquet.eh-1.1.1.wasm" in names and "parquet.mvp-1.1.1.wasm" in names
+    assert all(n.startswith("parquet.") for n in names if "parquet" in n)

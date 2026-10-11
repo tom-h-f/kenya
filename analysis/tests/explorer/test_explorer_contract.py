@@ -408,7 +408,8 @@ class TestLanguageLint:
 
     def test_user_content_skipped_unless_asked(self, tmp_path):
         f = tmp_path / "x.json"
-        write(f, {"text": "my bot is broken", "bio": "troll", "handle": "bot_fan", "label": "Community 01"})
+        write(f, {"text": "my bot is broken", "bio": "troll", "handle": "bot_fan", "label": "Community 01",
+                  "name": "facts fake true"})
         assert lint.lint_paths([f]) == []
         assert lint.lint_paths([f], include_user_content=True) != []
 
