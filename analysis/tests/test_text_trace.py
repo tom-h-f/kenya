@@ -94,6 +94,19 @@ def test_the_trace_lands_under_the_key_the_cloud_daily_looks_for(corpus, where):
     assert v2_daily.text_trace_exists(con, W.id, uri=where)
 
 
+def test_the_modal_stage_and_the_cloud_runner_agree_on_the_trace_key(corpus, where):
+    """The overlap is in the R2 key, so a stage that built at another floor than
+    the cloud runner looks for would leave the daily ranking without text."""
+    con = duckdb.connect()
+    _, info = text_trace.build(con, W.id, manifest=corpus, uri=where)
+    cloud_key = coord2_run.textsim_key(
+        W.id, v2_daily.TEXT_THRESHOLD, overlap=coord2.TEXT_MIN_OVERLAP)
+    assert "/overlap=0.45/" in cloud_key
+    assert info["r2_key"] == coord2_run.textsim_key(
+        W.id, v2_daily.TEXT_THRESHOLD, overlap=coord2.TEXT_MIN_OVERLAP, bucket="day")
+    assert v2_daily.text_trace_exists(con, W.id, uri=where)
+
+
 def test_the_pair_level_object_is_the_day_trace_aggregated(corpus, where):
     con = duckdb.connect()
     bucketed, info = text_trace.build(con, W.id, manifest=corpus, uri=where)

@@ -33,7 +33,6 @@ import duckdb
 import numpy as np
 import pandas as pd
 from scipy import sparse
-from scipy.sparse.csgraph import connected_components
 
 from kma import coord2
 from kma.coordination import _latest_posts_cte
@@ -171,6 +170,26 @@ def shared_objects(
     ).df()
 
 
+def _hub_families(rows: np.ndarray, cols: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Family label per post and a mask of posts that sit in a pair. Each post
+    belongs to at most one family: the one its highest-degree partner claimed."""
+    graph = sparse.coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(n, n)).tocsr()
+    graph = ((graph + graph.T) > 0).tocsr()
+    degree = np.asarray(graph.sum(axis=1)).ravel()
+    labels = np.full(n, -1)
+    for hub in np.lexsort((np.arange(n), -degree)):
+        if degree[hub] == 0:
+            break
+        if labels[hub] >= 0:
+            continue
+        partners = graph.indices[graph.indptr[hub] : graph.indptr[hub + 1]]
+        labels[hub] = hub
+        labels[partners[labels[partners] < 0]] = hub
+    linked = degree > 0
+    labels[~linked] = np.arange(n)[~linked]
+    return labels, linked
+
+
 def near_duplicate_families(
     posts: pd.DataFrame,
     vectors: np.ndarray,
@@ -187,7 +206,10 @@ def near_duplicate_families(
     (`coord2.text_overlap` on cleaned text) - without that second test most
     0.85 pairs on this corpus are unrelated Sheng replies, and the exhibit
     would show them as if they were copies. A family is a connected set of
-    pairs, so A~B and B~C is one family even when A and C sit below the cut.
+    pairs, by hub: the post with most partners claims every unclaimed post it is
+    paired with, so every member is a direct match of the family's hub. Not the
+    transitive component - on the text trace that chains topic-similar posts
+    into one 4,000-post "campaign" (measured 2026-10-11, community 0).
     One row per family, most members first, shown by its earliest post."""
     if len(posts) < 2:
         return pd.DataFrame(columns=FAMILY_COLUMNS)
@@ -212,11 +234,7 @@ def near_duplicate_families(
     if len(rows) == 0:
         return pd.DataFrame(columns=FAMILY_COLUMNS)
 
-    graph = sparse.coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(len(posts), len(posts)))
-    _, labels = connected_components(graph, directed=False)
-    linked = np.zeros(len(posts), dtype=bool)
-    linked[rows] = True
-    linked[cols] = True
+    labels, linked = _hub_families(rows, cols, len(posts))
 
     families = (
         posts.assign(family=labels)[linked]
