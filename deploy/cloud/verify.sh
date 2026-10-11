@@ -16,13 +16,15 @@ failed=0
 # Runs under the identity and environment the service has (tom, group debian,
 # /etc/kma/v2-daily.env), because the textfile directory is writable only through
 # that group: a plain shell would report a failure the timer will not have.
+# stdin is /dev/null so `--pipe` never waits on the caller's stdin (an ssh
+# session without a tty leaves it open).
 stage() {
   sudo systemd-run --pipe --wait --collect --quiet \
     -p User="$(id -un)" -p SupplementaryGroups=debian \
     -p EnvironmentFile=/etc/kma/v2-daily.env \
     -p WorkingDirectory="$repo/analysis" \
     "$uv" run --frozen --no-dev python -m kma.v2_daily_check "$1" \
-      --textfile-dir "$textfile" || failed=1
+      --textfile-dir "$textfile" </dev/null || failed=1
 }
 
 units() {

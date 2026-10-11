@@ -305,3 +305,29 @@ def test_the_verify_script_is_executable_and_runs_both_stages():
     text = script.read_text()
     assert "kma.v2_daily_check" in text
     assert "preflight)" in text and "postrun)" in text
+
+
+def test_verify_stages_do_not_forward_stdin():
+    text = (DEPLOY / "verify.sh").read_text()
+    stage = text[text.index("stage() {"):text.index("units() {")]
+    assert "</dev/null" in stage
+
+
+def test_r2_read_check_reads_one_object_not_the_whole_glob():
+    import duckdb
+    from kma import v2_daily_check as chk
+
+    seen = []
+
+    class Con:
+        def sql(self, q):
+            seen.append(q)
+            class R:
+                def fetchall(self): return [("r2://b/posts/x.parquet",)]
+                def fetchone(self): return (1,)
+            return R()
+
+    out = chk.check_r2_read(Con())
+    assert out.ok
+    assert "glob(" in seen[0] and "LIMIT 1" in seen[0]
+    assert "union_by_name" not in "".join(seen)

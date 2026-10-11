@@ -37,7 +37,7 @@ import pandas as pd
 import pyarrow as pa
 
 from kma.classify import STANCE_MODEL, _device, _pipe, _run
-from kma.db import BUCKET, connect, incitement_source, pending_posts, posts_source
+from kma.db import BUCKET, connect, drop_scored, incitement_source, pending_posts, posts_source
 
 # category -> lexicon entries. `pattern` is a case-insensitive regex fragment;
 # `fp_risk` marks terms with common innocent senses (mende = cockroach the
@@ -255,6 +255,12 @@ def score_new(
         df["text"].tolist(),
         nli_batch_size(batch_size),
     )
+    fresh = drop_scored(con, df, incitement_source(platform))
+    if fresh.empty:
+        return 0
+    keep = df["platform_post_id"].isin(set(fresh["platform_post_id"])).tolist()
+    by_label = [b for b, k in zip(by_label, keep) if k]
+    df = fresh
     now = datetime.now(timezone.utc)
     table = score_table(df, by_label, now)
     key = (

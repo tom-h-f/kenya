@@ -44,6 +44,7 @@ from kma.coordination import (
     _filter_clustering_posts,
     _original_posts_sql,
 )
+from kma.families import cosine_hub_families
 from kma.db import (
     BUCKET,
     embeddings_source,
@@ -421,7 +422,7 @@ def candidate_stories(
     model: str = MODEL,
     include_thin: bool = False,
 ) -> pd.DataFrame:
-    """Claim-level stories: connected components of the cosine >= tau graph over
+    """Claim-level stories: hub-star families (`kma.families`) of the cosine >= tau graph over
     recent post embeddings (same primitive as coordination.content_clusters, but
     joined to latest_posts and filtered to the last `days`, at a lower story-level
     tau). Retweets, same-author duplicate text and low-information posts (bare
@@ -433,9 +434,6 @@ def candidate_stories(
     Returns one row per member post: story_id, stable_story_id, author_id,
     author_handle, text, created_at, is_repost, hashtags, conversation_id,
     embedding. story_id is a contiguous 0..k index; stable_story_id is durable."""
-    from scipy.sparse.csgraph import connected_components
-    from sklearn.neighbors import radius_neighbors_graph
-
     keep_min = THIN_MIN_SIZE if include_thin else min_size
     cols = [
         "platform_post_id", "story_id", "stable_story_id", "author_id", "author_handle",
@@ -458,9 +456,7 @@ def candidate_stories(
     if df.empty:
         return pd.DataFrame(columns=cols)
     x = np.asarray(df["embedding"].tolist(), dtype="float32")
-    # embeddings are L2-normalised: cosine >= tau <=> euclidean <= sqrt(2 - 2 tau)
-    g = radius_neighbors_graph(x, radius=float(np.sqrt(2 - 2 * tau)), mode="connectivity")
-    _, labels = connected_components(g, directed=False)
+    labels = cosine_hub_families(x, tau)
     keep = _reject_chaining_blobs(x, labels, df["author_id"].to_numpy())
     if not keep.all():
         df = df[keep].copy()

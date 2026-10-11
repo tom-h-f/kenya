@@ -130,5 +130,6 @@ def test_score_new_runs_inference_at_the_capped_batch(monkeypatch):
     monkeypatch.setattr(incitement, "_pending", lambda *a, **k: df)
     monkeypatch.setattr(incitement, "_pipe", lambda *a, **k: object())
     monkeypatch.setattr(incitement, "_run", fake_run)
+    monkeypatch.setattr(incitement, "drop_scored", lambda con, frame, src: frame)
     assert incitement.score_new(Con(), limit=2, batch_size=64) == 2
     assert seen["batch_size"] == incitement.CPU_NLI_BATCH

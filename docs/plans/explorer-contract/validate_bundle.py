@@ -137,8 +137,17 @@ def check_schema_file(rel, doc, key, validators, rep):
     return not errs
 
 
-def check_forbidden_keys(rel, doc, rep):
+DATA_KEYED = {"hashtag_shard": re.compile(r"^/tags/[^/]+$")}
+"""Per file kind, the one place a key is a hashtag the author typed rather than a
+field name. The key itself is data and may spell any word; every key inside the
+value is still a field and is checked."""
+
+
+def check_forbidden_keys(rel, doc, rep, kind=None):
+    data_key = DATA_KEYED.get(kind)
     for path, key in walk_keys(doc):
+        if data_key and data_key.match(path):
+            continue
         if FORBIDDEN_KEY.search(key):
             rep.add(rel, f"forbidden field name {key!r} at {path}")
 
@@ -268,7 +277,7 @@ def validate_bundle(root: Path, denylist: set[str] | None = None) -> list[str]:
             continue
         doc = json.loads((root / rel).read_text())
         ok = check_schema_file(rel, doc, key, validators, rep)
-        check_forbidden_keys(rel, doc, rep)
+        check_forbidden_keys(rel, doc, rep, key)
         if ok and doc["stamp"]["run_id"] != run:
             rep.add(rel, f"stamp.run_id {doc['stamp']['run_id']} != path run {run}")
         if ok:
@@ -334,7 +343,7 @@ def check_run(run, files, manifest, root, rep, denylist):
     dropped = set(rows) - kept
     for cid in dropped:
         c = rows[cid]
-        if "top_hashtags" in c or "top_domains" in c:
+        if "top_hashtags" in c or "top_domains" in c or "template" in c:
             rep.add(idx_rel, f"dropped community {cid} carries content beyond counts")
     labels = [c["label"] for c in rows.values()]
     if len(set(labels)) != len(labels):

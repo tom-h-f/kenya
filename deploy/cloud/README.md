@@ -168,8 +168,11 @@ The explorer export after the daily peaked at 4,185 MB RSS and the cgroup
 reported 4,295,540,736 B against the former `MemoryMax=4G` (4,294,967,296 B): it passed
 with no margin, so raise `MemoryMax` if it is ever OOM-killed.
 
-`verify.sh` runs its stages through `systemd-run --pipe`, which does not exit
-when started over a non-interactive ssh; run it with `timeout` or from a tty.
+`verify.sh` runs its stages through `systemd-run --pipe` with stdin from `/dev/null`.
+Measured 2026-10-11 over non-interactive `ssh cloud`, with a held-open stdin: `postrun`
+returns in 5 s and `units` in under 1 s. The "hang" was `preflight`'s `r2 read`, which read
+the whole posts glob with `union_by_name` and took 3 min 38 s (a `timeout 120` killed
+it silent). It now lists and reads one object: 1.7 s.
 
 ## The gauge
 

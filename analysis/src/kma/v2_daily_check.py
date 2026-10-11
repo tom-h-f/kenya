@@ -104,12 +104,20 @@ def check_memory(available_gb: float | None, floor_gb: float = MEASURED_PEAK_GB)
 
 
 def check_r2_read(con: duckdb.DuckDBPyConnection) -> Check:
-    source = db.posts_source("x")
+    """One posts object is listed and read. Reading the whole `posts_source`
+    glob with `union_by_name` opens every file's footer and took 3.5 minutes on
+    the cloud host, which looked like a hung script; this takes about 2 s."""
+    pattern = f"r2://{db.BUCKET}/posts/platform=x/type=*/dt=*/run=*.parquet"
     try:
-        n = con.sql(f"SELECT count(*) FROM (SELECT 1 FROM {source} LIMIT 1)").fetchone()[0]
+        found = con.sql(f"SELECT file FROM glob('{pattern}') LIMIT 1").fetchall()
+        if not found:
+            return Check("r2 read", False, "posts prefix is empty")
+        n = con.sql(
+            f"SELECT count(*) FROM (SELECT 1 FROM read_parquet('{found[0][0]}') LIMIT 1)"
+        ).fetchone()[0]
     except duckdb.Error as exc:
         return Check("r2 read", False, str(exc).splitlines()[0][:160])
-    return Check("r2 read", n > 0, "posts readable" if n else "posts prefix is empty")
+    return Check("r2 read", n > 0, "posts readable" if n else "posts object is empty")
 
 
 def check_r2_write(client, bucket: str, prefixes=WRITE_PREFIXES) -> Check:

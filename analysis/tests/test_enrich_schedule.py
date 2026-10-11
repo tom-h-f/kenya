@@ -51,3 +51,27 @@ def test_a_disabled_pass_is_not_launched(passes):
     assert not any("--no-incitement" not in f for f in launched)
     assert len(launched) == len(enrich.PASSES) - 1
 
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, True), ("1", True), ("", True), ("yes", True),
+    ("0", False), ("false", False), (" OFF ", False), ("No", False),
+])
+def test_incitement_env_knob(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("ENRICH_INCITEMENT", raising=False)
+    else:
+        monkeypatch.setenv("ENRICH_INCITEMENT", value)
+    assert enrich.incitement_enabled() is expected
+
+
+def test_main_loop_honours_the_knob(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("ENRICH_INCITEMENT", "0")
+    monkeypatch.setattr(enrich, "run_loop", lambda *a, **k: seen.update(k))
+    monkeypatch.setattr(enrich.sys, "argv", ["enrich", "--loop"])
+    enrich.main()
+    assert seen["incitement"] is False
+    monkeypatch.delenv("ENRICH_INCITEMENT")
+    enrich.main()
+    assert seen["incitement"] is True

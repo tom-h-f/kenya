@@ -25,6 +25,7 @@ import re
 import unicodedata
 from dataclasses import asdict, dataclass
 
+import duckdb
 import numpy as np
 import pandas as pd
 
@@ -137,3 +138,52 @@ def classify(stats: TemplateStats) -> str | None:
     if stats.eligible < MIN_POSTS or stats.template_rate < TEMPLATE_RATE:
         return None
     return "template_promo" if stats.promo_rate >= PROMO_RATE else "template"
+
+
+FLAG_COLUMNS = (
+    "template_label", "template_rate", "template_promo_rate", "template_link_rate",
+    "template_eligible", "template_authors",
+)
+
+
+def member_posts(
+    con: duckdb.DuckDBPyConnection, view: str, user_ids: list[str]
+) -> pd.DataFrame:
+    """(user_id, text) of the given accounts' own posts in a `coord2.posts_view`
+    relation: reposts and empty texts excluded, ids as strings."""
+    con.register("_tpl_users", pd.DataFrame({"user_id": [str(u) for u in user_ids]}))
+    try:
+        return con.sql(
+            f"""SELECT CAST(v.user_id AS VARCHAR) AS user_id, v.text
+                FROM ({view}) v JOIN _tpl_users u ON u.user_id = CAST(v.user_id AS VARCHAR)
+                WHERE NOT coalesce(v.is_retweet, false) AND v.text IS NOT NULL"""
+        ).df()
+    finally:
+        con.unregister("_tpl_users")
+
+
+def community_flags(
+    members: pd.DataFrame, posts: pd.DataFrame, *, seed: int = 0
+) -> pd.DataFrame:
+    """One row per community in `members` (user_id, community): the template
+    statistics over its members' own posts and the advisory label.
+
+    `template_label` is null for a community with no flag. A community whose
+    members have no eligible post gets `template_eligible` 0 and no label, which
+    `classify` already treats as "too little text to say"."""
+    owners = members.assign(user_id=members["user_id"].astype(str))[["user_id", "community"]]
+    joined = posts.assign(user_id=posts["user_id"].astype(str)).merge(owners, on="user_id")
+    rows = []
+    for cid in sorted(owners["community"].unique()):
+        own = joined[joined["community"] == cid]
+        stats = template_stats(own[["user_id", "text"]], seed=seed)
+        rows.append({
+            "community": int(cid),
+            "template_label": classify(stats),
+            "template_rate": stats.template_rate,
+            "template_promo_rate": stats.promo_rate,
+            "template_link_rate": stats.link_rate,
+            "template_eligible": stats.eligible,
+            "template_authors": stats.authors,
+        })
+    return pd.DataFrame(rows, columns=["community", *FLAG_COLUMNS])

@@ -238,12 +238,14 @@ cd "\$B/repo"
 git fetch -q origin
 git checkout -q -B "$REF" "origin/$REF"
 cp deploy/mike/incitement/pyproject.toml "\$B/pyproject.toml"
+echo "SHA \$(git rev-parse HEAD)"
 cd "\$B"
 uv sync -q
 echo SYNC_OK
 REMOTE_EOF
 )
     [ "${out##*$'\n'}" = SYNC_OK ] || { log "sync failed: $out"; return 1; }
+    log "repo at $(printf '%s\n' "$out" | sed -n 's/^SHA //p' | tail -n 1) ($REF)"
     log "ship manifest for $rid"
     # umask on both ends: the file holds signed urls valid for hours
     out=$({ printf '%s\n' 'umask 077' 'mkdir -p "$HOME/projects/kenya-incitement/cache"' \

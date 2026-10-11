@@ -27,6 +27,9 @@ DIM = 16
 W = window.Window(date(2026, 9, 21), 3)
 SENTENCE = "electoral commission rigged tallying centres nationwide again overnight"
 
+NO_POSTS = ("SELECT CAST(NULL AS VARCHAR) AS user_id, CAST(NULL AS BOOLEAN) AS is_retweet, "
+            "CAST(NULL AS VARCHAR) AS text WHERE false")
+
 
 def _vec(seed: int) -> np.ndarray:
     v = np.random.default_rng(seed).normal(size=DIM)
@@ -285,7 +288,7 @@ def runner(monkeypatch):
         if kw.get("text_threshold") is not None:
             nets["text_similarity"] = pd.DataFrame(_clique("u", 6), columns=["source", "target"])
         sizes = pd.DataFrame([{"trace": t, "edges": len(e)} for t, e in nets.items()])
-        return nets, sizes, "SELECT 1"
+        return nets, sizes, NO_POSTS
 
     def embed(con, w, **kw):
         calls["embed"] += 1

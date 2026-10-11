@@ -39,7 +39,7 @@ FORBIDDEN_RX = [(name, re.compile(rx, re.I)) for name, rx in FORBIDDEN]
 
 USER_CONTENT_KEYS = {
     "text", "bio", "display_name", "handle", "author_handle", "tag", "tags", "url",
-    "urls", "domain", "terms",
+    "urls", "domain", "terms", "name",
 }
 TEXT_SUFFIXES = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".md", ".mdx", ".html", ".txt", ".css"}
 SKIP_DIRS = {"node_modules", ".next", ".git", "dist", ".open-next"}

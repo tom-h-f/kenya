@@ -15,9 +15,9 @@
 # KMA_TOPICS_TEXTFILE_DIR, KMA_TOPICS_LIMIT, KMA_TOPICS_POLL_S and
 # KMA_TOPICS_NO_WAKE override defaults.
 set -uo pipefail
-export PATH=/usr/local/bin:/usr/bin:/bin
+export PATH="${KMA_TOPICS_PATH_PREPEND:+$KMA_TOPICS_PATH_PREPEND:}/usr/local/bin:/usr/bin:/bin"
 
-HOME_DIR=/home/tom
+HOME_DIR="${KMA_TOPICS_HOME:-/home/tom}"
 R2="$HOME_DIR/kenya_topics_r2.py"
 TEXTFILE_DIR="${KMA_TOPICS_TEXTFILE_DIR:-/var/lib/node_exporter/textfile}"
 PROM="$TEXTFILE_DIR/kma_topics.prom"
@@ -30,7 +30,7 @@ REF="${KMA_TOPICS_REF:-master}"
 FAIL_FIRST="${KMA_TOPICS_FAIL_FIRST:-0}"
 # pi0 has a key for the Windows side of mike-pc only, so WSL is reached through
 # `wsl -e bash -s` and scripts go over stdin (PowerShell mangles quoted args).
-SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 mike-pc "wsl -d Debian -u tom -e bash -s")
+SSH=("${KMA_TOPICS_SSH:-ssh}" -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 mike-pc "wsl -d Debian -u tom -e bash -s")
 
 mkdir -p "$HOME_DIR/cron-logs"
 LOG="$HOME_DIR/cron-logs/kenya-topics-$(date -u +%Y%m%d).log"
@@ -45,7 +45,7 @@ prev_value() { # metric name
   if [ -r "$PROM" ]; then awk -v m="$1" '$1==m {print $2}' "$PROM"; fi
 }
 
-write_prom() { # attempt_ts success_ts assigned ok
+write_prom() { # attempt_ts success_ts assigned ok last_run_assigned
   local tmp
   tmp=$(mktemp /tmp/kma_topics.XXXXXX)
   cat >"$tmp" <<PROM_EOF
@@ -55,9 +55,12 @@ kma_topics_last_success_timestamp_seconds $2
 # HELP kma_topics_last_attempt_timestamp_seconds Unix time of the last topics attempt, successful or not.
 # TYPE kma_topics_last_attempt_timestamp_seconds gauge
 kma_topics_last_attempt_timestamp_seconds $1
-# HELP kma_topics_assigned_posts Rows assigned by the last successful topics run.
+# HELP kma_topics_assigned_posts Rows assigned by the last topics run that assigned any (an idle run leaves it unchanged).
 # TYPE kma_topics_assigned_posts gauge
 kma_topics_assigned_posts $3
+# HELP kma_topics_last_run_assigned_posts Rows assigned by the last successful topics run, 0 when it found nothing to assign.
+# TYPE kma_topics_last_run_assigned_posts gauge
+kma_topics_last_run_assigned_posts $5
 # HELP kma_topics_last_attempt_ok 1 if the last attempt succeeded, 0 if the run gave up or is still retrying.
 # TYPE kma_topics_last_attempt_ok gauge
 kma_topics_last_attempt_ok $4
@@ -73,12 +76,13 @@ PROM_EOF
 
 LAST_OK_TS=$(prev_value kma_topics_last_success_timestamp_seconds); LAST_OK_TS=${LAST_OK_TS:-0}
 LAST_ASSIGNED=$(prev_value kma_topics_assigned_posts); LAST_ASSIGNED=${LAST_ASSIGNED:-0}
+LAST_RUN_ASSIGNED=$(prev_value kma_topics_last_run_assigned_posts); LAST_RUN_ASSIGNED=${LAST_RUN_ASSIGNED:-0}
 TOTAL_ASSIGNED=0
 WE_SET_AWAKE=""
 QUERY_BLOCK=""
 
 log "=== kenya-topics start (deadline ${DEADLINE_S}s, ref $REF) ==="
-write_prom "$START" "$LAST_OK_TS" "$LAST_ASSIGNED" 0
+write_prom "$START" "$LAST_OK_TS" "$LAST_ASSIGNED" 0 "$LAST_RUN_ASSIGNED"
 
 mike_up() { [ "$("${SSH[@]}" <<<'echo up' 2>/dev/null | tr -d '\r')" = up ]; }
 
@@ -157,12 +161,14 @@ cd "\$B/repo"
 git fetch -q origin
 git checkout -q -B "$REF" "origin/$REF"
 cp deploy/mike/pyproject.toml "\$B/pyproject.toml"
+echo "SHA \$(git rev-parse HEAD)"
 cd "\$B"
 uv sync -q
 echo SYNC_OK
 REMOTE_EOF
 )
     [ "${out##*$'\n'}" = SYNC_OK ] || { log "sync failed: $out"; return 1; }
+    log "repo at $(printf '%s\n' "$out" | sed -n 's/^SHA //p' | tail -n 1) ($REF)"
     log "ship manifest for $rid"
     # umask on both ends: the file holds signed urls valid for hours
     out=$({ printf '%s\n' 'umask 077' 'mkdir -p "$HOME/projects/kenya-topics/cache"' \
@@ -239,18 +245,19 @@ n=0
 delay=$BACKOFF_BASE_S
 while :; do
   n=$((n + 1))
-  write_prom "$(now)" "$LAST_OK_TS" "$LAST_ASSIGNED" 0
+  write_prom "$(now)" "$LAST_OK_TS" "$LAST_ASSIGNED" 0 "$LAST_RUN_ASSIGNED"
   log "--- attempt $n ---"
   if attempt "$n"; then
     release_awake
-    write_prom "$(now)" "$(now)" "$TOTAL_ASSIGNED" 1
+    kept=$LAST_ASSIGNED; [ "$TOTAL_ASSIGNED" -gt 0 ] && kept=$TOTAL_ASSIGNED
+    write_prom "$(now)" "$(now)" "$kept" 1 "$TOTAL_ASSIGNED"
     log "=== kenya-topics SUCCESS after $n attempt(s), assigned $TOTAL_ASSIGNED ==="
     exit 0
   fi
   left=$((SCHEDULED_DEADLINE - $(now)))
   if [ "$left" -le 0 ] || [ "$delay" -ge "$left" ]; then
     release_awake
-    write_prom "$(now)" "$LAST_OK_TS" "$LAST_ASSIGNED" 0
+    write_prom "$(now)" "$LAST_OK_TS" "$LAST_ASSIGNED" 0 "$LAST_RUN_ASSIGNED"
     log "=== kenya-topics GAVE UP after $n attempt(s), ${DEADLINE_S}s deadline; last success ts $LAST_OK_TS ==="
     exit 1
   fi
