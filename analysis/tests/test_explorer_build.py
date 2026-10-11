@@ -101,7 +101,7 @@ def test_the_stamp_carries_the_window_and_the_parameters():
     run = {"run_id": "20261010T031500Z", "window_id": "daily-2026-10-09-21d",
            "window_end": "2026-10-09", "window_days": 21,
            "computed_at": pd.Timestamp("2026-10-10T03:41:07Z"), "text_threshold": 0.85,
-           "text_overlap": 0.1, "min_entities": 2, "min_kenya": 0.5}
+           "text_overlap": 0.1, "min_entities": 2, "min_kenya": 0.6}
     stamp = eb.make_stamp(run, pd.Timestamp("2026-10-10T04:00:00Z").to_pydatetime())
     assert stamp["window_start"] == "2026-09-19" and stamp["window_days"] == 21
     assert stamp["params"]["leiden_seed"] == 0 and stamp["params"]["edge_percentile"]["fast_retweet"] is None

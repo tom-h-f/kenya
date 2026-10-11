@@ -11,12 +11,6 @@
     "fast_retweet": "retweeted within seconds of",
     "any": "co-active with"
   },
-  "corrections": {
-    "contact": "CONFIGURE_CORRECTIONS_CONTACT_BEFORE_DEPLOY",
-    "contact_is_placeholder": true,
-    "removal_hours": 72,
-    "issue_url": null
-  },
   "methodology_negative_results": {
     "language_rule": "This site does not call any account coordinated, a bot, a troll or inauthentic. The detector surfaces accounts that are co-active under stated parameters, and nothing more."
   }

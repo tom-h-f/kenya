@@ -64,10 +64,4 @@ which stay. This document keeps them apart.
 - Explorer bundle: schema, forbidden-field walk, verdict-word lint, denylist
   (`assert_explorer_safe`).
 - Site: `tests/language.test.ts` lints all static copy. Every network, community and
-  account view carries the method caveat. Every page footer links `/corrections`.
-
-## Open
-
-Legal review of republishing post text and bios under X's terms and the Kenya Data
-Protection Act 2019 is not done. Decide before the first public deploy. If in doubt the
-bundle can carry post ids and link out instead of text.
+  account view carries the method caveat.

@@ -32,7 +32,6 @@ log = logging.getLogger("kma.explorer")
 SCHEMA_VERSION = 1
 CAVEAT_ID = "caveat-v1"
 METHOD_URL = "/methodology"
-CORRECTIONS_URL = "/corrections"
 
 ACCOUNT_SHARDS = 64
 HASHTAG_SHARDS = 16

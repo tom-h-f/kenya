@@ -635,7 +635,7 @@ def stage(bundle: eb.Bundle, run: dict, root: Path, previous_runs: list[dict],
     manifest = {
         "kind": "manifest", "schema_version": eb.SCHEMA_VERSION, "latest_run": run_id,
         "generated_at": eb.iso(generated_at), "method_url": eb.METHOD_URL,
-        "corrections_url": eb.CORRECTIONS_URL, "runs": runs[:RETENTION], "files": meta,
+        "runs": runs[:RETENTION], "files": meta,
         "unavailable": bundle.unavailable,
     }
     (root / PREFIX).mkdir(parents=True, exist_ok=True)

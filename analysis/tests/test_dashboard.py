@@ -42,7 +42,7 @@ def _runs(computed_at: str = "2026-10-11T03:50:00+00:00", **over) -> pd.DataFram
     row = {
         "run_id": "20261011T033000Z", "window_id": "daily-2026-10-10-30d",
         "window_end": "2026-10-10", "window_days": 30, "computed_at": computed_at,
-        "text_threshold": 0.85, "text_overlap": 0.1, "min_entities": 2, "min_kenya": 0.5,
+        "text_threshold": 0.85, "text_overlap": 0.1, "min_entities": 2, "min_kenya": 0.6,
         "networks_s": 12.3, "fuse_centrality_s": 4.5, "relevance_s": 8.0,
         "communities_s": 2.2,
         # Account-level and count columns the real table carries and the

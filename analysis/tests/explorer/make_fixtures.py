@@ -57,7 +57,7 @@ DOMAINS = ["news.example", "blog.example", "gazette.example", "video.example", "
 TRACES = {1: "co_retweet", 2: "co_url", 4: "hashtag_sequence", 8: "fast_retweet", 16: "text_similarity"}
 
 PARAMS = {
-    "text_threshold": 0.9, "text_overlap": 0.5, "min_entities": 3, "min_kenya": 0.5,
+    "text_threshold": 0.9, "text_overlap": 0.5, "min_entities": 3, "min_kenya": 0.6,
     "relevance_model": "fixture-relevance-v0", "leiden_resolution": 1.0, "leiden_seed": 0,
     "min_community_size": 8, "listing_budget": 500, "listing_per_group": 20,
     "edge_percentile": {"co_retweet": 80, "co_url": 80, "hashtag_sequence": 65, "fast_retweet": None, "text_similarity": 80},
@@ -112,7 +112,7 @@ class World:
         self.all_members = [a for c in SIZES for a in self.members[c]]
         self.score = {a: round(r.uniform(0.05, 1.0), 4) for a in self.all_members}
         self.centrality = {a: round(r.uniform(0.0, 1.0), 4) for a in self.all_members}
-        self.kenya = {a: (round(r.uniform(0.55, 0.98), 3) if r.random() > 0.06 else None) for a in self.all_members}
+        self.kenya = {a: (round(r.uniform(0.65, 0.98), 3) if r.random() > 0.06 else None) for a in self.all_members}
         self.build_posts()
         self.build_edges()
         self.build_layout()
@@ -680,7 +680,7 @@ def main(argv=None) -> int:
         listing[rel] = entry
     manifest = {
         "kind": "manifest", "schema_version": 1, "latest_run": RUNS[0]["run_id"], "generated_at": "2026-10-10T03:52:00Z",
-        "method_url": "/methodology", "corrections_url": "/corrections",
+        "method_url": "/methodology",
         "runs": [{"run_id": r["run_id"], "window_id": f"daily-{r['window_end']}-{WINDOW_DAYS}d", "window_end": r["window_end"], "computed_at": r["computed_at"]} for r in RUNS],
         "files": listing,
         "unavailable": [{"view": "time_coverage", "reason": "embedding and relevance listings were not readable this run"}],
