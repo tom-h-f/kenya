@@ -248,7 +248,7 @@ Runs after every successful daily (`OnSuccess=`) and once at 12:00 UTC. Measured
 Installed on `cloud` 2026-10-11 (the Worker and site are not deployed). Units: `kma-explorer-export.service`,
 `kma-v2-daily.service.d/explorer-export.conf` (adds to the dashboard drop-in; `OnSuccess=` is a list).
 The unit is `After=kma-dashboard.service`, `Nice=15`, `IOSchedulingClass=idle`,
-`MemoryMax=6G`, `TimeoutStartSec=45min`, retried at most 3 times in an hour. There is no timer: if the daily
+`MemoryMax=8G`, `TimeoutStartSec=45min`, retried at most 3 times in an hour. There is no timer: if the daily
 fails the previous bundle stays and the manifest's stamp ages.
 
 The daily now writes two more kinds, `daily_edges` (every fused edge, trace mask, largest weight,
@@ -269,6 +269,29 @@ Safety: the bundle is staged, then checked (contract validator, language lint, i
 upload. Files under `runs/{run}/` go first, `manifest.json` last, then runs past the 30 kept are pruned.
 A failure before the manifest leaves the previous run live. Remove an account by adding its id to
 `explorer/denylist.txt`; it is gone from every file on the next run.
+
+### Measured on `cloud` (2026-10-11, `--out-dir`, branch `fix/flagged-cleanup`, 4 vCPU, 15 GiB)
+
+Window `daily-2026-10-10-21d`, run `20261011T092537Z` (a daily written before the template columns, so
+`template` is null in that bundle).
+
+| | |
+|---|---|
+| Exporter wall | 884 s (window 207, collection listing 114, profiles 180, assemble 494 of which profiles 180, safety 57, topics read 3.7) |
+| Exporter peak RSS | 5,303 MB (`ru_maxrss`), against the former `MemoryMax=6G`: raised to 8G |
+| Bundle | 489 files, 83.2 MB raw, 30.1 MB gzip; slices 17.8 MB of the 40 MB cap (posts 13.3, edges 3.9, accounts 0.46) |
+| Topics | 300 of 1,501 window topics listed; 625,935 window posts carry a topic row of the newest fit, 424,869 of them noise; all are kNN-placed (the fit is 2026-09-04) |
+| Profiles | 10,560 members, 0 without a profile in the window-dated objects, so the older-object scan read 0 of 7,410 |
+| Coverage denominator | 537,039 non-repost window posts with text; embeddings 535,955, relevance 528,378, hatespeech 43,307, incitement 536,888, topics 453,210, labels 45,343 |
+
+Vendor files (DuckDB-WASM 1.29.0 and the core-1.1.1 parquet extension) are uploaded once, not per run:
+
+```sh
+cd ~/kenya-monitor-2027/analysis
+set -a; . /etc/kma/v2-daily.env; . /etc/kma/dashboard.env; set +a
+uv run --frozen --no-dev python -m kma.explorer_vendor --check   # what is missing
+uv run --frozen --no-dev python -m kma.explorer_vendor           # upload it, sha256-checked against explorer/vendor.json
+```
 
 ### Measured (Mac, 14 cores, home link, real R2 reads, `--out-dir`, nothing written to R2; not yet measured on `cloud`)
 

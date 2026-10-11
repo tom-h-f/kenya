@@ -56,4 +56,24 @@ and synthetic handles. Never from live data. Both repos validate against `schema
   `contact_is_placeholder` is true.
 - Tests: `cd analysis && uv run pytest tests/explorer` and `cd docs/plans/explorer-contract && bun test`
   (independent ajv validation of every fixture).
-- Hosting: DuckDB-WASM is served from the bucket at `explorer/v1/vendor/{file}` (`$defs.Files.vendor`).
+- Hosting: DuckDB-WASM and its parquet extension are served from the bucket at `explorer/v1/vendor/{file}` (`$defs.Files.vendor`), under versioned names, uploaded by `kma.explorer_vendor`.
+
+## Changes inside schema_version 1
+
+All additive or loosening, so `schema_version` stays 1 and older fixtures and runs still validate.
+
+- 2026-10-11: `CommunityRow.template` (`TemplateText`, nullable): advisory repeated-template-text flag per
+  kept community, from `kma.template_spam` over the members' own posts. Null when the run did not compute it.
+  Dropped communities carry none.
+- 2026-10-11: `HashtagIndex.emerging[].emergence` is nullable: null means the prior rate is zero (a tag
+  not seen before), shown as "new". Before, such tags were left out.
+- 2026-10-11: topics. `TopicIndex.topics[]` gains `name`, `fit_posts_in_window`, `knn_posts_in_window`;
+  `fit` gains `knn_posts`, `window_posts`, `window_noise_posts`, `listed_topics`; `TopicDetail` gains `name`,
+  `posts_in_window`, `fit_posts_in_window`, `knn_posts_in_window`, `daily`. `communities[].community_posts` is
+  the posts by that community's members in the window that carry any topic row, so a topic share is a share of
+  the topic-assigned subset.
+- 2026-10-11: `TimeCoverage.basis` and the stage `topics`.
+- 2026-10-11: the forbidden-field walk no longer exempts every key under `/tags/`. Only the tag name (the key
+  directly under `tags` in a hashtag shard) is data; keys inside a tag entry are fields and are checked.
+- 2026-10-11: `name` joins the user-content keys of the language lint (a topic name is its top terms).
+- Vendor files: `explorer/vendor.json` pins them, `python -m kma.explorer_vendor` uploads them.
