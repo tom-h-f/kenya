@@ -152,27 +152,46 @@ def test_one_member_repeating_themselves_is_not_co_action():
     assert got.empty
 
 
-def test_families_join_transitively_and_rank_by_members():
-    """A~B and B~C is one family even when A and C sit below the cut - the same
-    connectivity the text trace itself builds on."""
+def test_families_are_hub_stars_not_transitive_components():
+    """A~B~C~D is a chain, not one family: B claims A and C, D is left with only
+    C, which B already holds. Components would report a four-account family
+    although A and D are nowhere near each other."""
     import numpy as np
 
-    angle = np.deg2rad([0, 20, 40])
+    angle = np.deg2rad([0, 20, 40, 60])
     vectors = np.vstack([
-        np.column_stack([np.cos(angle), np.sin(angle), np.zeros(3)]),
+        np.column_stack([np.cos(angle), np.sin(angle), np.zeros(4)]),
         [[0.0, 0.0, 1.0], [0.0, 0.1, 1.0]],
     ])
     posts = pd.DataFrame({
-        "author_id": ["a", "b", "c", "d", "e"],
-        "author_handle": ["a", "b", "c", "d", "e"],
-        "text": ["t1", "t2", "t3", "t4", "t5"],
-        "created_at": pd.date_range("2026-01-01", periods=5, tz="UTC"),
+        "author_id": ["a", "b", "c", "d", "e", "f"],
+        "author_handle": ["a", "b", "c", "d", "e", "f"],
+        "text": ["t1", "t2", "t3", "t4", "t5", "t6"],
+        "created_at": pd.date_range("2026-01-01", periods=6, tz="UTC"),
     })
 
-    got = dossier.near_duplicate_families(posts, vectors, min_overlap=None)
+    got = dossier.near_duplicate_families(posts, vectors, threshold=0.93, min_overlap=None)
 
     assert got["n_members"].tolist() == [3, 2]
     assert got.iloc[0]["text"] == "t1"
+
+
+def test_every_family_member_is_a_direct_match_of_one_post():
+    import numpy as np
+
+    angle = np.deg2rad(np.arange(0, 200, 20))
+    vectors = np.column_stack([np.cos(angle), np.sin(angle)])
+    posts = pd.DataFrame({
+        "author_id": [f"u{k}" for k in range(len(angle))],
+        "author_handle": [f"h{k}" for k in range(len(angle))],
+        "text": [f"t{k}" for k in range(len(angle))],
+        "created_at": pd.date_range("2026-01-01", periods=len(angle), tz="UTC"),
+    })
+
+    got = dossier.near_duplicate_families(posts, vectors, threshold=0.93, min_overlap=None)
+
+    assert got["n_members"].max() <= 3
+    assert got["n_members"].sum() <= len(angle)
 
 
 def test_close_posts_that_share_no_words_are_not_an_exhibit():
