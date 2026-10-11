@@ -69,3 +69,22 @@ Alert: `KenyaIncitementStale` in the iot repo, 5.5 days without a success.
 Test hooks (env): `KMA_INCITEMENT_FAIL_FIRST`, `KMA_INCITEMENT_DEADLINE_S`,
 `KMA_INCITEMENT_BACKOFF_BASE_S`, `KMA_INCITEMENT_TEXTFILE_DIR`, `KMA_INCITEMENT_LIMIT`,
 `KMA_INCITEMENT_ATTEMPT_TIMEOUT_S`, `KMA_INCITEMENT_AWAKE_FOR`.
+
+# Wrapper update 2026-10-11: idle gauge and sha log (needs Tom's approval; writes on pi0)
+
+Changes in the repo: the topics wrapper keeps `kma_topics_assigned_posts` at the last run
+that assigned something and adds `kma_topics_last_run_assigned_posts` (0 after an idle
+run); both wrappers log `repo at <sha> (<ref>)` after syncing mike-wsl. Behaviour is
+otherwise unchanged. Tested against a stub ssh in `analysis/tests/test_pi0_topics_wrapper.py`.
+
+1. `ssh pi0 'cd ~ && cp -p kenya-topics-cron.sh backups/kenya-topics-cron.sh.pre-20261011 && cp -p kenya-incitement-cron.sh backups/kenya-incitement-cron.sh.pre-20261011'`
+2. From the merged repo: `scp deploy/pi0/kenya-topics-cron.sh deploy/pi0/kenya-incitement-cron.sh pi0:/home/tom/` (keep mode 0755).
+3. `ssh pi0 'bash -n kenya-topics-cron.sh && bash -n kenya-incitement-cron.sh'`. Do not run them by hand; the crontab is unchanged.
+4. Verify after the next Tue/Fri 02:10 topics run: log `~/cron-logs/kenya-topics-YYYYMMDD.log`
+   has `repo at <40 hex> (...)`; `kma_topics.prom` holds both gauges, and after an idle run
+   `kma_topics_assigned_posts` equals the previous non-idle value while
+   `kma_topics_last_run_assigned_posts` is 0. Same sha line for the Wed/Sat incitement run.
+5. Rollback: copy the backups back.
+
+The incitement gauge `kma_incitement_scored_posts` still reads 0 after an idle run
+(`kma_incitement_pending_at_start_posts` tells idle from stuck); not changed.

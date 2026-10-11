@@ -349,6 +349,35 @@ def prefix_readable(con: duckdb.DuckDBPyConnection, source: str) -> bool:
         return False
 
 
+def _prefix_absent(exc: duckdb.Error) -> bool:
+    """True when `exc` means the scored prefix has no files or no such table
+    yet, as opposed to a read that failed."""
+    return isinstance(exc, duckdb.CatalogException) or "No files found" in str(exc)
+
+
+def drop_scored(
+    con: duckdb.DuckDBPyConnection, frame: pd.DataFrame, scored_source: str
+) -> pd.DataFrame:
+    """`frame` without the posts `scored_source` now holds.
+
+    A pass reads its pending set, then spends minutes in a model before it
+    writes. Another writer (the GPU backlog run, a second worker) can score the
+    same posts in that gap. Calling this just before the write shrinks the gap
+    from the inference time to one listing. It is not a lock: readers still
+    take the latest row per post."""
+    if frame.empty:
+        return frame
+    try:
+        done = con.sql(
+            f"SELECT DISTINCT platform_post_id FROM {scored_source}"
+        ).df()["platform_post_id"]
+    except duckdb.Error as exc:
+        if _prefix_absent(exc):
+            return frame
+        raise
+    return frame[~frame["platform_post_id"].isin(set(done))].reset_index(drop=True)
+
+
 def pending_posts(
     con: duckdb.DuckDBPyConnection,
     scored_source: str | None,
@@ -388,8 +417,11 @@ def pending_posts(
                   SELECT 1 FROM {scored_source} s
                   WHERE s.platform_post_id = p.platform_post_id
               )"""
-        except duckdb.Error:
-            pass  # prefix not written yet: everything is pending
+        except duckdb.Error as exc:
+            if not _prefix_absent(exc):
+                # A transient read failure is not "nothing scored yet". Treating
+                # it as that drops the anti-join and rescores the newest rows.
+                raise
     return con.sql(
         f"""
         SELECT {columns} FROM (
