@@ -165,7 +165,7 @@ read from `uv run --with modal python -m kma.modal_spend`: kma-text-trace
 projected $1.00 a month on the 10-10 bill (scratch runs only); a daily run of
 about 260 s on an A10G is the figure to re-read after a week of cron.
 The explorer export after the daily peaked at 4,185 MB RSS and the cgroup
-reported 4,295,540,736 B against `MemoryMax=4G` (4,294,967,296 B): it passed
+reported 4,295,540,736 B against the former `MemoryMax=4G` (4,294,967,296 B): it passed
 with no margin, so raise `MemoryMax` if it is ever OOM-killed.
 
 `verify.sh` runs its stages through `systemd-run --pipe`, which does not exit
@@ -245,7 +245,7 @@ Runs after every successful daily (`OnSuccess=`) and once at 12:00 UTC. Measured
 Installed on `cloud` 2026-10-11 (the Worker and site are not deployed). Units: `kma-explorer-export.service`,
 `kma-v2-daily.service.d/explorer-export.conf` (adds to the dashboard drop-in; `OnSuccess=` is a list).
 The unit is `After=kma-dashboard.service`, `Nice=15`, `IOSchedulingClass=idle`,
-`MemoryMax=4G`, `TimeoutStartSec=45min`, retried at most 3 times in an hour. There is no timer: if the daily
+`MemoryMax=6G`, `TimeoutStartSec=45min`, retried at most 3 times in an hour. There is no timer: if the daily
 fails the previous bundle stays and the manifest's stamp ages.
 
 The daily now writes two more kinds, `daily_edges` (every fused edge, trace mask, largest weight,
