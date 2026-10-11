@@ -50,7 +50,7 @@ KENYA_THRESHOLD = 0.5
 # (`deploy/pi0/kenya-incitement-cron.sh`) signs URLs for exactly this slug, so the
 # two must change together; until pi0 is switched, a post the old model has not
 # scored falls back to the keyword gate, which only affects scoring ORDER.
-RELEVANCE_MODEL = "kenya-relevance-afroxlmr-2026-09-13"
+RELEVANCE_MODEL = "kenya-relevance-afroxlmr-2026-10-11"
 MAX_LENGTH = 256
 
 EXIT_MORE_WORK = 3

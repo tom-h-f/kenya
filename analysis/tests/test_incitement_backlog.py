@@ -151,8 +151,7 @@ def read_outputs(bucket):
 
 
 def test_relevance_constants_match_what_pi0_signs():
-    # Pinned to the previous model until the pi0 cron is switched with it.
-    assert ib.RELEVANCE_MODEL == relevance.PREVIOUS_MODEL
+    assert ib.RELEVANCE_MODEL == relevance.ACTIVE_MODEL
     assert ib.KENYA_THRESHOLD == relevance.THRESHOLD
     cron = (Path(__file__).parents[2] / "deploy" / "pi0" / "kenya-incitement-cron.sh").read_text()
     assert f'RELEVANCE = "{ib.RELEVANCE_MODEL}"' in cron

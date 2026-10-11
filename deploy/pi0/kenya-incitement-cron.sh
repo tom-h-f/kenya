@@ -94,7 +94,7 @@ sys.path.insert(0, "/home/tom")
 import kenya_topics_r2 as K
 
 PLATFORM = "x"
-RELEVANCE = "kenya-relevance-afroxlmr-2026-09-13"
+RELEVANCE = "kenya-relevance-afroxlmr-2026-10-11"
 READ = (f"posts/platform={PLATFORM}/", f"incitement/platform={PLATFORM}/",
         f"relevance/platform={PLATFORM}/model={RELEVANCE}/")
 
