@@ -53,7 +53,9 @@ def target_name(source_name: str, version: str, entry: dict | None = None) -> st
 
 
 def fetch(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=120) as resp:
+    """extensions.duckdb.org answers the default urllib agent with 403."""
+    request = urllib.request.Request(url, headers={"User-Agent": "kma-explorer-vendor/1"})
+    with urllib.request.urlopen(request, timeout=120) as resp:
         return resp.read()
 
 

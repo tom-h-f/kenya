@@ -240,3 +240,25 @@ def test_the_pinned_files_are_the_ones_the_site_route_accepts():
     assert "duckdb-eh-1.29.0.wasm" in names
     assert "parquet.eh-1.1.1.wasm" in names and "parquet.mvp-1.1.1.wasm" in names
     assert all(n.startswith("parquet.") for n in names if "parquet" in n)
+
+
+def test_fetch_sends_an_explicit_user_agent(monkeypatch):
+    seen = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"x"
+
+    def fake_urlopen(request, timeout):
+        seen["agent"] = request.get_header("User-agent")
+        return Resp()
+
+    monkeypatch.setattr(explorer_vendor.urllib.request, "urlopen", fake_urlopen)
+    assert explorer_vendor.fetch("https://x/y") == b"x"
+    assert seen["agent"].startswith("kma-explorer-vendor")
