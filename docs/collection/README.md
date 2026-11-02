@@ -4,8 +4,8 @@ The collector (`collector/`, CLI `monitor`) scrapes X (Twitter) via a rotating
 twscrape account pool and writes immutable Parquet runs to Cloudflare R2. Analysis
 reads the same prefixes with DuckDB (`analysis/`, `kma.db`).
 
-Production runs on **pi0** (Docker, residential egress + optional tf1 HTTP
-proxies). See [CIB-oriented strategy](cib-collection.md) for why each method
+Production runs on **pi0** (Docker, residential egress; every account
+egresses from pi0, the tf1 proxy was retired 2026-11-02). See [CIB-oriented strategy](cib-collection.md) for why each method
 exists in the coordination-detection pipeline.
 
 ## Architecture

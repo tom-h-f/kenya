@@ -1,0 +1,10 @@
+# Host-local analysis/docker-compose.override.yaml on cloud (/home/tom/kenya-monitor-2027).
+# Enrich moved here from tf1 on 2026-11-02. The hate pass is off: its model repo is private and
+# there is no HF_TOKEN on this host. Put one in ../.env, set HF_HUB_OFFLINE to "0" and drop --no-hate.
+services:
+  enrich:
+    command: ["--loop", "--no-incitement", "--no-hate"]
+    mem_limit: 3g
+    cpus: 2
+    environment:
+      HF_HUB_OFFLINE: "0"

@@ -22,7 +22,7 @@ here; the per-subsystem docs go deeper.
                               ▲
                               │
   ┌──────────────────────────────────────────────────────────┐
-  │  kma-enrich --loop                          tf1 (x86_64) │
+  │  kma-enrich --loop                          cloud (x86_64)│
   │   embed ─► classify ─► incitement ─► hate-score          │
   └──────────────────────────────────────────────────────────┘
 ```
@@ -67,7 +67,7 @@ closing: analysis output becomes collection input.
 
 ---
 
-## 3. Enrichment (tf1)
+## 3. Enrichment (cloud)
 
 `kma-enrich --loop` runs four model passes, each in its own subprocess so their
 weights never coexist in memory:
