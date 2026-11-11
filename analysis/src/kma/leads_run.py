@@ -1,15 +1,18 @@
 """One leads pass: diff the latest runs, judge what changed, persist it.
 
     uv run kma-leads                          # dry run: prints the queue
+    uv run kma-leads --rule                   # dry run of the deterministic rule
+    uv run kma-leads --rule --persist --mode production   # what the cloud unit runs
+    uv run kma-leads alerts --days 2          # read the latest alerted groups
     uv run kma-leads --source v1              # the same, on v1's clusters
     uv run kma-leads show <run_id> <candidate_id>
     uv run kma-leads --source v1 --judge --max-judged 5 --persist   # local, needs a key
 
-The judging pass itself runs on Modal (`modal_leads.py`), because the reader
-needs `ANTHROPIC_API_KEY` and that key stays off tf1 and pi0. This module is
-everything around the reader - which runs to compare, who belongs to each
-candidate, and where the verdicts and dossiers go - so it can be tested and
-dry-run anywhere with R2 access.
+Production uses `--rule` (`kma.leads_rule`): no model call, no key, every
+new or changed community checked rather than a budget of ten. It runs on
+`cloud` after each successful daily pass (`deploy/cloud/kma-leads.service`)
+and writes `kma_leads.prom` for the Grafana rules. The model reader
+(`--judge`, `modal_leads.py`) is kept for hand use and is not scheduled.
 
 ## Output, under `leads/platform=x/`
 
@@ -42,11 +45,12 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 import duckdb
 import pandas as pd
 
-from kma import leads
+from kma import leads, leads_rule, textfile
 from kma.db import BUCKET, connect
 
 log = logging.getLogger("kma")
@@ -83,6 +87,14 @@ WORTH_A_LOOK_TYPES = ("political_campaign", "unclear")
 
 MODE_PRODUCTION = "production"
 MODE_VALIDATION = "validation"
+
+COMMUNITY_TABLE_PREFIX = f"coord2/platform={PLATFORM}/kind=daily_communities"
+GAUGE_FILE = "kma_leads.prom"
+GAUGE_SUCCESS = "kma_leads_last_success_timestamp_seconds"
+GAUGE_ALERTS = "kma_leads_alerts"
+GAUGE_RESET = "kma_leads_reset"
+# Posts the `alerts` reader samples, the daily pass's window length.
+ALERT_POST_DAYS = 21
 
 
 @dataclass
@@ -411,6 +423,171 @@ def persist_verdicts(con: duckdb.DuckDBPyConnection, frame: pd.DataFrame, run_id
     return _copy(con, frame, _key("verdicts", run_id))
 
 
+def community_table(con: duckdb.DuckDBPyConnection, run: str) -> pd.DataFrame:
+    """The `daily_communities` table the daily pass wrote beside a listing."""
+    day = f"{run[:4]}-{run[4:6]}-{run[6:8]}"
+    return con.sql(
+        f"SELECT * FROM read_parquet('r2://{BUCKET}/{COMMUNITY_TABLE_PREFIX}/dt={day}/run={run}.parquet')"
+    ).df()
+
+
+def recent_alerts(con: duckdb.DuckDBPyConnection, now: datetime,
+                  days: int = leads_rule.MEMORY_DAYS) -> list[frozenset]:
+    """Member sets of the production rule alerts in the last `days`."""
+    since = (now - pd.Timedelta(days=days)).date().isoformat()
+    try:
+        rows = con.sql(
+            f"""SELECT members FROM read_parquet(
+                    'r2://{BUCKET}/{LEADS_PREFIX}/kind=verdicts/dt=*/*.parquet',
+                    hive_partitioning=true, union_by_name=true)
+                WHERE dt >= DATE '{since}' AND adjudicator = '{leads_rule.ADJUDICATOR}'
+                  AND mode = '{MODE_PRODUCTION}' AND worth_a_look"""
+        ).fetchall()
+    except duckdb.Error:
+        return []
+    return [frozenset(r[0]) for r in rows if r[0]]
+
+
+def rule_rows(p: Plan, judged: pd.DataFrame, members: dict, mode: str) -> pd.DataFrame:
+    """Verdict rows for every flagged community, alerted or not."""
+    now = datetime.now(timezone.utc)
+    rows = []
+    for _, r in judged[judged["flagged"]].iterrows():
+        rows.append({
+            "run_id": p.run_id,
+            "candidate_id": r["candidate_id"],
+            "source": leads.SOURCE_COMMUNITY,
+            "status": r["status"],
+            "group": int(r["group"]),
+            "size": _num(r["size"]),
+            "previous_size": _num(r.get("previous_size")),
+            "jaccard": _num(r.get("jaccard")),
+            "joined": _num(r.get("joined")),
+            "cluster_type": leads_rule.FLAGGED,
+            "kenya_relevant": bool(r["kept"]),
+            "kenya_model": _num(r["kenya_model"]),
+            "non_retweet_share": _num(r["non_retweet_share"]),
+            "template": bool(r["template"]),
+            "rationale": r["signals"],
+            "previously_flagged": bool(r["previously_flagged"]),
+            "seen_before": bool(r["seen_before"]),
+            "worth_a_look": bool(r["alert"]),
+            "band": r["band"],
+            "members": sorted(members.get(r["group"], ())),
+            "canary_id": None if pd.isna(r.get("canary_id")) else str(r.get("canary_id")),
+            "listing_run": p.current,
+            "previous_run": p.previous,
+            "adjudicator": leads_rule.ADJUDICATOR,
+            "rubric": leads_rule.RULE_VERSION,
+            "mode": mode,
+            "adjudicated_at": now,
+        })
+    return pd.DataFrame(rows)
+
+
+def leads_gauge(alerts: pd.DataFrame, *, reset: bool, now: float) -> str:
+    real = alerts[alerts["canary_id"].isna()] if "canary_id" in alerts.columns else alerts
+    counts = real["band"].value_counts() if len(real) else pd.Series(dtype=int)
+    return textfile.gauges([
+        (GAUGE_SUCCESS, {}, int(now)),
+        *[(GAUGE_ALERTS, {"band": b}, int(counts.get(b, 0)))
+          for b in (leads_rule.LARGE, leads_rule.SMALL)],
+        (GAUGE_RESET, {}, int(reset)),
+    ])
+
+
+def execute_rule(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    persist: bool = False,
+    mode: str = MODE_PRODUCTION,
+    textfile_dir: Path | None = None,
+) -> dict:
+    """The deterministic pass: every new or changed v2 community through
+    `leads_rule.judge`, flagged ones persisted as verdicts, the alert counts
+    written to `kma_leads.prom` last, only after everything else succeeded."""
+    previous, current = latest_listings(con, "v2")
+    if current is None:
+        raise RuntimeError("no v2 community listing found; refusing to report a healthy pass")
+    p = plan(previous, current, None, pd.DataFrame(columns=["tag", "authors", "emergence"]),
+             limit=0)
+    members = leads.groups(current.frame, "community", "user_id")
+    now = datetime.now(timezone.utc)
+    judged = leads_rule.judge(
+        p.communities,
+        community_table(con, current.run),
+        community_table(con, previous.run) if previous else None,
+        members=members,
+        recent=recent_alerts(con, now),
+    )
+    if p.baseline or p.reset:
+        judged = judged.assign(alert=False)
+    rows = rule_rows(p, judged, members, mode)
+    alerts = rows[rows["worth_a_look"]] if len(rows) else rows
+
+    summary = {
+        "run_id": p.run_id, "listing": p.current, "previous": p.previous,
+        "baseline": p.baseline, "reset": p.reset, "notes": p.notes,
+        "rule": leads_rule.RULE_VERSION,
+        "communities": _counts(p.communities),
+        "flagged": len(rows),
+        "alerts": alerts[["candidate_id", "status", "size", "band", "rationale"]].to_dict("records")
+        if len(alerts) else [],
+    }
+    if persist and len(rows):
+        summary["verdicts_key"] = persist_verdicts(con, rows, p.run_id)
+    if textfile_dir is not None:
+        empty = pd.DataFrame(columns=["band", "canary_id"])
+        summary["gauge"] = str(textfile.write(
+            textfile_dir, GAUGE_FILE,
+            leads_gauge(alerts if len(alerts) else empty, reset=p.baseline or p.reset,
+                        now=now.timestamp()),
+        ))
+    return summary
+
+
+def alerted(con: duckdb.DuckDBPyConnection, days: int = 1, samples: int = 4) -> list[dict]:
+    """The production alerts of the last `days`, with handles and sample posts
+    for a human to read."""
+    since = (datetime.now(timezone.utc) - pd.Timedelta(days=days)).date().isoformat()
+    try:
+        rows = con.sql(
+            f"""SELECT * FROM read_parquet(
+                    'r2://{BUCKET}/{LEADS_PREFIX}/kind=verdicts/dt=*/*.parquet',
+                    hive_partitioning=true, union_by_name=true)
+                WHERE dt >= DATE '{since}' AND adjudicator = '{leads_rule.ADJUDICATOR}'
+                  AND worth_a_look ORDER BY run_id DESC, size DESC"""
+        ).df()
+    except duckdb.Error:
+        return []
+    out = []
+    for _, r in rows.iterrows():
+        ids = [str(m) for m in r["members"]]
+        con.register("_alert_members", pd.DataFrame({"author_id": ids}))
+        try:
+            posts = con.sql(
+                f"""SELECT author_id, any_value(author_handle) AS handle,
+                           list(DISTINCT text)[1:{samples}] AS texts
+                    FROM read_parquet('r2://{BUCKET}/posts/platform={PLATFORM}/type=*/dt=*/run=*.parquet',
+                                      union_by_name=true, hive_partitioning=true)
+                    WHERE dt >= current_date - INTERVAL {ALERT_POST_DAYS} DAY
+                      AND CAST(author_id AS VARCHAR) IN (SELECT author_id FROM _alert_members)
+                      AND NOT coalesce(is_repost, false) AND text IS NOT NULL
+                    GROUP BY author_id"""
+            ).df()
+        finally:
+            con.unregister("_alert_members")
+        out.append({
+            "run_id": r["run_id"], "candidate_id": r["candidate_id"], "status": r["status"],
+            "band": r["band"], "size": r["size"], "signals": r["rationale"],
+            "mode": r["mode"],
+            "accounts": [{"id": a, "handle": h, "texts": list(t)} for a, h, t in
+                         zip(posts["author_id"].astype(str), posts["handle"], posts["texts"],
+                             strict=True)],
+        })
+    return out
+
+
 def execute(
     con: duckdb.DuckDBPyConnection,
     *,
@@ -494,6 +671,13 @@ def main() -> None:
     s = sub.add_parser("show", help="print the prompt a reader saw for one candidate")
     s.add_argument("run_id")
     s.add_argument("candidate_id")
+    a = sub.add_parser("alerts", help="print the rule's alerted groups with handles and posts")
+    a.add_argument("--days", type=int, default=1)
+    ap.add_argument("--rule", action="store_true",
+                    help="judge with the deterministic rule (kma.leads_rule), no model")
+    ap.add_argument("--textfile-dir", type=Path,
+                    default=Path(os.environ[textfile.ENV]) if os.getenv(textfile.ENV) else None,
+                    help=f"with --rule, directory for {GAUGE_FILE}; default ${textfile.ENV}")
     ap.add_argument("--source", choices=("v2", "v1"), default="v2",
                     help="v1 reads coordination clusters as a stand-in listing")
     ap.add_argument("--limit", type=int, default=leads.MAX_CANDIDATES)
@@ -506,8 +690,20 @@ def main() -> None:
     args = ap.parse_args()
 
     con = connect()
+    con.execute("SET enable_progress_bar = false")
     if args.cmd == "show":
         print(show(con, args.run_id, args.candidate_id))
+        return
+    if args.cmd == "alerts":
+        print(json.dumps(alerted(con, args.days), indent=2, default=str))
+        return
+    if args.rule:
+        if args.judge or args.source != "v2":
+            ap.error("--rule takes no --judge and reads only the v2 listing")
+        print(json.dumps(execute_rule(con, persist=args.persist, mode=args.mode,
+                                      textfile_dir=args.textfile_dir
+                                      if args.persist and args.mode == MODE_PRODUCTION else None),
+                         indent=2, default=str))
         return
     judge = None
     if args.judge:

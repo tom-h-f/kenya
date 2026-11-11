@@ -58,7 +58,6 @@ import logging
 import os
 import resource
 import sys
-import tempfile
 import time
 from collections.abc import Callable
 from datetime import timedelta
@@ -67,7 +66,17 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from kma import canary, coord2, coord2_run, embed_window, text_trace, v2_daily, window, windowed
+from kma import (
+    canary,
+    coord2,
+    coord2_run,
+    embed_window,
+    text_trace,
+    textfile,
+    v2_daily,
+    window,
+    windowed,
+)
 
 log = logging.getLogger(__name__)
 
@@ -89,25 +98,11 @@ def gauge_text(epoch_seconds: int, text_trace_present: bool | None = None) -> st
 
 def write_gauge(directory: Path, now: float | None = None,
                 text_trace_present: bool | None = None) -> Path:
-    """Write the freshness gauge atomically.
-
-    The temp file sits in the same directory (a rename across filesystems is
-    not atomic) and does not end in `.prom`, which is the only suffix
-    node-exporter's textfile collector reads, so a half-written file is never
-    scraped. Mode 0644 because `mkstemp` makes 0600 and the exporter often runs
-    as another user inside a container."""
-    directory.mkdir(parents=True, exist_ok=True)
-    target = directory / GAUGE_FILE
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{GAUGE_FILE}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as handle:
-            handle.write(gauge_text(int(time.time() if now is None else now), text_trace_present))
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, target)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-    return target
+    """Write the freshness gauge atomically (`kma.textfile.write`)."""
+    return textfile.write(
+        directory, GAUGE_FILE,
+        gauge_text(int(time.time() if now is None else now), text_trace_present),
+    )
 
 
 def local_uri(root: Path) -> Callable[[str], str]:
