@@ -431,9 +431,11 @@ def community_table(con: duckdb.DuckDBPyConnection, run: str) -> pd.DataFrame:
     ).df()
 
 
-def recent_alerts(con: duckdb.DuckDBPyConnection, now: datetime,
+def recent_alerts(con: duckdb.DuckDBPyConnection, now: datetime, listing: str,
                   days: int = leads_rule.MEMORY_DAYS) -> list[frozenset]:
-    """Member sets of the production rule alerts in the last `days`."""
+    """Member sets of the production rule alerts in the last `days`, except
+    those on `listing` itself: a re-run or a systemd retry of the same day must
+    not count its own earlier alerts as old news."""
     since = (now - pd.Timedelta(days=days)).date().isoformat()
     try:
         rows = con.sql(
@@ -441,7 +443,8 @@ def recent_alerts(con: duckdb.DuckDBPyConnection, now: datetime,
                     'r2://{BUCKET}/{LEADS_PREFIX}/kind=verdicts/dt=*/*.parquet',
                     hive_partitioning=true, union_by_name=true)
                 WHERE dt >= DATE '{since}' AND adjudicator = '{leads_rule.ADJUDICATOR}'
-                  AND mode = '{MODE_PRODUCTION}' AND worth_a_look"""
+                  AND mode = '{MODE_PRODUCTION}' AND worth_a_look
+                  AND listing_run <> '{listing}'"""
         ).fetchall()
     except duckdb.Error:
         return []
@@ -518,7 +521,7 @@ def execute_rule(
         community_table(con, current.run),
         community_table(con, previous.run) if previous else None,
         members=members,
-        recent=recent_alerts(con, now),
+        recent=recent_alerts(con, now, current.run),
     )
     if p.baseline or p.reset:
         judged = judged.assign(alert=False)
