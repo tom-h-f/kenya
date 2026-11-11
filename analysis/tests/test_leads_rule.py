@@ -137,6 +137,12 @@ def test_the_gauge_counts_by_band_and_leaves_canaries_out():
     assert 'kma_leads_alerts{band="large"} 1\n' in text
     assert 'kma_leads_alerts{band="small"} 2\n' in text
     assert "kma_leads_last_success_timestamp_seconds 1000\n" in text
+
+
+def test_a_timestamp_is_written_in_full():
+    text = textfile.gauges([("t", {}, 1_794_404_789), ("r", {}, 0.25)])
+    assert "t 1794404789\n" in text
+    assert "r 0.25\n" in text
     assert "kma_leads_reset 0\n" in text
 
 

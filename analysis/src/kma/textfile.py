@@ -25,8 +25,15 @@ def gauges(samples: list[tuple[str, dict[str, str], float]]) -> str:
             lines.append(f"# TYPE {metric} gauge")
             typed.add(metric)
         body = ",".join(f'{k}="{v}"' for k, v in labels.items())
-        lines.append(f"{metric}{{{body}}} {value:g}" if body else f"{metric} {value:g}")
+        number = _number(value)
+        lines.append(f"{metric}{{{body}}} {number}" if body else f"{metric} {number}")
     return "\n".join(lines) + "\n"
+
+
+def _number(value: float) -> str:
+    """Integers in full: `{:g}` keeps six significant digits, which turns an
+    epoch-seconds timestamp into one up to hours off."""
+    return str(int(value)) if float(value).is_integer() else repr(float(value))
 
 
 def write(directory: Path, filename: str, text: str) -> Path:
