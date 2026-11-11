@@ -95,6 +95,7 @@ GAUGE_ALERTS = "kma_leads_alerts"
 GAUGE_RESET = "kma_leads_reset"
 # Posts the `alerts` reader samples, the daily pass's window length.
 ALERT_POST_DAYS = 21
+SHARED_PREFIX = 60
 
 
 @dataclass
@@ -549,9 +550,11 @@ def execute_rule(
     return summary
 
 
-def alerted(con: duckdb.DuckDBPyConnection, days: int = 1, samples: int = 4) -> list[dict]:
-    """The production alerts of the last `days`, with handles and sample posts
-    for a human to read."""
+def alerted(con: duckdb.DuckDBPyConnection, days: int = 1, samples: int = 3) -> list[dict]:
+    """The production alerts of the last `days`, one per group (its latest
+    run), with handles and posts for a human to read. `shared` is wording at
+    least two members posted (the first `SHARED_PREFIX` characters, lowercased,
+    links and mentions dropped); `latest` is each account's newest posts."""
     since = (datetime.now(timezone.utc) - pd.Timedelta(days=days)).date().isoformat()
     try:
         rows = con.sql(
@@ -559,34 +562,51 @@ def alerted(con: duckdb.DuckDBPyConnection, days: int = 1, samples: int = 4) -> 
                     'r2://{BUCKET}/{LEADS_PREFIX}/kind=verdicts/dt=*/*.parquet',
                     hive_partitioning=true, union_by_name=true)
                 WHERE dt >= DATE '{since}' AND adjudicator = '{leads_rule.ADJUDICATOR}'
-                  AND worth_a_look ORDER BY run_id DESC, size DESC"""
+                  AND worth_a_look
+                QUALIFY row_number() OVER (PARTITION BY candidate_id ORDER BY run_id DESC) = 1
+                ORDER BY run_id DESC, size DESC"""
         ).df()
     except duckdb.Error:
         return []
     out = []
     for _, r in rows.iterrows():
-        ids = [str(m) for m in r["members"]]
-        con.register("_alert_members", pd.DataFrame({"author_id": ids}))
+        con.register("_alert_members", pd.DataFrame({"author_id": [str(m) for m in r["members"]]}))
         try:
-            posts = con.sql(
-                f"""SELECT author_id, any_value(author_handle) AS handle,
-                           list(DISTINCT text)[1:{samples}] AS texts
+            con.execute(
+                f"""CREATE OR REPLACE TEMP TABLE _alert_posts AS
+                    SELECT DISTINCT CAST(author_id AS VARCHAR) AS author_id, author_handle,
+                           platform_post_id, created_at, text,
+                           left(trim(regexp_replace(lower(regexp_replace(text, '(https?://\\S+|@\\w+)', '', 'g')),
+                                                    '\\s+', ' ', 'g')), {SHARED_PREFIX}) AS frame
                     FROM read_parquet('r2://{BUCKET}/posts/platform={PLATFORM}/type=*/dt=*/run=*.parquet',
                                       union_by_name=true, hive_partitioning=true)
                     WHERE dt >= current_date - INTERVAL {ALERT_POST_DAYS} DAY
                       AND CAST(author_id AS VARCHAR) IN (SELECT author_id FROM _alert_members)
-                      AND NOT coalesce(is_repost, false) AND text IS NOT NULL
-                    GROUP BY author_id"""
+                      AND NOT coalesce(is_repost, false) AND text IS NOT NULL"""
+            )
+            shared = con.sql(
+                """SELECT frame, count(DISTINCT author_id) AS accounts,
+                           list(DISTINCT author_handle) AS handles, any_value(text) AS example
+                    FROM _alert_posts WHERE length(frame) >= 20
+                    GROUP BY frame HAVING count(DISTINCT author_id) >= 2
+                    ORDER BY accounts DESC, frame LIMIT 10"""
+            ).df()
+            latest = con.sql(
+                f"""SELECT author_id, any_value(author_handle) AS handle,
+                           list(text ORDER BY created_at DESC)[1:{samples}] AS texts
+                    FROM (SELECT DISTINCT ON (platform_post_id) * FROM _alert_posts)
+                    GROUP BY author_id ORDER BY handle"""
             ).df()
         finally:
             con.unregister("_alert_members")
         out.append({
             "run_id": r["run_id"], "candidate_id": r["candidate_id"], "status": r["status"],
-            "band": r["band"], "size": r["size"], "signals": r["rationale"],
-            "mode": r["mode"],
-            "accounts": [{"id": a, "handle": h, "texts": list(t)} for a, h, t in
-                         zip(posts["author_id"].astype(str), posts["handle"], posts["texts"],
-                             strict=True)],
+            "band": r["band"], "size": r["size"], "signals": r["rationale"], "mode": r["mode"],
+            "shared": [{"accounts": int(a), "handles": list(h), "example": e}
+                       for a, h, e in zip(shared["accounts"], shared["handles"], shared["example"],
+                                          strict=True)],
+            "latest": [{"id": a, "handle": h, "texts": list(t)} for a, h, t in
+                       zip(latest["author_id"], latest["handle"], latest["texts"], strict=True)],
         })
     return out
 
