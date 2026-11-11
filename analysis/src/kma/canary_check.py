@@ -33,7 +33,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from kma import canary, coord2, leads_rule, textfile, v2_daily, v2_daily_run, window
+from kma import bench, canary, coord2, leads_rule, textfile, v2_daily, v2_daily_run, window
 from kma.db import BUCKET
 
 log = logging.getLogger(__name__)
@@ -85,7 +85,11 @@ def run(
     manifest = window.ensure(w, con=con)
     has_text = v2_daily.text_trace_exists(con, w.id)
     planted_at = datetime.combine(w.end + timedelta(days=1), time(0), tzinfo=timezone.utc)
-    recent = (f"SELECT * FROM ({coord2.posts_view()}) WHERE created_at >= "
+    # The window's pinned objects, not the whole archive: planting reads the
+    # last week for retweet targets and tag collisions, and an unpinned view
+    # scans every posts object in R2.
+    pinned = coord2.posts_view(bench.pinned_source(manifest, "posts"))
+    recent = (f"SELECT * FROM ({pinned}) WHERE created_at >= "
               f"TIMESTAMPTZ '{(planted_at - timedelta(days=PLANT_DAYS)).isoformat()}'")
     plant = canary.new(con, recent, canary_id=f"check-{planted_at:%Y-%m-%d}", size=SIZE,
                        activity=ACTIVITY, days=PLANT_DAYS, now=planted_at)

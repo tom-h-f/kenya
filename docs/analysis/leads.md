@@ -5,18 +5,44 @@ contract between the pieces that meet here - the daily v2 listing (workstream
 A), the canary (workstream C), and the leads pass built on `feat/leads-alerts`.
 
 ```
-v2 daily (A) --> coord2/kind=daily_members -------+
-trend discovery (pi0) --> trend_candidates/ ------+--> leads pass (Modal)
-canary (Modal, C) --> injected listing rows ------+      |  diff, queue <= 10, dossiers, reader
-                  --> leads/kind=canary_expected         v
-                                                  leads/kind=verdicts
-                                                         |
-                                              alerting (iot repo, Grafana)
+v2 daily (cloud, 03:30 UTC) --> coord2/kind=daily_members + daily_communities
+        |  OnSuccess=
+        v
+kma-leads --rule (cloud) --> leads/kind=verdicts (flagged groups, private)
+        |                --> kma_leads.prom --> Grafana Cloud rules (iot repo) --> IRM
+kma-canary (cloud, Mon 06:00) --> leads/kind=canary_checks, kma_canary.prom
 ```
 
-Nothing in this repo reads `leads/kind=verdicts` and sends it anywhere. The
-tf1 ntfy poller (`kma.leads_notify`) was removed 2026-10-10: no ntfy token will
-exist. Whatever alerts reads the verdicts and the canary expectation from R2.
+Production judges with a rule, not a model: `kma.leads_rule`, run by
+`kma-leads --rule` on `cloud` after every successful daily pass. No Anthropic
+key is used anywhere. The model reader (`--judge`, `modal_leads.py`) is kept
+for hand use and is not scheduled. The rest of this document is the contract
+the rule pass and the original model pass share; where they differ it says so.
+
+## The rule
+
+A diffed community is flagged when it passed the Kenya gate (`kept`) and
+either carries a `template_label` or takes at least half of its internal edge
+trace labels from the non-retweet traces (text similarity, hashtag sequence,
+co-URL, fast retweet). A flag alerts when the group is new, or its matched
+predecessor was not flagged, and no group alerted in the last 14 days shares
+half its members. Every new or changed community is checked: the budget of
+ten was the model's cost bound and does not apply.
+
+Alerts split by size: 8 or more accounts push to a phone
+(`CloudKenyaCampaignFlagged`), 4-7 land in IRM as info
+(`CloudKenyaSmallGroupFlagged`). Over the 20 daily runs to 2026-11-11 the rule
+gave 23 alerts, 6 of them 8+ accounts, on 5 of the 20 days. The 0.5 share and
+the 8-account line were chosen on that backtest; whether flagged groups are
+campaigns has not been labelled. Read an alert with
+`uv run kma-leads alerts --days 2` on `cloud`: handles and sample posts for
+each alerted group.
+
+The weekly canary (`kma.canary_check`) plants a 20-account group shaped on a
+real operation, in memory, reruns the daily's rank on the same window with
+nothing persisted, and checks the planted accounts land together in one
+community the rule flags. It does not use the daily's `--canary`, which would
+put the planted group into the public counts.
 
 ## What A writes: the community membership
 
@@ -105,6 +131,6 @@ Under `leads/platform=x/`, all private (dossiers carry handles and text):
 
 ## Going live
 
-1. Modal: the `kenya-r2` and `anthropic` secrets already exist. Nothing new.
-2. `modal deploy analysis/modal_leads.py` - schedules the daily pass at
-   06:30 UTC. Move the cron if A's daily listing lands later.
+The rule pass and canary are systemd units on `cloud`; install steps are in
+`deploy/cloud/README.md` (Leads rule and canary). Do not deploy
+`modal_leads.py`: its schedule calls the model reader every day.

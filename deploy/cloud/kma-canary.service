@@ -1,0 +1,26 @@
+[Unit]
+Description=Kenya monitor weekly canary (planted group in memory, rank, leads rule)
+Wants=network-online.target
+# Never beside the daily or the public producers: the rank is the daily's.
+After=network-online.target kma-v2-daily.service kma-explorer-export.service
+StartLimitIntervalSec=21600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Restart=on-failure
+RestartSec=900
+User=tom
+SupplementaryGroups=debian
+WorkingDirectory=/home/tom/kenya-monitor-2027/analysis
+EnvironmentFile=/etc/kma/v2-daily.env
+Environment=KMA_TEXTFILE_DIR=/opt/iot-cloud/state/textfile
+ExecStart=/home/tom/.local/bin/uv run --frozen --no-dev python -m kma.canary_check --persist
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kma-canary
+Nice=15
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=12G
+TimeoutStartSec=2h

@@ -1,0 +1,27 @@
+[Unit]
+Description=Kenya monitor leads rule (new or changed communities in, alert counts out)
+Wants=network-online.target
+# Queued by the daily's OnSuccess= (kma-v2-daily.service.d/leads.conf), so it
+# always reads the listing the daily just wrote.
+After=network-online.target kma-v2-daily.service
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Restart=on-failure
+RestartSec=300
+User=tom
+SupplementaryGroups=debian
+WorkingDirectory=/home/tom/kenya-monitor-2027/analysis
+EnvironmentFile=/etc/kma/v2-daily.env
+Environment=KMA_TEXTFILE_DIR=/opt/iot-cloud/state/textfile
+ExecStart=/home/tom/.local/bin/uv run --frozen --no-dev kma-leads --rule --persist --mode production
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kma-leads
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=4G
+TimeoutStartSec=30min

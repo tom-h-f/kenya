@@ -204,6 +204,44 @@ The rolling rank keeps floor 2. `windowed.DETECTION` (day, 3) and
 windows and apply under `--windowed`. Whether the rolling rank's floor should
 move is undecided; see the plan.
 
+## Leads rule and canary
+
+`kma-leads --rule` diffs the daily's community membership against the previous
+run and flags new or changed groups held together by something other than
+retweeting (`kma.leads_rule`, contract in `docs/analysis/leads.md`). It writes
+flagged groups to `leads/platform=x/kind=verdicts/` (private: handles) and
+`kma_leads.prom`. `kma.canary_check` plants a synthetic group in memory every
+Monday and checks the rule catches it; it writes `kma_canary.prom` and a row
+under `leads/platform=x/kind=canary_checks/`. Neither uses a model or a key,
+and neither writes to the public bucket or the daily's tables.
+
+Units on `cloud`: `kma-leads.service`, `kma-v2-daily.service.d/leads.conf`,
+`kma-canary.service`, `kma-canary.timer`. Both reuse `/etc/kma/v2-daily.env`
+and the textfile directory the daily writes to. The alert rules are in the
+iot repo, `ops/cloud/rules/grafana-cloud/cloud.yml`.
+
+```sh
+sudo cp deploy/cloud/kma-leads.service deploy/cloud/kma-canary.service deploy/cloud/kma-canary.timer /etc/systemd/system/
+sudo cp deploy/cloud/kma-v2-daily.service.d/leads.conf /etc/systemd/system/kma-v2-daily.service.d/
+sudo systemctl daemon-reload && sudo systemctl enable --now kma-canary.timer
+sudo systemctl start kma-leads.service && journalctl -u kma-leads -n 30
+cd ~/kenya-monitor-2027/analysis && uv run --frozen --no-dev kma-leads --rule        # dry run, writes nothing
+uv run --frozen --no-dev kma-leads alerts --days 2                                   # read what alerted
+uv run --frozen --no-dev python -m kma.canary_check                                  # dry canary, writes nothing
+```
+
+The leads pass reads two runs' membership and community tables and the last
+14 days of verdicts. The canary reruns the daily's rank on the same window, so
+it costs what the rank does (`Sizing`) plus planting: `MemoryMax=12G`, never
+beside the daily. Measured on `cloud` 2026-11-11, window
+`daily-2026-11-10-21d`: about 9.5 min, 7 of them planting (two scans of the
+window's posts objects for retweet targets and tag collisions), and the first
+run downloads the CPU text encoder from Hugging Face.
+
+The canary's posts have no relevance scores, and an unscored community passes
+the Kenya gate, so the canary does not exercise that gate: a gate that
+wrongly dropped real groups would not show as a canary miss.
+
 ## Public dashboard summary
 
 `kma.dashboard` reads the daily's persisted output and writes one public JSON

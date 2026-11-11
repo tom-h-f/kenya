@@ -1,0 +1,11 @@
+[Unit]
+Description=Kenya monitor weekly canary, Mondays 06:00 UTC
+
+[Timer]
+# After the 03:30 daily and its explorer bundle, so it reuses that window's
+# manifest and text trace.
+OnCalendar=Mon *-*-* 06:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
